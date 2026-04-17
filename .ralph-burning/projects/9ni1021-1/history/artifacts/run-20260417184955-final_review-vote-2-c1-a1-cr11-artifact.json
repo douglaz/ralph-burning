@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:33:24.513941887Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify real defects in src/test_support/e2e_fixtures.rs. Amendment fr-11-11ed2696 flags an inconsistency where next_ready_issue() leniently treats missing dependencies as satisfied while br_show_json() panics on the same condition — given that reload_issues_from_disk() supports tests rewriting the on-disk graph, this divergence is a genuine defect. Amendment fr-11-7b77d92e correctly identifies that the smoke test asserts <10 seconds when the bead contract explicitly requires <1 second for fixture creation, leaving a 9x regression window unprotected.\n\n## Votes\n\n- `fr-11-11ed2696`: Accept\n  Verified at e2e_fixtures.rs:560-565 and 965-968. The two code paths handle missing dependency targets inconsistently: next_ready_issue uses is_none_or (missing = satisfied), while br_show_json uses expect (missing = panic). Because reload_issues_from_disk at line 547 intentionally re-reads on-disk state that tests can modify, this divergence is a real defect in mock adapter behavior, not a theoretical concern. Tightening both paths to handle missing deps deterministically improves the fixture's robustness as a test foundation.\n- `fr-11-7b77d92e`: Accept\n  Verified at e2e_fixtures.rs:1052-1055 — the assertion uses Duration::from_secs(10) but the prompt.md acceptance criteria explicitly states 'Fixture creation is fast (<1 second)' and the body says 'Target: <1 second for fixture creation'. A 10x permissive bound fails to enforce the documented contract and would let a meaningful performance regression slip past CI. Tightening to a sub-second bound (with reasonable CI tolerance) directly enforces the stated acceptance criterion.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 11
+}

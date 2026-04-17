@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-arbiter-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417184955-final_review-arbiter-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:34:09.668399037Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed timing amendment. The authoritative bead for this fixture expressly avoids sub-second CI timing assertions and asks for completeness checks without a flaky hard real-time budget, so the current broad slowdown guardrail is aligned with the contract and the claimed `<1 second` requirement is unsupported.\n\n## Rulings\n\n- `fr-11-7b77d92e`: Reject\n  The amendment’s core premise is not supported by the authoritative backlog contract. In `.beads/issues.jsonl` for bead `ralph-burning-9ni.10.2.1`, the constraints explicitly say to keep fixture creation cheap enough for normal iteration but to \"not rely on brittle sub-second wall-clock assertions in CI,\" and the acceptance criteria require a smoke test that verifies completeness \"without relying on a flaky hard real-time budget.\" The implementation at `src/test_support/e2e_fixtures.rs:1048-1055` matches that intent: it uses a broad `< 10s` guardrail framed as avoiding pathological slowdowns, not enforcing a strict performance SLO. Because the bead contract rejects brittle sub-second timing assertions rather than requiring them, tightening this test to `< 1 second` would enforce a requirement the bead does not actually impose.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

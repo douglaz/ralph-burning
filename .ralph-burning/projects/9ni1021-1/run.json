@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 11
+      "completion_round": 12
     },
     "started_at": "2026-04-17T21:08:41.567727685Z",
     "prompt_hash_at_cycle_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "prompt_hash_at_stage_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 10
+    "final_review_restart_count": 11
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 11,
+  "completion_rounds": 12,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-11-11ed2696",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 11,
+        "body": "finding_summary: `src/test_support/e2e_fixtures.rs:546-565` and `src/test_support/e2e_fixtures.rs:951-968` assume every dependency target exists. `next_ready_issue()` treats a missing `blocks` dependency as satisfied via `is_none_or(...)`, so `bv --robot-next` can advance downstream work when a prerequisite row has been dropped from `.beads/issues.jsonl`. On the `br show` path, the same dangling dependency trips `expect(\"dependency issue must exist\")` and panics the test process instead of returning a deterministic mock failure. Because this fixture intentionally reloads on-disk graph rewrites, a slightly inconsistent rewrite can now either unblock the wrong bead or crash the mock adapter.\naffected_files:\n- src/test_support/e2e_fixtures.rs\nremediation_hint: Require every dependency lookup to succeed before a bead is considered ready, and replace the `expect(...)` in `br_show_json()` with error propagation or a mock exit failure so dangling dependencies are handled deterministically.",
+        "created_at": "2026-04-17T23:34:09.681815326Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "20a2c571f7b67b85b9634ddc5bb4fcf0ef63745ec6131eae6e1c5e8a0a91aac5"
+      }
+    ],
     "processed_count": 16
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 12 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T23:06:02.726461531Z",
+    "resolved_at": "2026-04-17T23:20:45.081362884Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

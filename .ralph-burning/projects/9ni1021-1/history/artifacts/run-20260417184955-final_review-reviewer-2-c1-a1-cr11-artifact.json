@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:32:17.470246413Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nNo amendments. The new `build_e2e_milestone_scenario_fixture()` and supporting `MockBrAdapter`/`MockBvAdapter` dispatch + default-working-dir changes are correct, well-tested, and additive. The smoke test at `src/test_support/e2e_fixtures.rs:1046-1522` is comprehensive (validates milestone state, plan artifacts, bead graph, dependency ordering, bv robot-next sequencing across closures/reopens/external rewrites, and exact br/bv call transcripts). All 1068 lib tests pass; `cargo clippy --lib -- -D warnings` passes. Pre-existing `--all-targets` clippy errors live in `cli/milestone.rs`, `cli/project.rs`, and `workflow_composition/completion.rs`, which this PR does not touch. JSON shapes match the real `BeadSummary`/`BeadDetail`/`NextBeadResponse` contracts, including `issue_type`/`dependency_type` aliasing and `DependencyKind` serde snake_case. Mutation operations correctly serialize through `Mutex<ScenarioState>` and reload from `.beads/issues.jsonl` before each write, keeping the mock consistent with external rewrites. Working-directory validation in `scenario_br_response`/`scenario_bv_response` safeguards against accidental cross-workspace calls. Minor fidelity observations (unreachable `--type=blocks` arm in `parse_dep_add_args`, `add_dependency` does not bump issue `updated_at`, `parse_acceptance_criteria` edge case for a single criterion containing a newline) are edge-case nits in a test-only fixture and do not rise to real bugs.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 11
+}

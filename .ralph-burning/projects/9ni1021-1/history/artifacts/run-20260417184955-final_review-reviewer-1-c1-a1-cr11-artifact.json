@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:28:27.736739657Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed `master...HEAD` and read the changed fixture/mock files end-to-end. Two fix-now issues stood out: dangling dependencies are handled unsafely in the new scenario mocks, and the smoke test does not enforce the stated `< 1s` fixture-creation contract. Targeted `cargo test build_e2e_milestone_scenario_fixture_smoke_test` passed; `cargo clippy --tests -- -D warnings` is currently blocked by a pre-existing warning in `tests/unit/process_backend_test.rs:2872`.\n\n## Amendments\n\n1. finding_summary: `src/test_support/e2e_fixtures.rs:546-565` and `src/test_support/e2e_fixtures.rs:951-968` assume every dependency target exists. `next_ready_issue()` treats a missing `blocks` dependency as satisfied via `is_none_or(...)`, so `bv --robot-next` can advance downstream work when a prerequisite row has been dropped from `.beads/issues.jsonl`. On the `br show` path, the same dangling dependency trips `expect(\"dependency issue must exist\")` and panics the test process instead of returning a deterministic mock failure. Because this fixture intentionally reloads on-disk graph rewrites, a slightly inconsistent rewrite can now either unblock the wrong bead or crash the mock adapter.\naffected_files:\n- src/test_support/e2e_fixtures.rs\nremediation_hint: Require every dependency lookup to succeed before a bead is considered ready, and replace the `expect(...)` in `br_show_json()` with error propagation or a mock exit failure so dangling dependencies are handled deterministically.\n   Rationale: The fixture is supposed to model the bead graph faithfully under on-disk rewrites; treating missing prerequisites as ready or panicking on `br show` makes integration tests pass or fail for reasons that do not match the real workflow semantics.\n2. finding_summary: `src/test_support/e2e_fixtures.rs:1048-1055` only asserts that fixture creation stays under 10 seconds, but the bead contract explicitly requires fixture creation to stay under 1 second. The current implementation is fast, but this test leaves a 9-second regression window that would still pass CI, so the stated performance acceptance criterion is not actually enforced.\naffected_files:\n- src/test_support/e2e_fixtures.rs\nremediation_hint: Tighten the assertion to the documented `< 1 second` target, or add a dedicated timing assertion that enforces that contract with only a small CI tolerance.\n   Rationale: This change adds the only automated guard for the fixture's performance requirement; if the test does not check the real threshold, the contract can regress unnoticed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}
