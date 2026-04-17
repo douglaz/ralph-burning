@@ -101,11 +101,69 @@ pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FollowUpBeadState {
-    Absent,
-    Open,
-    Closed,
+#[derive(Debug, Clone)]
+struct CreatedFollowUpBead {
+    issue: BeadGraphIssue,
+}
+
+#[derive(Debug, Default)]
+struct ScenarioBrState {
+    created_follow_ups: Vec<CreatedFollowUpBead>,
+}
+
+impl ScenarioBrState {
+    fn create_follow_up(&mut self) -> String {
+        let create_index = self.created_follow_ups.len();
+        let bead_id = next_follow_up_task_id(create_index);
+        self.created_follow_ups.push(CreatedFollowUpBead {
+            issue: follow_up_validation_issue(&bead_id, BeadStatus::Open, create_index),
+        });
+        bead_id
+    }
+
+    fn close_follow_up(&mut self, bead_id: &str) -> Result<(), String> {
+        let Some(create_index) = self
+            .created_follow_ups
+            .iter()
+            .position(|created| created.issue.id == bead_id)
+        else {
+            return Err(format!("bead not found: {bead_id}"));
+        };
+        let created = &mut self.created_follow_ups[create_index];
+
+        if created.issue.status != BeadStatus::Closed {
+            let created_at = created.issue.created_at;
+            created.issue = follow_up_validation_issue(bead_id, BeadStatus::Closed, create_index)
+                .with_created_at(created_at);
+        }
+
+        Ok(())
+    }
+
+    fn created_issues(&self) -> Vec<BeadGraphIssue> {
+        self.created_follow_ups
+            .iter()
+            .map(|created| created.issue.clone())
+            .collect()
+    }
+}
+
+trait ScenarioIssueExt {
+    fn with_created_at(self, created_at: DateTime<Utc>) -> Self;
+}
+
+impl ScenarioIssueExt for BeadGraphIssue {
+    fn with_created_at(mut self, created_at: DateTime<Utc>) -> Self {
+        self.created_at = created_at;
+        self.updated_at = if self.status == BeadStatus::Closed {
+            created_at + Duration::minutes(1)
+        } else {
+            created_at
+        };
+        self.closed_at =
+            (self.status == BeadStatus::Closed).then_some(created_at + Duration::minutes(1));
+        self
+    }
 }
 
 fn scenario_bundle() -> MilestoneBundle {
@@ -333,13 +391,32 @@ fn build_mock_bv_adapter(issues: &[BeadGraphIssue]) -> MockBvAdapter {
         .iter()
         .find(|issue| issue.id == PREPARE_TASK_ID)
         .expect("prepare task issue");
-    MockBvAdapter::from_responses([MockBvResponse::success(next_bead_json(prepare_issue))])
+    let response_json = next_bead_json(prepare_issue);
+    MockBvAdapter::from_dispatch(move |call| match call.args.as_slice() {
+        [command] if command == "--robot-next" => {
+            Some(MockBvResponse::success(response_json.clone()))
+        }
+        _ => None,
+    })
 }
 
-fn follow_up_validation_issue(status: BeadStatus) -> BeadGraphIssue {
-    let created_at = scenario_timestamp() + Duration::minutes(2);
+fn next_follow_up_task_id(create_index: usize) -> String {
+    if create_index == 0 {
+        FOLLOW_UP_TASK_ID.to_owned()
+    } else {
+        format!("{FOLLOW_UP_TASK_ID}-{create_index}")
+    }
+}
+
+fn follow_up_validation_issue(
+    bead_id: &str,
+    status: BeadStatus,
+    create_index: usize,
+) -> BeadGraphIssue {
+    let created_at =
+        scenario_timestamp() + Duration::minutes(2) + Duration::seconds(create_index as i64);
     BeadGraphIssue {
-        id: FOLLOW_UP_TASK_ID.to_owned(),
+        id: bead_id.to_owned(),
         title: FOLLOW_UP_TASK_TITLE.to_owned(),
         status: status.clone(),
         priority: BeadPriority::new(2),
@@ -363,7 +440,7 @@ fn follow_up_validation_issue(status: BeadStatus) -> BeadGraphIssue {
         compaction_level: 0,
         original_size: 0,
         dependencies: vec![BeadGraphDependency::new(
-            FOLLOW_UP_TASK_ID,
+            bead_id,
             VALIDATE_TASK_ID,
             DependencyKind::Blocks,
             created_at,
@@ -464,18 +541,14 @@ fn dependency_kind_json(kind: &DependencyKind) -> &'static str {
 #[derive(Debug, Clone)]
 struct ScenarioBrMock {
     issues: Vec<BeadGraphIssue>,
-    follow_up_open_issue: BeadGraphIssue,
-    follow_up_closed_issue: BeadGraphIssue,
-    follow_up_state: Arc<Mutex<FollowUpBeadState>>,
+    state: Arc<Mutex<ScenarioBrState>>,
 }
 
 impl ScenarioBrMock {
     fn new(issues: &[BeadGraphIssue]) -> Self {
         Self {
             issues: issues.to_vec(),
-            follow_up_open_issue: follow_up_validation_issue(BeadStatus::Open),
-            follow_up_closed_issue: follow_up_validation_issue(BeadStatus::Closed),
-            follow_up_state: Arc::new(Mutex::new(FollowUpBeadState::Absent)),
+            state: Arc::new(Mutex::new(ScenarioBrState::default())),
         }
     }
 
@@ -493,21 +566,12 @@ impl ScenarioBrMock {
                     && bead_type == "--type=task"
                     && priority == "--priority=2" =>
             {
-                *self
-                    .follow_up_state
-                    .lock()
-                    .expect("scenario follow-up state lock poisoned") = FollowUpBeadState::Open;
-                Some(MockBrResponse::success(format!(
-                    "Created bead {}",
-                    self.follow_up_open_issue.id
-                )))
+                Some(self.create_response())
             }
             [command, bead_id, reason]
-                if command == "close"
-                    && bead_id == FOLLOW_UP_TASK_ID
-                    && reason == "--reason=Fixture cleanup" =>
+                if command == "close" && reason == "--reason=Fixture cleanup" =>
             {
-                Some(self.close_response())
+                Some(self.close_response(bead_id))
             }
             [command, flag] if command == "sync" && flag == "--flush-only" => {
                 Some(MockBrResponse::success("synced"))
@@ -525,29 +589,35 @@ impl ScenarioBrMock {
         MockBrResponse::success(br_show_json(&issue, &issues))
     }
 
-    fn close_response(&self) -> MockBrResponse {
-        let mut state = self
-            .follow_up_state
+    fn create_response(&self) -> MockBrResponse {
+        let bead_id = self
+            .state
             .lock()
-            .expect("scenario follow-up state lock poisoned");
-        if *state == FollowUpBeadState::Absent {
-            return MockBrResponse::exit_failure(1, format!("bead not found: {FOLLOW_UP_TASK_ID}"));
+            .expect("scenario follow-up state lock poisoned")
+            .create_follow_up();
+        MockBrResponse::success(format!("Created bead {bead_id}"))
+    }
+
+    fn close_response(&self, bead_id: &str) -> MockBrResponse {
+        match self
+            .state
+            .lock()
+            .expect("scenario follow-up state lock poisoned")
+            .close_follow_up(bead_id)
+        {
+            Ok(()) => MockBrResponse::success(format!("Closed {bead_id}")),
+            Err(message) => MockBrResponse::exit_failure(1, message),
         }
-        *state = FollowUpBeadState::Closed;
-        MockBrResponse::success(format!("Closed {}", self.follow_up_closed_issue.id))
     }
 
     fn current_issues(&self) -> Vec<BeadGraphIssue> {
-        let state = *self
-            .follow_up_state
-            .lock()
-            .expect("scenario follow-up state lock poisoned");
         let mut issues = self.issues.clone();
-        match state {
-            FollowUpBeadState::Absent => {}
-            FollowUpBeadState::Open => issues.push(self.follow_up_open_issue.clone()),
-            FollowUpBeadState::Closed => issues.push(self.follow_up_closed_issue.clone()),
-        }
+        issues.extend(
+            self.state
+                .lock()
+                .expect("scenario follow-up state lock poisoned")
+                .created_issues(),
+        );
         issues
     }
 }
@@ -563,6 +633,13 @@ mod tests {
     use crate::adapters::br_process::BrCommand;
     use crate::adapters::bv_process::{BvCommand, NextBeadResponse};
     use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneStatus};
+
+    fn created_bead_id(stdout: &str) -> String {
+        stdout
+            .strip_prefix("Created bead ")
+            .expect("created bead output prefix")
+            .to_owned()
+    }
 
     #[tokio::test]
     async fn build_e2e_milestone_scenario_fixture_smoke_test() {
@@ -758,72 +835,139 @@ mod tests {
             .exec_read(&BrCommand::create("Follow-up validation bead", "task", "2"))
             .await
             .expect("br create");
-        assert!(create_output.stdout.contains(FOLLOW_UP_TASK_ID));
+        let first_follow_up_id = created_bead_id(&create_output.stdout);
+        assert_eq!(first_follow_up_id, FOLLOW_UP_TASK_ID);
 
         let listed_with_follow_up: Vec<BeadSummary> = br
             .exec_json(&BrCommand::list())
             .await
             .expect("br list after create");
         assert_eq!(listed_with_follow_up.len(), 4);
-        assert_eq!(listed_with_follow_up[3].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(listed_with_follow_up[3].id, first_follow_up_id);
         assert_eq!(listed_with_follow_up[3].status, BeadStatus::Open);
 
         let created_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(FOLLOW_UP_TASK_ID))
+            .exec_json(&BrCommand::show(&first_follow_up_id))
             .await
             .expect("br show created bead");
-        assert_eq!(created_detail.id, FOLLOW_UP_TASK_ID);
+        assert_eq!(created_detail.id, first_follow_up_id);
         assert_eq!(created_detail.title, FOLLOW_UP_TASK_TITLE);
         assert_eq!(created_detail.dependencies.len(), 1);
         assert_eq!(created_detail.dependencies[0].id, VALIDATE_TASK_ID);
         assert_eq!(created_detail.status, BeadStatus::Open);
 
+        let second_create_output = br
+            .exec_read(&BrCommand::create("Follow-up validation bead", "task", "2"))
+            .await
+            .expect("second br create");
+        let second_follow_up_id = created_bead_id(&second_create_output.stdout);
+        assert_eq!(second_follow_up_id, next_follow_up_task_id(1));
+        assert_ne!(second_follow_up_id, first_follow_up_id);
+
+        let listed_with_two_follow_ups: Vec<BeadSummary> = br
+            .exec_json(&BrCommand::list())
+            .await
+            .expect("br list after second create");
+        assert_eq!(listed_with_two_follow_ups.len(), 5);
+        assert_eq!(listed_with_two_follow_ups[3].id, first_follow_up_id);
+        assert_eq!(listed_with_two_follow_ups[4].id, second_follow_up_id);
+        assert_eq!(listed_with_two_follow_ups[4].status, BeadStatus::Open);
+
+        let second_created_detail: BeadDetail = br
+            .exec_json(&BrCommand::show(&second_follow_up_id))
+            .await
+            .expect("br show second created bead");
+        assert_eq!(second_created_detail.id, second_follow_up_id);
+        assert_eq!(second_created_detail.title, FOLLOW_UP_TASK_TITLE);
+        assert_eq!(second_created_detail.dependencies.len(), 1);
+        assert_eq!(second_created_detail.dependencies[0].id, VALIDATE_TASK_ID);
+        assert_eq!(second_created_detail.status, BeadStatus::Open);
+
         let validate_after_create: BeadDetail = br
             .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
             .await
             .expect("br show validate after create");
-        assert_eq!(validate_after_create.dependents.len(), 1);
-        assert_eq!(validate_after_create.dependents[0].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(validate_after_create.dependents.len(), 2);
         assert_eq!(
-            validate_after_create.dependents[0].kind,
-            DependencyKind::Blocks
-        );
-        assert_eq!(
-            validate_after_create.dependents[0].status,
-            Some(BeadStatus::Open)
+            validate_after_create
+                .dependents
+                .iter()
+                .map(|dependency| {
+                    (
+                        dependency.id.clone(),
+                        dependency.kind.to_string(),
+                        dependency.status.as_ref().map(ToString::to_string),
+                    )
+                })
+                .collect::<BTreeSet<_>>(),
+            [
+                (
+                    first_follow_up_id.clone(),
+                    DependencyKind::Blocks.to_string(),
+                    Some(BeadStatus::Open.to_string()),
+                ),
+                (
+                    second_follow_up_id.clone(),
+                    DependencyKind::Blocks.to_string(),
+                    Some(BeadStatus::Open.to_string()),
+                ),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
         );
 
         let close_output = br
-            .exec_read(&BrCommand::close(FOLLOW_UP_TASK_ID, "Fixture cleanup"))
+            .exec_read(&BrCommand::close(&first_follow_up_id, "Fixture cleanup"))
             .await
             .expect("br close");
-        assert!(close_output.stdout.contains(FOLLOW_UP_TASK_ID));
+        assert!(close_output.stdout.contains(&first_follow_up_id));
 
         let closed_detail: BeadDetail = br
-            .exec_json(&BrCommand::show(FOLLOW_UP_TASK_ID))
+            .exec_json(&BrCommand::show(&first_follow_up_id))
             .await
             .expect("br show closed bead");
-        assert_eq!(closed_detail.id, FOLLOW_UP_TASK_ID);
+        assert_eq!(closed_detail.id, first_follow_up_id);
         assert_eq!(closed_detail.status, BeadStatus::Closed);
 
         let validate_after_close: BeadDetail = br
             .exec_json(&BrCommand::show(VALIDATE_TASK_ID))
             .await
             .expect("br show validate after close");
-        assert_eq!(validate_after_close.dependents.len(), 1);
-        assert_eq!(validate_after_close.dependents[0].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(validate_after_close.dependents.len(), 2);
         assert_eq!(
-            validate_after_close.dependents[0].status,
-            Some(BeadStatus::Closed)
+            validate_after_close
+                .dependents
+                .iter()
+                .map(|dependency| {
+                    (
+                        dependency.id.clone(),
+                        dependency.status.as_ref().map(ToString::to_string),
+                    )
+                })
+                .collect::<BTreeSet<_>>(),
+            [
+                (
+                    first_follow_up_id.clone(),
+                    Some(BeadStatus::Closed.to_string()),
+                ),
+                (
+                    second_follow_up_id.clone(),
+                    Some(BeadStatus::Open.to_string()),
+                ),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
         );
 
         let listed_after_close: Vec<BeadSummary> = br
             .exec_json(&BrCommand::list())
             .await
             .expect("br list after close");
-        assert_eq!(listed_after_close.len(), 4);
-        assert_eq!(listed_after_close[3].id, FOLLOW_UP_TASK_ID);
+        assert_eq!(listed_after_close.len(), 5);
+        assert_eq!(listed_after_close[3].id, first_follow_up_id);
         assert_eq!(listed_after_close[3].status, BeadStatus::Closed);
+        assert_eq!(listed_after_close[4].id, second_follow_up_id);
+        assert_eq!(listed_after_close[4].status, BeadStatus::Open);
 
         let sync_output = br
             .exec_read(&BrCommand::sync_flush())
@@ -837,6 +981,12 @@ mod tests {
             .expect("bv robot-next");
         assert_eq!(next_bead.id, PREPARE_TASK_ID);
         assert_eq!(next_bead.title, "Prepare scenario workspace");
+        let repeated_next_bead: NextBeadResponse = bv
+            .exec_json(&BvCommand::robot_next())
+            .await
+            .expect("repeated bv robot-next");
+        assert_eq!(repeated_next_bead.id, next_bead.id);
+        assert_eq!(repeated_next_bead.title, next_bead.title);
 
         assert_eq!(
             fixture
@@ -876,7 +1026,19 @@ mod tests {
                 vec!["list".to_owned(), "--json".to_owned()],
                 vec![
                     "show".to_owned(),
-                    FOLLOW_UP_TASK_ID.to_owned(),
+                    first_follow_up_id.clone(),
+                    "--json".to_owned()
+                ],
+                vec![
+                    "create".to_owned(),
+                    "--title=Follow-up validation bead".to_owned(),
+                    "--type=task".to_owned(),
+                    "--priority=2".to_owned(),
+                ],
+                vec!["list".to_owned(), "--json".to_owned()],
+                vec![
+                    "show".to_owned(),
+                    second_follow_up_id.clone(),
                     "--json".to_owned()
                 ],
                 vec![
@@ -886,12 +1048,12 @@ mod tests {
                 ],
                 vec![
                     "close".to_owned(),
-                    FOLLOW_UP_TASK_ID.to_owned(),
+                    first_follow_up_id.clone(),
                     "--reason=Fixture cleanup".to_owned(),
                 ],
                 vec![
                     "show".to_owned(),
-                    FOLLOW_UP_TASK_ID.to_owned(),
+                    first_follow_up_id.clone(),
                     "--json".to_owned()
                 ],
                 vec![
@@ -910,7 +1072,10 @@ mod tests {
                 .iter()
                 .map(|call| call.args.clone())
                 .collect::<Vec<_>>(),
-            vec![vec!["--robot-next".to_owned()]]
+            vec![
+                vec!["--robot-next".to_owned()],
+                vec!["--robot-next".to_owned()],
+            ]
         );
     }
 }
