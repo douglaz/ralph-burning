@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417173555-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417173555-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T18:25:20.065265968Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the lineage-display changes against the spec. The implementation correctly adds --json to task show and project show, populates milestone_id/bead_id on RunStatusJsonView, displays a 'Milestone: X | Bead: Y' line in run status text output (guarded to milestone-linked projects), and annotates run history JSON entries and text output with bead_id. Lineage is loaded before journal/snapshot reconciliation so corrupt journals don't suppress it. All new tests pass (task_show_json_*, project_show_json_*, run_status_*_lineage, run_status_tolerates_corrupt_*, run_history_entries_include_bead_id_*), no existing tests regressed, and cargo test/clippy -D warnings/fmt --check are clean. RunStatusJsonView field additions (milestone_id, bead_id) are additive and backward compatible; existing stable-fields test still passes with null values for non-milestone projects. One minor non-blocking observation noted in the summary (sentinel comparison against '<milestone metadata unavailable>' at src/cli/run.rs:2479 is dead code because milestone_service::read_bead_lineage never produces that sentinel; behavior is still correct since default fallback already handles the failure path via the Err arm). No real bugs, safety issues, correctness gaps, or significant maintainability risks were found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}
