@@ -2016,6 +2016,9 @@ fn explicit_export_bead_id(
     let Some(raw_bead_id) = proposal.bead_id.as_deref() else {
         return Ok(None);
     };
+    if proposal.explicit_id == Some(true) {
+        return Ok(Some(raw_bead_id.to_owned()));
+    }
     let normalized =
         normalize_bead_reference(&bundle.identity.id, raw_bead_id).map_err(|reason| {
             AppError::MilestoneOperationFailed {
@@ -4273,10 +4276,10 @@ fn latest_exported_bead_id_map(
         if metadata.get("sub_type").and_then(|value| value.as_str()) != Some("beads_exported") {
             continue;
         }
-        if metadata.get("bundle_hash").and_then(|value| value.as_str()) != Some(bundle_hash) {
-            continue;
+        if metadata.get("bundle_hash").and_then(|value| value.as_str()) == Some(bundle_hash) {
+            return parse_exported_bead_id_map(metadata, milestone_id);
         }
-        return parse_exported_bead_id_map(metadata, milestone_id);
+        return Ok(BTreeMap::new());
     }
 
     Ok(BTreeMap::new())
@@ -15947,6 +15950,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-1' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-1' not found"),
             MockBrResponse::success("Created bead task-1"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-1",
@@ -15958,6 +15963,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-2' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-2' not found"),
             MockBrResponse::success("Created bead task-2"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-2",
@@ -15969,6 +15976,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-3' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-3' not found"),
             MockBrResponse::success("Created bead task-3"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-3",
@@ -15991,6 +16000,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-4' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-4' not found"),
             MockBrResponse::success("Created bead task-4"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-4",
@@ -16002,6 +16013,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-5' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-5' not found"),
             MockBrResponse::success("Created bead task-5"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-5",
@@ -16013,6 +16026,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-6' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-6' not found"),
             MockBrResponse::success("Created bead task-6"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-6",
@@ -16274,6 +16289,8 @@ mod tests {
                 &[core_description],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-1' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-1' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-1",
                 "Create runtime scaffold",
@@ -16284,6 +16301,8 @@ mod tests {
                 &[core_comment_1.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-2' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-2' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-2",
                 "Wire milestone exporter",
@@ -16294,6 +16313,8 @@ mod tests {
                 &[core_comment_2.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-3' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-3' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-3",
                 "Persist export journal",
@@ -16314,6 +16335,8 @@ mod tests {
                 &[validation_description],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-4' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-4' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-4",
                 "Add exporter smoke test",
@@ -16324,6 +16347,8 @@ mod tests {
                 &[validation_comment_1.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-5' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-5' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-5",
                 "Verify idempotent export",
@@ -16334,6 +16359,8 @@ mod tests {
                 &[validation_comment_2.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-6' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-6' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-6",
                 "Handle partial export failure",
@@ -16640,6 +16667,109 @@ mod tests {
                     "add".to_owned(),
                     "ws-core".to_owned(),
                     workstream_comment.clone(),
+                ]
+        }));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_beads_honors_explicit_slot_matching_ids_when_flagged_explicit(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let mut bundle = sample_bundle("ms-alpha", "Alpha");
+        bundle.workstreams[0].beads[0].bead_id = Some("bead-1".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        bundle.workstreams[0].beads[0].title = "Renamed implicit-slot bead".to_owned();
+        bundle.workstreams[0].beads[0].description =
+            Some("Reuse the authored bead even though it matches the implicit slot.".to_owned());
+
+        let acceptance_lookup = bundle
+            .acceptance_map
+            .iter()
+            .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+            .collect::<HashMap<_, _>>();
+        let planning_comment = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("planning comment");
+
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success(list_all_stdout(vec![])),
+            MockBrResponse::success("Created bead root-epic"),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success("Created bead ws-core"),
+            MockBrResponse::success(bead_detail_stdout(
+                "ws-core",
+                "Core",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[],
+            )),
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success(bead_detail_stdout(
+                "ms-alpha.bead-1",
+                "Original implicit-slot bead",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend"],
+                &[],
+            )),
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success("synced"),
+        ]);
+
+        let report = materialize_beads(&bundle, tmp.path(), &mock.as_mutation_adapter()).await?;
+        let calls = mock.calls();
+
+        assert_eq!(report.created_beads, 2);
+        assert_eq!(report.reused_beads, 1);
+        assert_eq!(report.task_bead_ids, vec!["ms-alpha.bead-1"]);
+        assert_eq!(
+            report.planned_bead_id_map.get("ms-alpha.bead-1"),
+            Some(&"ms-alpha.bead-1".to_owned())
+        );
+        assert!(calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "show".to_owned(),
+                    "ms-alpha.bead-1".to_owned(),
+                    "--json".to_owned(),
+                ]
+        }));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| {
+                    call.args.first().map(String::as_str) == Some("create")
+                        && call
+                            .args
+                            .iter()
+                            .any(|arg| arg == "--title=Renamed implicit-slot bead")
+                })
+                .count(),
+            0
+        );
+        assert!(calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "comments".to_owned(),
+                    "add".to_owned(),
+                    "ms-alpha.bead-1".to_owned(),
+                    planning_comment.clone(),
                 ]
         }));
 
@@ -17594,6 +17724,8 @@ mod tests {
                 &[core_description],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-1' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-1' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-1",
                 "Create runtime scaffold",
@@ -17604,6 +17736,8 @@ mod tests {
                 &[core_comment_1.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-2' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-2' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-2",
                 "Wire milestone exporter",
@@ -17614,6 +17748,8 @@ mod tests {
                 &[core_comment_2.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-3' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-3' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-3",
                 "Persist export journal",
@@ -17634,6 +17770,8 @@ mod tests {
                 &[validation_description],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-4' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-4' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-4",
                 "Add exporter smoke test",
@@ -17644,6 +17782,8 @@ mod tests {
                 &[validation_comment_1.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-5' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-5' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-5",
                 "Verify idempotent export",
@@ -17654,6 +17794,8 @@ mod tests {
                 &[validation_comment_2.as_str()],
             )),
             MockBrResponse::success("dependency added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-6' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-6' not found"),
             MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-6",
                 "Handle partial export failure",
@@ -17726,6 +17868,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-1' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-1' not found"),
             MockBrResponse::success("Created bead task-1"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-1",
@@ -17737,6 +17881,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-2' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-2' not found"),
             MockBrResponse::success("Created bead task-2"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-2",
@@ -17748,6 +17894,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-3' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-3' not found"),
             MockBrResponse::success("Created bead task-3"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-3",
@@ -17770,6 +17918,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-4' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-4' not found"),
             MockBrResponse::success("Created bead task-4"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-4",
@@ -17781,6 +17931,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-5' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-5' not found"),
             MockBrResponse::success("Created bead task-5"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-5",
@@ -17792,6 +17944,8 @@ mod tests {
             )),
             MockBrResponse::success("dependency added"),
             MockBrResponse::success("comment added"),
+            MockBrResponse::exit_failure(1, "issue 'ms-alpha.bead-6' not found"),
+            MockBrResponse::exit_failure(1, "issue 'bead-6' not found"),
             MockBrResponse::success("Created bead task-6"),
             MockBrResponse::success(bead_detail_stdout(
                 "task-6",
@@ -18238,6 +18392,112 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("task-2")
         );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn load_runtime_bead_membership_refs_ignores_stale_matching_export_maps(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 17, 12, 0, 0)
+            .single()
+            .unwrap();
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base,
+            CreateMilestoneInput {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                description: "testing".to_owned(),
+            },
+            now,
+        )?;
+
+        let bundle_a = sample_bundle("ms-alpha", "Alpha");
+        persist_plan(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &milestone.id,
+            &bundle_a,
+            now + chrono::Duration::seconds(1),
+        )?;
+        let (_, plan_hash_a) = load_plan_bundle(&FsMilestonePlanStore, base, &milestone.id)?;
+        record_beads_exported_event(
+            &FsMilestoneJournalStore,
+            base,
+            &milestone.id,
+            &plan_hash_a,
+            &BeadMaterializationReport {
+                root_epic_id: "root-a".to_owned(),
+                workstream_epic_ids: vec!["ws-a".to_owned()],
+                task_bead_ids: vec!["task-live-a".to_owned()],
+                planned_bead_id_map: BTreeMap::from([(
+                    "ms-alpha.bead-1".to_owned(),
+                    "task-live-a".to_owned(),
+                )]),
+                created_beads: 1,
+                reused_beads: 0,
+            },
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let mut bundle_b = sample_bundle("ms-alpha", "Alpha");
+        bundle_b.workstreams[0].beads[0].title = "Plan B task".to_owned();
+        persist_plan(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &milestone.id,
+            &bundle_b,
+            now + chrono::Duration::seconds(3),
+        )?;
+        let (_, plan_hash_b) = load_plan_bundle(&FsMilestonePlanStore, base, &milestone.id)?;
+        record_beads_exported_event(
+            &FsMilestoneJournalStore,
+            base,
+            &milestone.id,
+            &plan_hash_b,
+            &BeadMaterializationReport {
+                root_epic_id: "root-b".to_owned(),
+                workstream_epic_ids: vec!["ws-b".to_owned()],
+                task_bead_ids: vec!["task-live-b".to_owned()],
+                planned_bead_id_map: BTreeMap::from([(
+                    "ms-alpha.bead-1".to_owned(),
+                    "task-live-b".to_owned(),
+                )]),
+                created_beads: 1,
+                reused_beads: 0,
+            },
+            now + chrono::Duration::seconds(4),
+        )?;
+
+        persist_plan(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &milestone.id,
+            &bundle_a,
+            now + chrono::Duration::seconds(5),
+        )?;
+
+        let refs = load_runtime_bead_membership_refs(
+            &FsMilestonePlanStore,
+            &FsMilestoneJournalStore,
+            base,
+            &milestone.id,
+        )?;
+
+        assert!(refs.contains("ms-alpha.bead-1"));
+        assert!(!refs.contains("task-live-a"));
+        assert!(!refs.contains("task-live-b"));
 
         Ok(())
     }
