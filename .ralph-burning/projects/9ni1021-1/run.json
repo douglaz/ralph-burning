@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 6
+      "completion_round": 7
     },
     "started_at": "2026-04-17T21:08:41.567727685Z",
     "prompt_hash_at_cycle_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "prompt_hash_at_stage_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 5
+    "final_review_restart_count": 6
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 6,
+  "completion_rounds": 7,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-6-33f2412a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "[src/test_support/e2e_fixtures.rs:207-266,277-357] The fixture persists a `plan.json` where `ms-e2e-scenario.root-epic` is a normal bead proposal inside a workstream, then hand-builds `.beads/issues.jsonl` by reinterpreting dependencies on that same id as `parent_child`. That is not a topology the real exporter can produce: production materialization creates a separate milestone root plus workstream epics and treats `proposal.depends_on` as blocking edges (`src/contexts/milestone_record/service.rs:1602-1757`). As written, the plan artifacts and bead graph describe different worlds, so integration tests can pass against an impossible state. Remediation: make the bundle and bead graph derive from the same production topology, or stop reusing the same bead id for both a proposal and the exported root epic.",
+        "created_at": "2026-04-17T22:04:12.842760139Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "fa0354bcf9b550b7b4823992ddc58d58aa777e8917a0f8c51688e0f6052c999a"
+      },
+      {
+        "amendment_id": "fr-6-57a7075f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "[src/test_support/e2e_fixtures.rs:109-148,389-400,613-621] The mock mutation path only updates private in-memory state. `create_follow_up`/`close_follow_up` mutate `created_follow_ups`, `list`/`show` read from that vector, but `.beads/issues.jsonl` on disk is never rewritten and `MockBvAdapter` captures a fixed `--robot-next` response at construction time. After a close, the filesystem still shows the original open graph and `bv --robot-next` still recommends `ms-e2e-scenario.task-prepare-workspace` instead of advancing to the newly ready bead. That makes the fixture internally inconsistent for reconciliation/controller tests that combine br mutations with filesystem or BV reads. Remediation: share mutable scenario state across both mocks and rewrite the on-disk bead graph / next-bead selection from that state when mutations occur.",
+        "created_at": "2026-04-17T22:04:12.842766671Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "de8d4985a9cb72039c1a83059bca68714e5e436cdfa5b3e84a90d70345a98bcf"
+      },
+      {
+        "amendment_id": "fr-6-f5ea8f87",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "[src/test_support/e2e_fixtures.rs:555-578] `ScenarioBrMock::response_for_call` only accepts one literal create shape (`br create --title=Follow-up validation bead --type=task --priority=2`) and one literal close reason (`--reason=Fixture cleanup`). The real code paths this fixture is supposed to support use different commands: success reconciliation closes with `task {task_id} completed successfully` (`src/contexts/automation_runtime/success_reconciliation.rs:478-480`), and proposed-bead creation goes through `BrMutationAdapter::create_bead`, which can add `--labels` and `--description` (`src/adapters/br_process.rs:1336-1359`, `src/contexts/milestone_record/service.rs:4582-4590`). Wiring this fixture into the real mutation adapters will exhaust the mock instead of exercising the intended workflow. Remediation: match the production command shapes rather than a single smoke-test literal.",
+        "created_at": "2026-04-17T22:04:12.842771951Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "528fe2b75d390b06c853ceb5bc528a87de8e93add49a0d550022266d71ae7bba"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 7 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T21:32:51.703007338Z",
+    "resolved_at": "2026-04-17T21:54:40.465717614Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
