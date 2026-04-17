@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417072108-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T11:57:54.118131056Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nNo actionable correctness, safety, or robustness findings in the reviewed diff. I inspected the milestone-bundle contract/prompt/renderer changes in src/contexts/milestone_record/bundle.rs, src/contexts/requirements_drafting/contracts.rs, and src/contexts/workspace_governance/template_catalog.rs, along with the related handoff/materialization call sites and updated tests. Targeted cargo test filters covering milestone bundle contract validation, dependency-graph/workstream-order helpers, markdown rendering, and legacy covered_by backfill passed. Residual risk is limited to broader end-to-end planner behavior and repo-wide verification, since I did not run full cargo clippy/fmt or nix build in this review pass.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}
