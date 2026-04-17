@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260417072108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 8
+      "completion_round": 9
     },
     "started_at": "2026-04-17T07:21:08.915370991Z",
     "prompt_hash_at_cycle_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "prompt_hash_at_stage_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 7
+    "final_review_restart_count": 8
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 8,
+  "completion_rounds": 9,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-8-9df09ce7",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "finding_summary: The new workstream-order reporting can overstate which workstreams are actually interleaved. `analyze_workstream_order()` treats every workstream left with non-zero indegree after Kahn reduction as `blocked` (`src/contexts/milestone_record/bundle.rs:855-859`), and `render_plan_md_checked()` prints that whole set as the interleaving group (`src/contexts/milestone_record/bundle.rs:1568-1577`). In a valid bead DAG where only workstreams A and B interleave but a third workstream merely depends on the end of B, `plan.md` will incorrectly claim that third workstream is part of the interleaving set.\nseverity: medium\naffected_files: [\"src/contexts/milestone_record/bundle.rs\"]\nremediation_hint: Compute the actual cycle/SCC participants before rendering the \"interleave across ...\" list, instead of using every node that remains blocked after topological reduction.",
+        "created_at": "2026-04-17T11:12:52.415915246Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "abe00917a0368226a5845ff79bb1f1755e038d9afa3649bf3eda32ca18693d1e"
+      }
+    ],
     "processed_count": 15
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 9 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T10:22:19.231580595Z",
+    "resolved_at": "2026-04-17T10:47:42.739219329Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

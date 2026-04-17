@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417072108-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417072108-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T11:12:52.415921287Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 8/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-8-9df09ce7`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-9df09ce7`\n\nfinding_summary: The new workstream-order reporting can overstate which workstreams are actually interleaved. `analyze_workstream_order()` treats every workstream left with non-zero indegree after Kahn reduction as `blocked` (`src/contexts/milestone_record/bundle.rs:855-859`), and `render_plan_md_checked()` prints that whole set as the interleaving group (`src/contexts/milestone_record/bundle.rs:1568-1577`). In a valid bead DAG where only workstreams A and B interleave but a third workstream merely depends on the end of B, `plan.md` will incorrectly claim that third workstream is part of the interleaving set.\nseverity: medium\naffected_files: [\"src/contexts/milestone_record/bundle.rs\"]\nremediation_hint: Compute the actual cycle/SCC participants before rendering the \"interleave across ...\" list, instead of using every node that remains blocked after topological reduction.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

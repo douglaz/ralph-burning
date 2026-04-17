@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417072108-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T11:02:17.436438195Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the milestone-bundle generation/rendering changes and found 1 fix-now correctness issue in the new workstream dependency reporting. `cargo test`, `cargo clippy -- -D warnings`, and `cargo fmt --check` passed during review.\n\n## Amendments\n\n1. finding_summary: The new workstream-order reporting can overstate which workstreams are actually interleaved. `analyze_workstream_order()` treats every workstream left with non-zero indegree after Kahn reduction as `blocked` (`src/contexts/milestone_record/bundle.rs:855-859`), and `render_plan_md_checked()` prints that whole set as the interleaving group (`src/contexts/milestone_record/bundle.rs:1568-1577`). In a valid bead DAG where only workstreams A and B interleave but a third workstream merely depends on the end of B, `plan.md` will incorrectly claim that third workstream is part of the interleaving set.\nseverity: medium\naffected_files: [\"src/contexts/milestone_record/bundle.rs\"]\nremediation_hint: Compute the actual cycle/SCC participants before rendering the \"interleave across ...\" list, instead of using every node that remains blocked after topological reduction.\n   Rationale: The new dependency-graph section is meant to guide sequencing decisions. Mislabeling downstream workstreams as part of the interleaving cycle makes the rendered plan materially misleading and can push operators toward the wrong decomposition or execution order.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}
