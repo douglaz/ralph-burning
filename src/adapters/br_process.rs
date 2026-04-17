@@ -1328,7 +1328,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
 
     /// Create a new bead.
     ///
-    /// Optional `labels` are passed as `--label=<l>` for each entry.
+    /// Optional `labels` are passed as a single `--labels=<a,b,c>` argument.
     /// Optional `description` is passed as `--description=<d>`.
     pub async fn create_bead(
         &self,
@@ -1339,8 +1339,8 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         description: Option<&str>,
     ) -> Result<BrOutput, BrError> {
         let mut cmd = BrCommand::create(title, bead_type, priority);
-        for label in labels {
-            cmd = cmd.kv("label", label.as_str());
+        if !labels.is_empty() {
+            cmd = cmd.kv("labels", labels.join(","));
         }
         if let Some(desc) = description {
             cmd = cmd.kv("description", desc);
@@ -2228,8 +2228,7 @@ mod tests {
         // Verify the command shape by inspecting BrCommand directly rather
         // than through the adapter (the adapter delegates to exec_mutation).
         let mut cmd = BrCommand::create("Implement auth", "feature", "1");
-        cmd = cmd.kv("label", "backend");
-        cmd = cmd.kv("label", "security");
+        cmd = cmd.kv("labels", "backend,security");
         cmd = cmd.kv("description", "Add OAuth2 flow");
 
         let args = cmd.build_args();
@@ -2240,8 +2239,7 @@ mod tests {
                 "--title=Implement auth",
                 "--type=feature",
                 "--priority=1",
-                "--label=backend",
-                "--label=security",
+                "--labels=backend,security",
                 "--description=Add OAuth2 flow",
             ]
         );
@@ -2265,6 +2263,19 @@ mod tests {
 
         assert_eq!(result.exit_code, 0);
         assert!(ma.has_pending_mutations());
+        let command_log = ma.adapter.runner.command_log();
+        let commands = command_log.lock().expect("mock command log poisoned");
+        assert_eq!(
+            commands.last(),
+            Some(&vec![
+                "create".to_owned(),
+                "--title=Auth middleware".to_owned(),
+                "--type=feature".to_owned(),
+                "--priority=1".to_owned(),
+                "--labels=backend,security".to_owned(),
+                "--description=Add OAuth2".to_owned(),
+            ])
+        );
         Ok(())
     }
 

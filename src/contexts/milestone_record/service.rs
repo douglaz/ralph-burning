@@ -1502,6 +1502,22 @@ struct MaterializedProposal {
     dependencies: HashSet<MaterializedDependency>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BrListSummariesResponse {
+    Envelope { issues: Vec<BeadSummary> },
+    Many(Vec<BeadSummary>),
+}
+
+impl BrListSummariesResponse {
+    fn into_issues(self) -> Vec<BeadSummary> {
+        match self {
+            Self::Envelope { issues } => issues,
+            Self::Many(issues) => issues,
+        }
+    }
+}
+
 /// Materialize a milestone bundle into `br` beads without altering plan files.
 pub async fn materialize_beads<R: ProcessRunner>(
     bundle: &MilestoneBundle,
@@ -1523,10 +1539,11 @@ pub async fn materialize_beads<R: ProcessRunner>(
     )?;
 
     let milestone_scope_label = milestone_export_label(&bundle.identity.id);
-    let existing_summaries: Vec<BeadSummary> = br_mutation
+    let existing_summaries = br_mutation
         .inner()
-        .exec_json(&BrCommand::list_all())
+        .exec_json::<BrListSummariesResponse>(&BrCommand::list_all())
         .await
+        .map(BrListSummariesResponse::into_issues)
         .map_err(|error| milestone_bead_export_error(bundle, "list existing beads", error))?;
     let mut existing_by_title = existing_summaries.into_iter().fold(
         HashMap::<String, Vec<BeadSummary>>::new(),
@@ -3672,7 +3689,10 @@ async fn list_matching_beads_by_title<R: ProcessRunner>(
     br_read: &BrAdapter<R>,
     proposed_title: &str,
 ) -> Result<Vec<BeadSummary>, crate::adapters::br_process::BrError> {
-    let summaries: Vec<BeadSummary> = br_read.exec_json(&BrCommand::list_all()).await?;
+    let summaries = br_read
+        .exec_json::<BrListSummariesResponse>(&BrCommand::list_all())
+        .await?
+        .into_issues();
     let normalized_title = normalize_bead_match_text(proposed_title);
     Ok(summaries
         .into_iter()
@@ -5306,6 +5326,10 @@ mod tests {
             "bead_type": bead_type,
             "labels": labels
         })
+    }
+
+    fn list_all_stdout(summaries: Vec<serde_json::Value>) -> String {
+        serde_json::json!({ "issues": summaries }).to_string()
     }
 
     fn bead_detail_stdout(
@@ -12235,7 +12259,7 @@ mod tests {
             MockBrRunner::success(
                 r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
             ),
-            MockBrRunner::success("[]"),
+            MockBrRunner::success(&list_all_stdout(vec![])),
         ]);
         let command_log = runner.command_log();
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
@@ -12320,7 +12344,7 @@ mod tests {
             MockBrRunner::success(
                 r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
             ),
-            MockBrRunner::success("[]"),
+            MockBrRunner::success(&list_all_stdout(vec![])),
         ]);
         let command_log = runner.command_log();
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
@@ -12401,7 +12425,9 @@ mod tests {
         let runner = ScriptedBrRunner::new({
             let issues_path = issues_path.clone();
             move |args| match args {
-                [command, ..] if command == "list" => MockBrRunner::success("[]"),
+                [command, ..] if command == "list" => {
+                    MockBrRunner::success(&list_all_stdout(vec![]))
+                }
                 [command, bead_id, ..] if command == "show" && bead_id == "active-bead" => {
                     MockBrRunner::success(
                         r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
@@ -12480,7 +12506,7 @@ mod tests {
                     "--title=Add retry telemetry".to_owned(),
                     "--type=task".to_owned(),
                     "--priority=2".to_owned(),
-                    "--label=backend".to_owned(),
+                    "--labels=backend".to_owned(),
                     format!("--description={}", render_proposed_bead_description(&input)),
                 ],
                 vec![
@@ -12518,7 +12544,9 @@ mod tests {
         let runner = ScriptedBrRunner::new({
             let issues_path = issues_path.clone();
             move |args| match args {
-                [command, ..] if command == "list" => MockBrRunner::success("[]"),
+                [command, ..] if command == "list" => {
+                    MockBrRunner::success(&list_all_stdout(vec![]))
+                }
                 [command, bead_id, ..] if command == "show" && bead_id == "active-bead" => {
                     MockBrRunner::success(
                         r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
@@ -12595,7 +12623,7 @@ mod tests {
                     "--title=Add retry telemetry".to_owned(),
                     "--type=task".to_owned(),
                     "--priority=2".to_owned(),
-                    "--label=backend".to_owned(),
+                    "--labels=backend".to_owned(),
                     format!("--description={}", render_proposed_bead_description(&input)),
                 ],
                 vec![
@@ -12645,7 +12673,7 @@ mod tests {
             MockBrRunner::success(
                 r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend","observability"]}"#,
             ),
-            MockBrRunner::success("[]"),
+            MockBrRunner::success(&list_all_stdout(vec![])),
         ]);
         let command_log = runner.command_log();
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
@@ -12686,8 +12714,7 @@ mod tests {
         assert!(commands.iter().any(|args| {
             args.iter().any(|arg| arg == "--title=Add retry telemetry")
                 && args.iter().any(|arg| arg == "--priority=2")
-                && args.iter().any(|arg| arg == "--label=backend")
-                && args.iter().any(|arg| arg == "--label=observability")
+                && args.iter().any(|arg| arg == "--labels=backend,observability")
                 && args.iter().any(|arg| {
                     arg == "--description=## Finding Summary\nRetry paths lack telemetry\n\n## Proposed Scope\nInstrument retry loops with counters and histograms\n\n## Rationale\nNo existing bead covers retry observability"
                 })
@@ -13186,7 +13213,7 @@ mod tests {
             MockBrRunner::success(
                 r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
             ),
-            MockBrRunner::success("[]"),
+            MockBrRunner::success(&list_all_stdout(vec![])),
         ]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
         let capture = log_capture();
@@ -13801,7 +13828,7 @@ mod tests {
             MockBrRunner::success(
                 r#"{"id":"active-bead","title":"Active bead","status":"open","priority":1,"bead_type":"task","labels":["backend"]}"#,
             ),
-            MockBrRunner::success("[]"),
+            MockBrRunner::success(&list_all_stdout(vec![])),
             MockBrRunner::error(1, "bead not found"),
         ]);
         let br_mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(runner));
@@ -15574,7 +15601,7 @@ mod tests {
         setup_workspace(tmp.path());
         let bundle = bead_export_bundle("ms-alpha", "Alpha");
         let responses = vec![
-            MockBrResponse::success("[]"),
+            MockBrResponse::success(list_all_stdout(vec![])),
             MockBrResponse::success("Created bead root-epic"),
             MockBrResponse::success(bead_detail_stdout(
                 "root-epic",
@@ -15756,11 +15783,11 @@ mod tests {
         assert!(root_create
             .args
             .iter()
-            .any(|arg| arg == "--label=milestone:ms-alpha"));
+            .any(|arg| arg == "--labels=milestone:ms-alpha,milestone-root"));
         assert!(root_create
             .args
             .iter()
-            .any(|arg| arg == "--label=milestone-root"));
+            .all(|arg| !arg.starts_with("--label=")));
         assert_eq!(
             calls.last().map(|call| call.args.clone()),
             Some(vec!["sync".to_owned(), "--flush-only".to_owned()])
@@ -15824,13 +15851,13 @@ mod tests {
             &acceptance_lookup,
         )
         .expect("validation comment 3");
-        let list_all = serde_json::json!([
+        let list_all = list_all_stdout(vec![
             bead_summary_value(
                 "root-epic",
                 "Alpha",
                 "epic",
                 "open",
-                &["milestone:ms-alpha", "milestone-root"]
+                &["milestone:ms-alpha", "milestone-root"],
             ),
             bead_summary_value("ws-core", "Core", "epic", "open", &["milestone:ms-alpha"]),
             bead_summary_value(
@@ -15838,52 +15865,51 @@ mod tests {
                 "Create runtime scaffold",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "backend"]
+                &["milestone:ms-alpha", "backend"],
             ),
             bead_summary_value(
                 "task-2",
                 "Wire milestone exporter",
                 "feature",
                 "open",
-                &["milestone:ms-alpha", "backend", "cli"]
+                &["milestone:ms-alpha", "backend", "cli"],
             ),
             bead_summary_value(
                 "task-3",
                 "Persist export journal",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "backend"]
+                &["milestone:ms-alpha", "backend"],
             ),
             bead_summary_value(
                 "ws-validation",
                 "Validation",
                 "epic",
                 "open",
-                &["milestone:ms-alpha"]
+                &["milestone:ms-alpha"],
             ),
             bead_summary_value(
                 "task-4",
                 "Add exporter smoke test",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "test"]
+                &["milestone:ms-alpha", "test"],
             ),
             bead_summary_value(
                 "task-5",
                 "Verify idempotent export",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "test"]
+                &["milestone:ms-alpha", "test"],
             ),
             bead_summary_value(
                 "task-6",
                 "Handle partial export failure",
                 "bug",
                 "open",
-                &["milestone:ms-alpha", "test", "reliability"]
-            )
-        ])
-        .to_string();
+                &["milestone:ms-alpha", "test", "reliability"],
+            ),
+        ]);
         let mock = MockBrAdapter::from_responses([
             MockBrResponse::success(list_all),
             MockBrResponse::success(bead_detail_stdout(
@@ -16069,13 +16095,13 @@ mod tests {
         )
         .expect("second planning comment");
 
-        let list_all = serde_json::json!([
+        let list_all = list_all_stdout(vec![
             bead_summary_value(
                 "root-epic",
                 "Alpha",
                 "epic",
                 "open",
-                &["milestone:ms-alpha", "milestone-root"]
+                &["milestone:ms-alpha", "milestone-root"],
             ),
             bead_summary_value("ws-core", "Core", "epic", "open", &["milestone:ms-alpha"]),
             bead_summary_value(
@@ -16083,17 +16109,16 @@ mod tests {
                 "Shared title",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "backend", "proposal:build-api"]
+                &["milestone:ms-alpha", "backend", "proposal:build-api"],
             ),
             bead_summary_value(
                 "task-validate",
                 "Shared title",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "backend", "proposal:validate-api"]
-            )
-        ])
-        .to_string();
+                &["milestone:ms-alpha", "backend", "proposal:validate-api"],
+            ),
+        ]);
         let mock = MockBrAdapter::from_responses([
             MockBrResponse::success(list_all),
             MockBrResponse::success(bead_detail_stdout(
@@ -16204,13 +16229,13 @@ mod tests {
             &acceptance_lookup,
         )
         .expect("validation comment 3");
-        let list_all = serde_json::json!([
+        let list_all = list_all_stdout(vec![
             bead_summary_value(
                 "root-epic",
                 "Alpha",
                 "epic",
                 "open",
-                &["milestone:ms-alpha", "milestone-root"]
+                &["milestone:ms-alpha", "milestone-root"],
             ),
             bead_summary_value("ws-core", "Core", "epic", "open", &["milestone:ms-alpha"]),
             bead_summary_value(
@@ -16218,52 +16243,51 @@ mod tests {
                 "Create runtime scaffold",
                 "task",
                 "closed",
-                &["milestone:ms-alpha", "backend"]
+                &["milestone:ms-alpha", "backend"],
             ),
             bead_summary_value(
                 "task-2",
                 "Wire milestone exporter",
                 "feature",
                 "deferred",
-                &["milestone:ms-alpha", "backend", "cli"]
+                &["milestone:ms-alpha", "backend", "cli"],
             ),
             bead_summary_value(
                 "task-3",
                 "Persist export journal",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "backend"]
+                &["milestone:ms-alpha", "backend"],
             ),
             bead_summary_value(
                 "ws-validation",
                 "Validation",
                 "epic",
                 "open",
-                &["milestone:ms-alpha"]
+                &["milestone:ms-alpha"],
             ),
             bead_summary_value(
                 "task-4",
                 "Add exporter smoke test",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "test"]
+                &["milestone:ms-alpha", "test"],
             ),
             bead_summary_value(
                 "task-5",
                 "Verify idempotent export",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "test"]
+                &["milestone:ms-alpha", "test"],
             ),
             bead_summary_value(
                 "task-6",
                 "Handle partial export failure",
                 "bug",
                 "open",
-                &["milestone:ms-alpha", "test", "reliability"]
-            )
-        ])
-        .to_string();
+                &["milestone:ms-alpha", "test", "reliability"],
+            ),
+        ]);
         let mock = MockBrAdapter::from_responses([
             MockBrResponse::success(list_all),
             MockBrResponse::success(bead_detail_stdout(
@@ -16386,25 +16410,16 @@ mod tests {
         setup_workspace(tmp.path());
         let bundle = bead_export_bundle("ms-alpha", "Alpha");
         let responses = vec![
-            MockBrResponse::success(
-                serde_json::json!([
-                    bead_summary_value(
-                        "other-root",
-                        "Alpha",
-                        "epic",
-                        "open",
-                        &["milestone:ms-beta", "milestone-root"],
-                    ),
-                    bead_summary_value(
-                        "other-core",
-                        "Core",
-                        "epic",
-                        "open",
-                        &["milestone:ms-beta"],
-                    ),
-                ])
-                .to_string(),
-            ),
+            MockBrResponse::success(list_all_stdout(vec![
+                bead_summary_value(
+                    "other-root",
+                    "Alpha",
+                    "epic",
+                    "open",
+                    &["milestone:ms-beta", "milestone-root"],
+                ),
+                bead_summary_value("other-core", "Core", "epic", "open", &["milestone:ms-beta"]),
+            ])),
             MockBrResponse::success("Created bead root-epic"),
             MockBrResponse::success(bead_detail_stdout(
                 "root-epic",
@@ -16539,7 +16554,7 @@ mod tests {
                 flow_override: None,
             });
         let responses = vec![
-            MockBrResponse::success("[]"),
+            MockBrResponse::success(list_all_stdout(vec![])),
             MockBrResponse::success("Created bead root-epic"),
             MockBrResponse::success(bead_detail_stdout(
                 "root-epic",
@@ -16609,13 +16624,13 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         setup_workspace(tmp.path());
         let bundle = sample_bundle("ms-alpha", "Alpha");
-        let list_all = serde_json::json!([
+        let list_all = list_all_stdout(vec![
             bead_summary_value(
                 "root-epic",
                 "Alpha",
                 "epic",
                 "open",
-                &["milestone:ms-alpha", "milestone-root"]
+                &["milestone:ms-alpha", "milestone-root"],
             ),
             bead_summary_value("ws-core", "Core", "epic", "open", &["milestone:ms-alpha"]),
             bead_summary_value(
@@ -16623,10 +16638,9 @@ mod tests {
                 "Implement feature",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "backend"]
+                &["milestone:ms-alpha", "backend"],
             ),
-        ])
-        .to_string();
+        ]);
         let acceptance_lookup = bundle
             .acceptance_map
             .iter()
@@ -16719,7 +16733,7 @@ mod tests {
         )?;
         let mock = MockBrAdapter::from_responses([
             MockBrResponse::success("synced"),
-            MockBrResponse::success("[]"),
+            MockBrResponse::success(list_all_stdout(vec![])),
             MockBrResponse::success("Created bead root-epic"),
             MockBrResponse::success(bead_detail_stdout(
                 "root-epic",
@@ -16791,30 +16805,29 @@ mod tests {
             &acceptance_lookup,
         )
         .expect("planning comment");
-        let list_all = serde_json::json!([
+        let list_all = list_all_stdout(vec![
             bead_summary_value(
                 "root-epic",
                 "Alpha",
                 "epic",
                 "open",
-                &["milestone:ms-alpha", "milestone-root"]
+                &["milestone:ms-alpha", "milestone-root"],
             ),
             bead_summary_value(
                 "workstream-epic",
                 "Alpha",
                 "epic",
                 "open",
-                &["milestone:ms-alpha"]
+                &["milestone:ms-alpha"],
             ),
             bead_summary_value(
                 "task-1",
                 "Implement feature",
                 "task",
                 "open",
-                &["milestone:ms-alpha", "backend"]
+                &["milestone:ms-alpha", "backend"],
             ),
-        ])
-        .to_string();
+        ]);
         let mock = MockBrAdapter::from_responses([
             MockBrResponse::success(list_all),
             MockBrResponse::success(bead_detail_stdout(
@@ -16938,7 +16951,7 @@ mod tests {
         setup_workspace(tmp.path());
         let bundle = sample_bundle("ms-alpha", "Alpha");
         let mock = MockBrAdapter::from_responses([
-            MockBrResponse::success("[]"),
+            MockBrResponse::success(list_all_stdout(vec![])),
             MockBrResponse::success("Created bead root-epic"),
             MockBrResponse::success(bead_detail_stdout(
                 "root-epic",
