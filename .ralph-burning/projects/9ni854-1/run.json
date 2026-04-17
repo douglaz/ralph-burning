@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 22
+      "completion_round": 23
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 21
+    "final_review_restart_count": 22
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 22,
+  "completion_rounds": 23,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-22-cff88df5",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 22,
+        "body": "finding_summary: `src/adapters/fs.rs:4579-4627` and `src/adapters/fs.rs:5113-5164` reopen a failed same-run retry by overwriting the historical failed `TaskRunEntry` in place. Because `src/contexts/milestone_record/service.rs:2409-2476` builds `bead_execution_history` directly from `find_runs_for_bead`, the normal fail -> resume with the same `run_id` -> succeed path now leaves only the final attempt in lineage/history and permanently drops the earlier failed attempt unless a later stale-replay backfill happens. That is a real correctness regression for audit/history consumers, not just a storage-detail change.",
+        "created_at": "2026-04-17T02:37:15.464449744Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "cc8aac1d8d6822586cf4f4b410ec9fb040a194782ab65944e47c38ff5f870e0a"
+      },
+      {
+        "amendment_id": "fr-22-3520c327",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 22,
+        "body": "finding_summary: `src/contexts/automation_runtime/failure_reconciliation.rs:879-929` walks every recorded failed attempt when repairing attempt ordinals, but it keeps passing the outer `project_id` into `recorded_failure_provenance`, `failure_state_matches_expected`, and `repair_task_run_with_disposition` instead of `attempt.project_id`. If a stale old-project replay is repaired after the bead has already moved to a replacement project, the replacement-project attempts are skipped or checked against the wrong project, so their `attempt=` markers remain stale (for example, the second failure can stay `attempt=1`).",
+        "created_at": "2026-04-17T02:37:15.464453241Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "9cf09ca7db9ad94457f8429b8f160dc9d65e728092f2720c3f6028a219a20829"
+      }
+    ],
     "processed_count": 42
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 23 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T01:55:03.956607184Z",
+    "resolved_at": "2026-04-17T02:21:58.394118915Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

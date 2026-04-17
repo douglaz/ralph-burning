@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:33:40.244265555Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness defects in failure-history handling: one erases same-run retry lineage from the bead history surface, and the other can miss ordinal repairs when failure history spans multiple project IDs.\n\n## Votes\n\n- `fr-22-cff88df5`: Accept\n  `reopen_failed_exact_attempt` rewrites the existing failed `TaskRunEntry` in place by moving its `started_at` forward and clearing the terminal state, instead of preserving the old failed row and appending a new attempt. Because `find_runs_for_bead` returns collapsed lineage rows and `bead_execution_history` uses that result directly, the ordinary fail -> resume with same `run_id` -> succeed flow drops the earlier failed attempt from the visible bead history. That is a real audit/history regression, especially since this API is documented as returning execution attempts including retries.\n- `fr-22-3520c327`: Accept\n  `repair_recorded_failure_attempt_ordinals` iterates `AttemptIdentity` values that include each attempt's own `project_id`, but the provenance lookup, expected-state check, and repair call all keep using the outer `project_id` parameter. In histories where an old-project stale replay is repaired after the bead moved to a replacement project, later replacement-project failures no longer match those lookups, so they are skipped or evaluated against the wrong attempt identity and their `attempt=` markers can remain stale. That is a concrete correctness bug in ordinal repair.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 22
+}

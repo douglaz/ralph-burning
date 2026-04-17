@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-arbiter-c1-a1-cr22-artifact",
+  "payload_id": "run-20260416164042-final_review-arbiter-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:37:15.451007311Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment. The storage-layer choice to reuse a same-`run_id` lineage row is intentional, but the exposed history API is documented and used as attempt history; because it is built directly from collapsed lineage rows, it drops an earlier failed attempt that the rest of the system still recognizes as a distinct retry.\n\n## Rulings\n\n- `fr-22-cff88df5`: Accept\n  `src/adapters/fs.rs:4579-4627` does not append a new retry record; it clones the failed canonical row, rewrites `started_at/outcome/outcome_detail/finished_at`, and stores it back into `entries[target_index]`. `FsTaskRunLineageStore::find_runs_for_bead` in `src/adapters/fs.rs:5307-5319` then reads only the collapsed task-run rows, and `bead_execution_history` in `src/contexts/milestone_record/service.rs:2417-2476` exposes those rows directly as `history.runs`. That means a fail -> restart with the same `run_id` -> succeed flow surfaces only the final attempt in bead history. The deciding evidence is that the codebase itself still treats this as multiple attempts elsewhere: `recorded_failed_attempts` / `failure_attempt_number` in `src/contexts/automation_runtime/failure_reconciliation.rs:1008-1036` and `:1147-1238` count same-`run_id` retries separately, and the test around `src/contexts/automation_runtime/failure_reconciliation.rs:3050-3119` explicitly expects attempt 2 while also showing only one lineage row remains. So even if row reuse was intentional for storage/update semantics, losing the earlier failed attempt from the advertised execution-history surface is a real correctness regression for audit/history consumers.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 22
+}
