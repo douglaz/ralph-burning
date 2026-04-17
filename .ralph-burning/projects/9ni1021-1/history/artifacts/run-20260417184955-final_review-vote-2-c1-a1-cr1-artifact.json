@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T19:16:27.201986805Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth findings are accurate against the code. The fixture's bundle beads (`bead-1..3` with titles like 'Initialize temp workspace') share no ids or titles with the staged `.beads` graph (`root-epic`/`task-prepare-workspace`/`task-validate-mocks`), so `resolve_bead_plan` cannot confirm milestone membership — defeating the fixture's purpose. Separately, the `br create` mock returns an id already present in the graph, which breaks creation-flow exercises and could hide duplicate-id regressions in `resolve_created_bead_id`.\n\n## Votes\n\n- `fr-1-57df9766`: Accept\n  Verified: scenario_bundle() (src/test_support/e2e_fixtures.rs:108-213) emits `{MILESTONE_ID}.bead-1..3` with titles 'Initialize temp workspace'/'Persist milestone plan artifacts'/'Validate mock adapter flow', while scenario_bead_graph_issues() (lines 215-316) and the constants at 31-33 use `ms-e2e-scenario.root-epic`/`.task-prepare-workspace`/`.task-validate-mocks` with titles 'Assemble temp workspace fixture'/'Prepare scenario workspace'/'Validate mocked adapter responses'. resolve_bead_plan in src/cli/project.rs:1342-1423 matches via explicit id, implicit `bead-N` slot, or exact title fallback — none of which can succeed here — so membership_confirmed will always be false and matched indices will be None. The fixture cannot exercise the milestone-linked path it is meant to represent. Aligning ids/titles is the right remediation.\n- `fr-1-15b8289d`: Accept\n  Verified: line 351 of src/test_support/e2e_fixtures.rs returns `Created bead {VALIDATE_TASK_ID}` from the `br create` mock, but VALIDATE_TASK_ID (`ms-e2e-scenario.task-validate-mocks`) is already present in scenario_bead_graph_issues() at lines 275-313 as the existing validate_task. resolve_created_bead_id (src/contexts/milestone_record/service.rs:4056-4103) parses the id from stdout and calls `br show` on it; with the mocked show response at line 350 returning the prepare task, the creation flow either consumes a queued response for a pre-existing id or resolves to the already-present validate task. Either way, no creation flow can be meaningfully exercised, and duplicate-id regressions would be masked. Returning a distinct synthetic id with a matching queued show payload is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

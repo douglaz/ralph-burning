@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T19:16:59.951951284Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real fixture/mocking defects. One breaks the intended linkage between milestone plans and staged bead data, and the other makes the mocked create path semantically invalid for creation/reconciliation tests.\n\n## Votes\n\n- `fr-1-57df9766`: Accept\n  `scenario_bundle()` writes a milestone plan whose proposals are `ms-e2e-scenario.bead-1..3` with titles that do not match the staged `.beads` issues or mocked `br`/`bv` payloads. `resolve_bead_plan()` only confirms membership through an explicit id match or a title-based fallback on the expected implicit slot. With the current fixture, live beads such as `ms-e2e-scenario.task-prepare-workspace` and `ms-e2e-scenario.task-validate-mocks` cannot resolve back to the plan as confirmed milestone beads, so tests using this fixture cannot exercise the real plan-linked path. Unifying the ids/titles across the bundle, graph, and mocks is the correct remediation.\n- `fr-1-15b8289d`: Accept\n  The mocked `br create` response returns `ms-e2e-scenario.task-validate-mocks`, but that bead already exists in the staged graph. The reconciliation code parses candidate ids from `br create` stdout and then inspects them with `br show` to verify the created bead. Reusing an existing id makes the fixture invalid for create flows: it can fail unpredictably, or worse, bind the creation path to preexisting state instead of a newly created bead. A distinct synthetic created id with a matching `show` payload is the maintainable and correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
