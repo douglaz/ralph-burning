@@ -21,8 +21,8 @@ use crate::contexts::milestone_record::service::{
     load_milestone, load_snapshot, materialize_bundle, read_journal, read_task_runs,
 };
 use crate::shared::domain::FlowPreset;
-use crate::test_support::br::{MockBrAdapter, MockBrResponse};
-use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
+use crate::test_support::br::{MockBrAdapter, MockBrCall, MockBrResponse};
+use crate::test_support::bv::{MockBvAdapter, MockBvCall, MockBvResponse};
 use crate::test_support::fixtures::{
     write_bead_graph_issues, BeadGraphDependency, BeadGraphFixtureBuilder, BeadGraphIssue,
     MilestoneFixture, TempWorkspace, TempWorkspaceBuilder,
@@ -417,11 +417,11 @@ fn load_materialized_fixture(base_dir: &Path, bundle: &MilestoneBundle) -> Miles
 }
 
 fn build_mock_br_adapter(state: Arc<Mutex<ScenarioState>>) -> MockBrAdapter {
-    MockBrAdapter::from_dispatch(move |call| scenario_br_response(&state, &call.args))
+    MockBrAdapter::from_dispatch(move |call| scenario_br_response(&state, call))
 }
 
 fn build_mock_bv_adapter(state: Arc<Mutex<ScenarioState>>) -> MockBvAdapter {
-    MockBvAdapter::from_dispatch(move |call| scenario_bv_response(&state, &call.args))
+    MockBvAdapter::from_dispatch(move |call| scenario_bv_response(&state, call))
 }
 
 fn next_follow_up_task_id(create_index: usize) -> String {
@@ -574,9 +574,20 @@ struct CreateIssueSpec {
 
 fn scenario_br_response(
     state: &Arc<Mutex<ScenarioState>>,
-    args: &[String],
+    call: &MockBrCall,
 ) -> Option<MockBrResponse> {
-    if matches!(args, [command, flag] if command == "list" && flag == "--json") {
+    let expected_root = state
+        .lock()
+        .expect("scenario state lock poisoned")
+        .workspace_root
+        .clone();
+    if let Err(message) = validate_fixture_working_dir(&expected_root, call.working_dir.as_deref())
+    {
+        return Some(MockBrResponse::exit_failure(1, message));
+    }
+
+    let args = &call.args;
+    if matches!(args.as_slice(), [command, flag] if command == "list" && flag == "--json") {
         let issues = state
             .lock()
             .expect("scenario state lock poisoned")
@@ -584,7 +595,7 @@ fn scenario_br_response(
         return Some(MockBrResponse::success(br_list_json(&issues)));
     }
 
-    if let [command, bead_id, flag] = args {
+    if let [command, bead_id, flag] = args.as_slice() {
         if command == "show" && flag == "--json" {
             let issues = state
                 .lock()
@@ -633,7 +644,7 @@ fn scenario_br_response(
         });
     }
 
-    if matches!(args, [command, flag] if command == "sync" && flag == "--flush-only") {
+    if matches!(args.as_slice(), [command, flag] if command == "sync" && flag == "--flush-only") {
         return Some(MockBrResponse::success("synced"));
     }
 
@@ -642,9 +653,20 @@ fn scenario_br_response(
 
 fn scenario_bv_response(
     state: &Arc<Mutex<ScenarioState>>,
-    args: &[String],
+    call: &MockBvCall,
 ) -> Option<MockBvResponse> {
-    match args {
+    let expected_root = state
+        .lock()
+        .expect("scenario state lock poisoned")
+        .workspace_root
+        .clone();
+    if let Err(message) = validate_fixture_working_dir(&expected_root, call.working_dir.as_deref())
+    {
+        return Some(MockBvResponse::exit_failure(1, message));
+    }
+
+    let args = &call.args;
+    match args.as_slice() {
         [command] if command == "--robot-next" => {
             let maybe_issue = state
                 .lock()
@@ -656,6 +678,21 @@ fn scenario_bv_response(
             })
         }
         _ => None,
+    }
+}
+
+fn validate_fixture_working_dir(expected_root: &Path, actual: Option<&Path>) -> Result<(), String> {
+    match actual {
+        Some(dir) if dir == expected_root => Ok(()),
+        Some(dir) => Err(format!(
+            "fixture adapters must run in {}, got {}",
+            expected_root.display(),
+            dir.display()
+        )),
+        None => Err(format!(
+            "fixture adapters must run in {}; no working directory configured",
+            expected_root.display()
+        )),
     }
 }
 
@@ -847,8 +884,8 @@ mod tests {
 
     use super::*;
     use crate::adapters::br_models::{BeadDetail, BeadSummary};
-    use crate::adapters::br_process::{BrAdapter, BrMutationAdapter, BrOutput};
-    use crate::adapters::bv_process::{BvCommand, NextBeadResponse};
+    use crate::adapters::br_process::{BrAdapter, BrError, BrMutationAdapter, BrOutput};
+    use crate::adapters::bv_process::{BvCommand, BvError, NextBeadResponse};
     use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneStatus};
 
     fn created_bead_id(stdout: &str) -> String {
@@ -1014,6 +1051,60 @@ mod tests {
             .mock_bv
             .as_bv_adapter()
             .with_working_dir(working_dir);
+
+        let missing_br_dir = fixture
+            .mock_br
+            .as_br_adapter()
+            .exec_json::<BeadDetail>(&crate::adapters::br_process::BrCommand::show(ROOT_EPIC_ID))
+            .await
+            .expect_err("scenario br fixture should require the workspace working directory");
+        assert!(matches!(
+            missing_br_dir,
+            BrError::BrExitError {
+                stderr,
+                command,
+                ..
+            } if command == format!("br show {ROOT_EPIC_ID} --json")
+                && stderr.contains("no working directory configured")
+        ));
+
+        let wrong_br_dir = fixture
+            .mock_br
+            .as_br_adapter()
+            .with_working_dir(std::env::temp_dir())
+            .exec_json::<BeadDetail>(&crate::adapters::br_process::BrCommand::show(ROOT_EPIC_ID))
+            .await
+            .expect_err("scenario br fixture should reject the wrong working directory");
+        assert!(matches!(
+            wrong_br_dir,
+            BrError::BrExitError { stderr, .. } if stderr.contains("fixture adapters must run in")
+        ));
+
+        let missing_bv_dir = fixture
+            .mock_bv
+            .as_bv_adapter()
+            .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
+            .await
+            .expect_err("scenario bv fixture should require the workspace working directory");
+        assert!(matches!(
+            missing_bv_dir,
+            BvError::BvExitError { stderr, .. } if stderr.contains("no working directory configured")
+        ));
+
+        let nonexistent_bv_dir = fixture.workspace.path().join("missing-working-dir");
+        let wrong_bv_dir = fixture
+            .mock_bv
+            .as_bv_adapter()
+            .with_working_dir(nonexistent_bv_dir.clone())
+            .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
+            .await
+            .expect_err("scenario bv fixture should reject a mismatched working directory");
+        assert!(matches!(
+            wrong_bv_dir,
+            BvError::BvExitError { stderr, .. }
+                if stderr.contains("fixture adapters must run in")
+                    && stderr.contains(nonexistent_bv_dir.to_string_lossy().as_ref())
+        ));
 
         let root_detail: BeadDetail = br_read
             .exec_json(&crate::adapters::br_process::BrCommand::show(ROOT_EPIC_ID))
@@ -1247,6 +1338,8 @@ mod tests {
                 .map(|call| call.args.clone())
                 .collect::<Vec<_>>(),
             vec![
+                vec!["--robot-next".to_owned()],
+                vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],

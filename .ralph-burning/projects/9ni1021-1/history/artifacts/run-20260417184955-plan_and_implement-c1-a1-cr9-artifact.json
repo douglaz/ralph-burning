@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T22:46:21.089046939Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/test_support/e2e_fixtures.rs` so the E2E scenario fixture now validates adapter cwd wiring as part of the scenario contract. The mocked `br` and `bv` dispatchers now inspect `MockBrCall.working_dir` / `MockBvCall.working_dir` and fail when the adapter is missing a working directory or points anywhere other than the fixture workspace root. The smoke test was expanded to prove those missing/mismatched cwd cases fail before normal reads proceed, while preserving the existing success-path assertions for milestone artifacts, bead graph mutations, and mock command behavior.\n\n## Steps\n\n1. [Completed] Inspected the scenario fixture dispatchers and confirmed the pending gap: mocked `br`/`bv` responses were keyed only on args, so fixture-based tests would not catch missing or incorrect adapter working directories.\n2. [Completed] Patched the E2E fixture so `build_mock_br_adapter()` and `build_mock_bv_adapter()` pass full recorded calls into the scenario handlers, then added shared cwd validation that rejects any call whose working directory is absent or does not equal the temp workspace root.\n3. [Completed] Expanded the smoke test to assert missing and mismatched cwd failures for both adapters, reran formatting and cargo validation, and checked the resulting Nix output artifact after `nix build` stalled without a final client exit message.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` created `result -> /nix/store/q6w9fjvjz5mn0557jzs1z0jb14ncyfhj-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`, and `result/bin/ralph-burning` exists on the final tree.\n\n## Outstanding Risks\n\n- `nix build` produced a fresh `result` symlink at `/nix/store/q6w9fjvjz5mn0557jzs1z0jb14ncyfhj-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0` and `result/bin/ralph-burning` exists, but the local `nix build` client never emitted a clean completion line before observation ended, so the Nix pass is inferred from the produced output path rather than a captured successful process exit.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 9
+}
