@@ -198,12 +198,6 @@ fn lineage_completion_attempt_identity(
                 .iter()
                 .filter(|entry| same_run_id(entry) && entry.started_at == attempt.started_at)
                 .max_by(|left, right| left.started_at.cmp(&right.started_at))
-        })
-        .or_else(|| {
-            matching_runs
-                .iter()
-                .filter(|entry| same_run_id(entry))
-                .max_by(|left, right| left.started_at.cmp(&right.started_at))
         });
 
     Ok(selected_entry.and_then(|entry| {
@@ -215,6 +209,40 @@ fn lineage_completion_attempt_identity(
                 started_at: entry.started_at,
             })
     }))
+}
+
+enum MissingFailureLineageRepairGuard {
+    Allow,
+    BlockedByActiveAttempt,
+    AmbiguousActiveAttempts,
+}
+
+fn missing_failure_lineage_repair_guard(
+    matching_runs: &[crate::contexts::milestone_record::model::TaskRunEntry],
+    project_id: &ProjectId,
+    run_id: &str,
+    started_at: chrono::DateTime<chrono::Utc>,
+) -> MissingFailureLineageRepairGuard {
+    let mut active_attempts = matching_runs.iter().filter(|entry| {
+        !entry.outcome.is_terminal()
+            && (entry.project_id != project_id.as_str() || entry.run_id.as_deref() != Some(run_id))
+    });
+    let Some(first_active_attempt) = active_attempts.next() else {
+        return MissingFailureLineageRepairGuard::Allow;
+    };
+    if active_attempts.next().is_some() {
+        return MissingFailureLineageRepairGuard::AmbiguousActiveAttempts;
+    }
+
+    if first_active_attempt.started_at > started_at
+        || (first_active_attempt.started_at == started_at
+            && (first_active_attempt.project_id != project_id.as_str()
+                || first_active_attempt.run_id.as_deref() != Some(run_id)))
+    {
+        MissingFailureLineageRepairGuard::BlockedByActiveAttempt
+    } else {
+        MissingFailureLineageRepairGuard::Allow
+    }
 }
 
 fn worktree_lease_record_is_missing(error: &AppError) -> bool {
@@ -2092,25 +2120,136 @@ where
             engine::RunningAttemptIdentity,
             (String, String),
         > {
-            lineage_completion_attempt_identity(
+            let attempt_identity = lineage_completion_attempt_identity(
+                project_dir,
+                &milestone_id,
+                &task_source.bead_id,
+                &project_id,
+                attempt,
+            )
+            .map_err(|error| {
+                self.failure_reconciliation_metadata_failure(
                     project_dir,
-                    &milestone_id,
-                    &task_source.bead_id,
-                    &project_id,
-                    attempt,
+                    task,
+                    task_source,
+                    "reconciliation_metadata_error".to_owned(),
+                    format!(
+                        "could not read milestone task-run lineage during failure reconciliation: {error}"
+                    ),
                 )
-                .map_err(|error| {
-                    self.failure_reconciliation_metadata_failure(
+            })?;
+            if let Some(attempt_identity) = attempt_identity {
+                return Ok(attempt_identity);
+            }
+
+            let matching_runs = milestone_service::find_runs_for_bead(
+                &FsTaskRunLineageStore,
+                project_dir,
+                &milestone_id,
+                &task_source.bead_id,
+            )
+            .map_err(|error| {
+                self.failure_reconciliation_metadata_failure(
+                    project_dir,
+                    task,
+                    task_source,
+                    "reconciliation_metadata_error".to_owned(),
+                    format!(
+                        "could not read milestone task-run lineage during failure reconciliation: {error}"
+                    ),
+                )
+            })?;
+            if matching_runs.iter().any(|entry| {
+                entry.project_id == project_id.as_str()
+                    && entry.run_id.as_deref() == Some(attempt.run_id.as_str())
+                    && entry.started_at == attempt.started_at
+            }) {
+                return Ok(attempt.clone());
+            }
+
+            match missing_failure_lineage_repair_guard(
+                &matching_runs,
+                &project_id,
+                attempt.run_id.as_str(),
+                attempt.started_at,
+            ) {
+                MissingFailureLineageRepairGuard::Allow => {}
+                MissingFailureLineageRepairGuard::BlockedByActiveAttempt => {
+                    return Err(self.failure_reconciliation_metadata_failure(
                         project_dir,
                         task,
                         task_source,
                         "reconciliation_metadata_error".to_owned(),
                         format!(
-                            "could not read milestone task-run lineage during failure reconciliation: {error}"
+                            "could not repair missing milestone lineage for bead={} project={} run_id={} started_at={} because a newer active lineage attempt already exists",
+                            task_source.bead_id,
+                            project_id,
+                            attempt.run_id,
+                            attempt.started_at.to_rfc3339(),
                         ),
-                    )
-                })
-                .map(|attempt_identity| attempt_identity.unwrap_or_else(|| attempt.clone()))
+                    ));
+                }
+                MissingFailureLineageRepairGuard::AmbiguousActiveAttempts => {
+                    return Err(self.failure_reconciliation_metadata_failure(
+                        project_dir,
+                        task,
+                        task_source,
+                        "reconciliation_metadata_error".to_owned(),
+                        format!(
+                            "could not repair missing milestone lineage for bead={} project={} run_id={} started_at={}: multiple active lineage rows exist; manual cleanup required",
+                            task_source.bead_id,
+                            project_id,
+                            attempt.run_id,
+                            attempt.started_at.to_rfc3339(),
+                        ),
+                    ));
+                }
+            }
+
+            let plan_hash = engine::milestone_lineage_plan_hash(
+                &project_record,
+                project_dir,
+                &project_id,
+                &milestone_id,
+                &task_source.bead_id,
+                attempt.run_id.as_str(),
+            )
+            .map_err(|error| {
+                self.failure_reconciliation_metadata_failure(
+                    project_dir,
+                    task,
+                    task_source,
+                    "reconciliation_metadata_error".to_owned(),
+                    format!(
+                        "could not derive milestone plan hash while repairing missing lineage during failure reconciliation: {error}"
+                    ),
+                )
+            })?;
+            milestone_service::record_bead_start(
+                &FsMilestoneSnapshotStore,
+                &FsMilestoneJournalStore,
+                &FsTaskRunLineageStore,
+                project_dir,
+                &milestone_id,
+                &task_source.bead_id,
+                project_id.as_str(),
+                attempt.run_id.as_str(),
+                &plan_hash,
+                attempt.started_at,
+            )
+            .map_err(|error| {
+                self.failure_reconciliation_metadata_failure(
+                    project_dir,
+                    task,
+                    task_source,
+                    "reconciliation_metadata_error".to_owned(),
+                    format!(
+                        "could not repair missing milestone lineage during failure reconciliation: {error}"
+                    ),
+                )
+            })?;
+
+            Ok(attempt.clone())
         };
         let validate_failure_attempt =
             |attempt: &engine::RunningAttemptIdentity| -> Result<(), (String, String)> {
@@ -9781,6 +9920,243 @@ mod tests {
                     .as_deref()
                     .is_some_and(|details| details.contains("resumed attempt failed after pause"))
         }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn try_reconcile_failure_repairs_missing_same_run_retry_lineage_before_recording_failure()
+    {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path();
+        let now = Utc::now();
+        initialize_workspace(base, now).expect("init workspace");
+
+        let milestone_id = create_failure_reconciliation_milestone(base, now);
+        let task_source = TaskSource {
+            milestone_id: milestone_id.to_string(),
+            bead_id: "ms-daemon-failure-reconcile.bead-1".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        };
+        let project_id =
+            ProjectId::new("daemon-failure-missing-same-run-lineage").expect("project id");
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Daemon missing same-run retry lineage".to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt"),
+                created_at: now,
+                task_source: Some(task_source.clone()),
+            },
+        )
+        .expect("create project");
+
+        let original_started_at = now + chrono::Duration::seconds(1);
+        let original_failed_at = original_started_at + chrono::Duration::seconds(4);
+        let resumed_at = now + chrono::Duration::seconds(20);
+        let resumed_failed_at = resumed_at + chrono::Duration::seconds(5);
+
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "run-1",
+            "plan-v1",
+            original_started_at,
+        )
+        .expect("record original bead start");
+        milestone_service::record_bead_completion(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("original attempt failed"),
+            original_started_at,
+            original_failed_at,
+        )
+        .expect("record original failure");
+        milestone_controller::sync_controller_task_running(
+            &FsMilestoneControllerStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+            project_id.as_str(),
+            "workflow execution resumed",
+            resumed_at,
+        )
+        .expect("mark controller running");
+
+        let initial_events = FsJournalStore
+            .read_journal(base, &project_id)
+            .expect("read initial journal");
+        let run_id = RunId::new("run-1").expect("run id");
+        let original_started = journal::run_started_event(
+            journal::last_sequence(&initial_events) + 1,
+            original_started_at,
+            &run_id,
+            StageId::Implementation,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&original_started).expect("serialize original start"),
+            )
+            .expect("append original run_started");
+        let original_failed = journal::run_failed_event(
+            original_started.sequence + 1,
+            original_failed_at,
+            &run_id,
+            StageId::Implementation,
+            "stage_failure",
+            "original attempt failed",
+            0,
+            20,
+            None,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&original_failed).expect("serialize original failed"),
+            )
+            .expect("append original run_failed");
+        let resumed_event = journal::run_resumed_event(
+            original_failed.sequence + 1,
+            resumed_at,
+            &run_id,
+            StageId::Implementation,
+            2,
+            1,
+            20,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&resumed_event).expect("serialize run_resumed"),
+            )
+            .expect("append run_resumed");
+        let resumed_failed = journal::run_failed_event(
+            resumed_event.sequence + 1,
+            resumed_failed_at,
+            &run_id,
+            StageId::Implementation,
+            "stage_failure",
+            "resumed attempt failed after missing lineage",
+            1,
+            20,
+            None,
+        );
+        FsJournalStore
+            .append_event(
+                base,
+                &project_id,
+                &journal::serialize_event(&resumed_failed).expect("serialize resumed failed"),
+            )
+            .expect("append resumed run_failed");
+
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-1".to_owned(),
+                stage_cursor: StageCursor::new(StageId::Implementation, 2, 1, 1)
+                    .expect("stage cursor"),
+                started_at: resumed_at,
+                prompt_hash_at_cycle_start: "hash".to_owned(),
+                prompt_hash_at_stage_start: "hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 1,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "resumed attempt failed after missing lineage".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(base, &project_id, &snapshot)
+            .expect("write failed snapshot");
+
+        let mut task =
+            sample_pending_task("task-daemon-failure-missing-same-run-lineage", &project_id);
+        task.status = TaskStatus::Active;
+        task.workflow_run_id = Some("run-1".to_owned());
+
+        let agent_service = AgentExecutionService::new(
+            StubBackendAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let daemon = DaemonLoop::new(
+            &FsDaemonStore,
+            &WorktreeAdapter,
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            &agent_service,
+        );
+
+        let outcome = daemon
+            .try_reconcile_failure(base, &task, "fallback failure message")
+            .await
+            .expect("failure reconciliation should succeed")
+            .expect("milestone task should reconcile");
+        assert_eq!(
+            outcome,
+            crate::contexts::automation_runtime::FailureReconciliationOutcome::Retryable {
+                attempt_number: 2,
+                max_retries: crate::contexts::automation_runtime::MAX_FAILURE_RETRIES,
+            }
+        );
+
+        let task_runs = milestone_service::find_runs_for_bead(
+            &FsTaskRunLineageStore,
+            base,
+            &milestone_id,
+            &task_source.bead_id,
+        )
+        .expect("read task-runs");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(task_runs[0].started_at, resumed_at);
+        assert_eq!(task_runs[0].finished_at, Some(resumed_failed_at));
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
+
+        let failed_events = read_journal(&FsMilestoneJournalStore, base, &milestone_id)
+            .expect("read milestone journal")
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadFailed)
+            .collect::<Vec<_>>();
+        assert_eq!(failed_events.len(), 2);
     }
 
     #[tokio::test(flavor = "multi_thread")]

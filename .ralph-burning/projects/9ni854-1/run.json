@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 19
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-18-592f1688",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "finding_summary: Daemon failure reconciliation can bind a same-run retry to the previous failed attempt when the retry's `BeadStarted` lineage write is missing. line_refs: [src/contexts/automation_runtime/daemon_loop.rs:171-217, src/contexts/automation_runtime/daemon_loop.rs:2335-2405]. severity: high. affected_files: [src/contexts/automation_runtime/daemon_loop.rs]. remediation_hint: Do not fall back from the current retry attempt to an older terminal lineage row with the same `run_id`; require an exact/non-terminal lineage match, or synthesize the missing retry start row before calling `reconcile_failure()`, otherwise fail closed to `NeedsOperator`.\n\n`lineage_completion_attempt_identity()` currently falls back to the newest row with the same `run_id` even when that row is an older terminal failure. `try_reconcile_failure()` then uses that stale `started_at` for `reconcile_failure()`. In the partial-write case this feature is meant to recover from, the new failed retry is recorded as the old attempt again, which undercounts retries and repairs the original failure row/event in place instead of preserving a distinct later failure.",
-        "created_at": "2026-04-17T01:01:51.982121350Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "c65e7932ba822ccfafc1891f6d122becae62db1bf6e91a029698caa8c451d29f"
-      },
-      {
-        "amendment_id": "fr-18-127da90a",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "finding_summary: CLI milestone sync still cannot reconcile a failed retry that reused the same `run_id` when the retry's start lineage was missed. line_refs: [src/cli/run.rs:1203-1247, src/cli/run.rs:1320-1345, src/contexts/automation_runtime/failure_reconciliation.rs:391-406]. severity: medium. affected_files: [src/cli/run.rs, src/contexts/automation_runtime/failure_reconciliation.rs]. remediation_hint: Mirror the existing success-path repair before calling `reconcile_failure_sync()`: when the project journal/snapshot prove a newer same-run retry but milestone lineage only has the older terminal row, synthesize or repair the retry start row first.\n\n`sync_terminal_milestone_task_with_options()` skips its missing-lineage repair whenever `same_named_terminal_attempt_exists` is true. That is exactly the state you get after a prior failure on the same `run_id`. The failure branch then calls `reconcile_failure_sync()` with the new attempt's `started_at`, but `record_bead_completion_with_disposition()` still requires an exact lineage row, so sync errors out instead of counting attempt 2/3 and leaving the bead retryable.",
-        "created_at": "2026-04-17T01:01:51.982128954Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "fe370a6e5e739d5c90a660aef37e8c347c5247d51887b3f7c39ab1b5a516dcf7"
-      }
-    ],
-    "processed_count": 36
+    "pending": [],
+    "processed_count": 38
   },
-  "status_summary": "running: final review restart round 19 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T00:43:16.611937576Z",
