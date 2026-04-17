@@ -887,19 +887,27 @@ fn dependency_graph_analysis_from_nodes(
     nodes: &[DependencyNode],
 ) -> Result<DependencyGraphAnalysis, Vec<String>> {
     let mut bead_index = BTreeMap::new();
+    let mut duplicate_ids = BTreeSet::new();
     let mut errors = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
         if let Some(previous_index) = bead_index.insert(node.bead_id.clone(), index) {
+            duplicate_ids.insert(node.bead_id.clone());
             errors.push(format!(
                 "{} resolves to duplicate bead identifier '{}' already used by {}",
                 node.location, node.bead_id, nodes[previous_index].location
             ));
         }
     }
+    for duplicate_id in &duplicate_ids {
+        bead_index.remove(duplicate_id);
+    }
 
-    for node in nodes {
+    let mut resolved_dependencies = vec![Vec::new(); nodes.len()];
+    for (node_index, node) in nodes.iter().enumerate() {
         for depends_on in &node.depends_on {
-            if !bead_index.contains_key(depends_on) {
+            if let Some(dependency_index) = bead_index.get(depends_on).copied() {
+                resolved_dependencies[node_index].push(dependency_index);
+            } else {
                 errors.push(format!(
                     "dependency '{}' referenced by '{}' does not exist",
                     depends_on, node.bead_id
@@ -907,14 +915,11 @@ fn dependency_graph_analysis_from_nodes(
             }
         }
     }
-    if !errors.is_empty() {
-        return Err(errors);
-    }
 
     fn detect_cycle(
         node_index: usize,
         nodes: &[DependencyNode],
-        bead_index: &BTreeMap<String, usize>,
+        resolved_dependencies: &[Vec<usize>],
         states: &mut [u8],
         stack: &mut Vec<usize>,
         cycle_reports: &mut BTreeSet<String>,
@@ -922,28 +927,25 @@ fn dependency_graph_analysis_from_nodes(
         states[node_index] = 1;
         stack.push(node_index);
 
-        for depends_on in &nodes[node_index].depends_on {
-            let dependency_index = *bead_index
-                .get(depends_on)
-                .expect("missing dependencies handled before cycle detection");
-            match states[dependency_index] {
+        for dependency_index in &resolved_dependencies[node_index] {
+            match states[*dependency_index] {
                 0 => detect_cycle(
-                    dependency_index,
+                    *dependency_index,
                     nodes,
-                    bead_index,
+                    resolved_dependencies,
                     states,
                     stack,
                     cycle_reports,
                 ),
                 1 => {
                     if let Some(cycle_start) =
-                        stack.iter().position(|index| *index == dependency_index)
+                        stack.iter().position(|index| *index == *dependency_index)
                     {
                         let mut cycle = stack[cycle_start..]
                             .iter()
                             .map(|index| nodes[*index].bead_id.clone())
                             .collect::<Vec<_>>();
-                        cycle.push(nodes[dependency_index].bead_id.clone());
+                        cycle.push(nodes[*dependency_index].bead_id.clone());
                         cycle_reports
                             .insert(format!("dependency cycle detected: {}", cycle.join(" -> ")));
                     }
@@ -964,7 +966,7 @@ fn dependency_graph_analysis_from_nodes(
             detect_cycle(
                 node_index,
                 nodes,
-                &bead_index,
+                &resolved_dependencies,
                 &mut states,
                 &mut stack,
                 &mut cycle_reports,
@@ -972,19 +974,19 @@ fn dependency_graph_analysis_from_nodes(
         }
     }
 
-    if !cycle_reports.is_empty() {
-        return Err(cycle_reports.into_iter().collect());
+    errors.extend(cycle_reports);
+    if !errors.is_empty() {
+        errors.sort();
+        errors.dedup();
+        return Err(errors);
     }
 
     let mut dependents = vec![Vec::new(); nodes.len()];
     let mut indegree = vec![0usize; nodes.len()];
-    for (node_index, node) in nodes.iter().enumerate() {
-        indegree[node_index] = node.depends_on.len();
-        for depends_on in &node.depends_on {
-            let dependency_index = *bead_index
-                .get(depends_on)
-                .expect("missing dependencies handled before ordering");
-            dependents[dependency_index].push(node_index);
+    for (node_index, dependencies) in resolved_dependencies.iter().enumerate() {
+        indegree[node_index] = dependencies.len();
+        for dependency_index in dependencies {
+            dependents[*dependency_index].push(node_index);
         }
     }
 
@@ -1022,22 +1024,69 @@ fn dependency_graph_analysis(
     dependency_graph_analysis_from_canonical(&canonical)
 }
 
+fn normalized_search_text(text: &str) -> String {
+    let mut normalized = String::with_capacity(text.len());
+    let mut last_was_space = true;
+
+    for ch in text.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_lowercase());
+            last_was_space = false;
+        } else if !last_was_space {
+            normalized.push(' ');
+            last_was_space = true;
+        }
+    }
+
+    if normalized.ends_with(' ') {
+        normalized.pop();
+    }
+
+    normalized
+}
+
 fn contains_deferred_note(text: &str) -> bool {
-    let lowered = text.to_ascii_lowercase();
+    let normalized = normalized_search_text(text);
+    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
+
+    if tokens
+        .iter()
+        .any(|token| token.starts_with("defer") || token.starts_with("postpon"))
+    {
+        return true;
+    }
+
     [
-        "defer",
-        "deferred",
         "not included",
         "not part of this milestone",
+        "not in scope",
         "out of scope",
         "future work",
-        "later phase",
         "follow-up work",
         "follow-up milestone",
+        "follow up work",
+        "follow up milestone",
+        "later phase",
+        "later milestone",
+        "later release",
+        "subsequent phase",
+        "subsequent milestone",
+        "subsequent release",
+        "next phase",
+        "next milestone",
+        "next release",
         "intentionally excluded",
     ]
     .iter()
-    .any(|needle| lowered.contains(needle))
+    .any(|needle| normalized.contains(&normalized_search_text(needle)))
+        || tokens.windows(2).any(|window| {
+            matches!(window, [modifier, schedule]
+            if matches!(*modifier, "after" | "later" | "next" | "subsequent")
+                && matches!(
+                    *schedule,
+                    "alpha" | "beta" | "launch" | "milestone" | "phase" | "release"
+                ))
+        })
 }
 
 fn collect_deferred_items(bundle: &MilestoneBundle, workstream_labels: &[String]) -> Vec<String> {
@@ -2177,6 +2226,79 @@ mod tests {
     }
 
     #[test]
+    fn validate_dependency_graph_reports_missing_targets_and_cycles_together(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].depends_on = vec!["bead-3".to_owned()];
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: Some("bead-4".to_owned()),
+            explicit_id: None,
+            title: "Document rollout".to_owned(),
+            description: Some("Depends on a bead that does not exist yet.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(3),
+            labels: vec!["docs".to_owned()],
+            depends_on: vec!["missing-bead".to_owned()],
+            acceptance_criteria: vec!["AC-2".to_owned()],
+            flow_override: None,
+        });
+
+        let errors = validate_dependency_graph(&bundle).expect_err(
+            "graph validation should surface both missing-target and cycle diagnostics",
+        );
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("dependency cycle detected")));
+        assert!(errors.iter().any(|error| {
+            error.contains("dependency 'ms-alpha.missing-bead' referenced by 'ms-alpha.bead-4'")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dependency_graph_reports_duplicate_ids_and_cycles_together(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].depends_on = vec!["bead-3".to_owned()];
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: Some("duplicate-bead".to_owned()),
+            explicit_id: None,
+            title: "Duplicate id bead one".to_owned(),
+            description: Some("Forces a duplicate canonical bead id.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(3),
+            labels: vec!["docs".to_owned()],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-2".to_owned()],
+            flow_override: None,
+        });
+        bundle.workstreams[0].beads.push(BeadProposal {
+            bead_id: Some("duplicate-bead".to_owned()),
+            explicit_id: None,
+            title: "Duplicate id bead two".to_owned(),
+            description: Some("Keeps the duplicate separate from the cycle.".to_owned()),
+            bead_type: Some("task".to_owned()),
+            priority: Some(3),
+            labels: vec!["docs".to_owned()],
+            depends_on: vec![],
+            acceptance_criteria: vec!["AC-2".to_owned()],
+            flow_override: None,
+        });
+
+        let errors = validate_dependency_graph(&bundle)
+            .expect_err("graph validation should surface both duplicate-id and cycle errors");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("duplicate bead identifier")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("dependency cycle detected")));
+        Ok(())
+    }
+
+    #[test]
     fn summarize_bundle_reports_counts_and_dependency_depth(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let bundle = sample_bundle();
@@ -2469,6 +2591,28 @@ mod tests {
         assert!(rendered.contains("## Deferred Items"));
         assert!(rendered.contains("follow-up work on CLI polish"));
         assert!(rendered.contains("not part of this milestone"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_plan_md_detects_broader_deferred_scope_phrases(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].description = Some(
+            "Ship the backend now; CLI polish is postponed until beta and not in scope for alpha."
+                .to_owned(),
+        );
+        bundle.workstreams[0].beads[2].description = Some(
+            "Reserve dashboard cleanup for a subsequent milestone once the alpha stabilizes."
+                .to_owned(),
+        );
+
+        let rendered = render_plan_md(&bundle);
+
+        assert!(rendered.contains("## Deferred Items"));
+        assert!(rendered.contains("postponed until beta"));
+        assert!(rendered.contains("not in scope for alpha"));
+        assert!(rendered.contains("subsequent milestone"));
         Ok(())
     }
 

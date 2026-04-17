@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T10:47:42.628905707Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining MilestoneBundle amendments in `src/contexts/milestone_record/bundle.rs` without restructuring existing models: `validate_dependency_graph()` now reports duplicate-id and missing-target diagnostics while still detecting cycles on the resolvable subgraph, deferred-item detection now normalizes text and recognizes broader deferred-scope wording such as `postponed until beta`, `subsequent milestone`, and `not in scope`, and regression coverage was added for both mixed graph-error handling and broader deferred rendering.\n\n## Steps\n\n1. [Completed] Refactor dependency graph analysis so duplicate bead IDs and missing dependency targets are collected first, then cycle detection still runs across the resolvable dependency edges and merges those diagnostics into one result set.\n2. [Completed] Broaden deferred-scope detection by normalizing description text and matching stronger scope-deferral patterns instead of relying on a narrow literal phrase list.\n3. [Completed] Add regressions covering mixed graph errors (`cycle + missing target`, `cycle + duplicate id`) and broader deferred phrasing in `render_plan_md()`.\n4. [Completed] Run repository verification gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed on the final tree.\n- Targeted regressions passed: `cargo test validate_dependency_graph_reports_missing_targets_and_cycles_together`, `cargo test validate_dependency_graph_reports_duplicate_ids_and_cycles_together`, and `cargo test render_plan_md_detects_broader_deferred_scope_phrases`.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed on the final tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- Pre-existing live orchestration state changes under `.ralph-burning/` were left untouched per repo instructions and remain dirty in the worktree.\n- `nix build` updated the tracked `result` symlink; if that artifact should remain untracked here, it still needs to be ignored or cleaned separately.\n- Deferred-work detection is still heuristic text analysis rather than a structured field in `MilestoneBundle`, so future wording outside the expanded patterns could still require follow-up hardening.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 8
+}
