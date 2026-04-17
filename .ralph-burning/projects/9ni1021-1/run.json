@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-50eab653",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "`finding_summary`: `src/test_support/e2e_fixtures.rs:451-563`, `src/test_support/e2e_fixtures.rs:591-610`, and `src/test_support/e2e_fixtures.rs:671-677` make `ScenarioState.issues` the authoritative bead graph for `br list/show` and `bv --robot-next`. The mock adapters never reread `.beads/issues.jsonl`, so any code under test that rewrites the export directly will leave the filesystem and mock responses out of sync. That is a real risk in this codebase because reconciliation paths already rewrite `issues.jsonl` directly (for example `src/contexts/automation_runtime/failure_reconciliation.rs:1621-1624` and `src/contexts/automation_runtime/success_reconciliation.rs:2059-2071`). This breaks the fixture’s stated contract that mocked responses stay consistent with workspace mutations. `affected_files`: [`src/test_support/e2e_fixtures.rs`]. `remediation_hint`: make `.beads/issues.jsonl` the source of truth for read commands, or refresh `ScenarioState` from disk before answering `list/show/robot-next`.",
-        "created_at": "2026-04-17T23:00:42.211773902Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "12a2554f20c57c45eee3800b966d1578908d62ddd51f86e1aac49dda0c3623fc"
-      }
-    ],
-    "processed_count": 14
+    "pending": [],
+    "processed_count": 15
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T22:46:21.219361964Z",

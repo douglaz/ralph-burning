@@ -1,6 +1,7 @@
 //! Scenario-specific workspace fixtures for integration-style tests.
 
 use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -448,11 +449,13 @@ impl ScenarioState {
         }
     }
 
-    fn current_issues(&self) -> Vec<BeadGraphIssue> {
-        self.issues.clone()
+    fn current_issues(&mut self) -> Result<Vec<BeadGraphIssue>, String> {
+        self.reload_issues_from_disk()?;
+        Ok(self.issues.clone())
     }
 
     fn create_issue(&mut self, spec: CreateIssueSpec) -> Result<String, String> {
+        self.reload_issues_from_disk()?;
         let bead_id = next_follow_up_task_id(self.next_follow_up_index);
         self.next_follow_up_index += 1;
         let created_at = scenario_timestamp()
@@ -487,6 +490,7 @@ impl ScenarioState {
         depends_on_id: &str,
         kind: DependencyKind,
     ) -> Result<(), String> {
+        self.reload_issues_from_disk()?;
         if !self.issues.iter().any(|issue| issue.id == depends_on_id) {
             return Err(format!("bead not found: {depends_on_id}"));
         }
@@ -518,6 +522,7 @@ impl ScenarioState {
     }
 
     fn close_issue(&mut self, issue_id: &str, reason: String) -> Result<(), String> {
+        self.reload_issues_from_disk()?;
         let index = self
             .issues
             .iter()
@@ -535,14 +540,16 @@ impl ScenarioState {
         self.persist()
     }
 
-    fn next_ready_issue(&self) -> Option<BeadGraphIssue> {
+    fn next_ready_issue(&mut self) -> Result<Option<BeadGraphIssue>, String> {
+        self.reload_issues_from_disk()?;
         let issue_lookup = self
             .issues
             .iter()
             .map(|issue| (issue.id.as_str(), issue))
             .collect::<HashMap<_, _>>();
 
-        self.issues
+        Ok(self
+            .issues
             .iter()
             .find(|issue| {
                 issue.status == BeadStatus::Open
@@ -554,13 +561,131 @@ impl ScenarioState {
                                 .is_none_or(|depends_on| depends_on.status == BeadStatus::Closed)
                     })
             })
-            .cloned()
+            .cloned())
+    }
+
+    fn reload_issues_from_disk(&mut self) -> Result<(), String> {
+        self.issues = load_bead_graph_issues(&self.issues_path())?;
+        Ok(())
     }
 
     fn persist(&self) -> Result<(), String> {
-        let issues_path = self.workspace_root.join(".beads").join("issues.jsonl");
-        write_bead_graph_issues(&issues_path, &self.issues).map_err(|error| error.to_string())
+        write_bead_graph_issues(&self.issues_path(), &self.issues)
+            .map_err(|error| error.to_string())
     }
+
+    fn issues_path(&self) -> PathBuf {
+        self.workspace_root.join(".beads").join("issues.jsonl")
+    }
+}
+
+fn load_bead_graph_issues(path: &Path) -> Result<Vec<BeadGraphIssue>, String> {
+    fs::read_to_string(path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(parse_bead_graph_issue)
+        .collect()
+}
+
+fn parse_bead_graph_issue(line: &str) -> Result<BeadGraphIssue, String> {
+    let value = serde_json::from_str::<serde_json::Value>(line)
+        .map_err(|error| format!("parse issues.jsonl row: {error}"))?;
+
+    Ok(BeadGraphIssue {
+        id: required_string_field(&value, "id")?,
+        title: required_string_field(&value, "title")?,
+        status: required_json_field(&value, "status")?,
+        priority: required_json_field(&value, "priority")?,
+        bead_type: required_json_field(&value, "issue_type")?,
+        labels: optional_json_field(&value, "labels")?.unwrap_or_default(),
+        description: optional_json_field(&value, "description")?,
+        acceptance_criteria: parse_acceptance_criteria(value.get("acceptance_criteria"))?,
+        created_at: required_json_field(&value, "created_at")?,
+        created_by: required_string_field(&value, "created_by")?,
+        updated_at: required_json_field(&value, "updated_at")?,
+        source_repo: required_string_field(&value, "source_repo")?,
+        compaction_level: required_json_field(&value, "compaction_level")?,
+        original_size: required_json_field(&value, "original_size")?,
+        dependencies: parse_dependencies(value.get("dependencies"))?,
+        closed_at: optional_json_field(&value, "closed_at")?,
+        close_reason: optional_json_field(&value, "close_reason")?,
+    })
+}
+
+fn parse_dependencies(
+    value: Option<&serde_json::Value>,
+) -> Result<Vec<BeadGraphDependency>, String> {
+    let Some(raw_dependencies) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = raw_dependencies.as_array() else {
+        return Err("invalid issues.jsonl row: dependencies must be an array".to_owned());
+    };
+    items.iter().map(parse_dependency).collect()
+}
+
+fn parse_dependency(value: &serde_json::Value) -> Result<BeadGraphDependency, String> {
+    Ok(BeadGraphDependency {
+        issue_id: required_string_field(value, "issue_id")?,
+        depends_on_id: required_string_field(value, "depends_on_id")?,
+        kind: required_json_field(value, "type")?,
+        created_at: required_json_field(value, "created_at")?,
+        created_by: required_string_field(value, "created_by")?,
+        metadata: required_string_field(value, "metadata")?,
+        thread_id: required_string_field(value, "thread_id")?,
+    })
+}
+
+fn parse_acceptance_criteria(value: Option<&serde_json::Value>) -> Result<Vec<String>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let Some(raw) = value.as_str() else {
+        return Err("invalid issues.jsonl row: acceptance_criteria must be a string".to_owned());
+    };
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    if raw.contains('\n') {
+        return Ok(raw
+            .lines()
+            .map(|line| line.strip_prefix("- ").unwrap_or(line).to_owned())
+            .collect());
+    }
+    Ok(vec![raw.to_owned()])
+}
+
+fn required_string_field(value: &serde_json::Value, key: &str) -> Result<String, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| format!("invalid issues.jsonl row: missing string field {key}"))
+}
+
+fn required_json_field<T>(value: &serde_json::Value, key: &str) -> Result<T, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let raw = value
+        .get(key)
+        .cloned()
+        .ok_or_else(|| format!("invalid issues.jsonl row: missing field {key}"))?;
+    serde_json::from_value(raw)
+        .map_err(|error| format!("invalid issues.jsonl row field {key}: {error}"))
+}
+
+fn optional_json_field<T>(value: &serde_json::Value, key: &str) -> Result<Option<T>, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(raw) = value.get(key) else {
+        return Ok(None);
+    };
+    serde_json::from_value(raw.clone())
+        .map(Some)
+        .map_err(|error| format!("invalid issues.jsonl row field {key}: {error}"))
 }
 
 #[derive(Debug)]
@@ -588,19 +713,27 @@ fn scenario_br_response(
 
     let args = &call.args;
     if matches!(args.as_slice(), [command, flag] if command == "list" && flag == "--json") {
-        let issues = state
+        let issues = match state
             .lock()
             .expect("scenario state lock poisoned")
-            .current_issues();
+            .current_issues()
+        {
+            Ok(issues) => issues,
+            Err(message) => return Some(MockBrResponse::exit_failure(1, message)),
+        };
         return Some(MockBrResponse::success(br_list_json(&issues)));
     }
 
     if let [command, bead_id, flag] = args.as_slice() {
         if command == "show" && flag == "--json" {
-            let issues = state
+            let issues = match state
                 .lock()
                 .expect("scenario state lock poisoned")
-                .current_issues();
+                .current_issues()
+            {
+                Ok(issues) => issues,
+                Err(message) => return Some(MockBrResponse::exit_failure(1, message)),
+            };
             let Some(issue) = issues.iter().find(|issue| issue.id == *bead_id).cloned() else {
                 return Some(MockBrResponse::exit_failure(
                     1,
@@ -668,10 +801,14 @@ fn scenario_bv_response(
     let args = &call.args;
     match args.as_slice() {
         [command] if command == "--robot-next" => {
-            let maybe_issue = state
+            let maybe_issue = match state
                 .lock()
                 .expect("scenario state lock poisoned")
-                .next_ready_issue();
+                .next_ready_issue()
+            {
+                Ok(issue) => issue,
+                Err(message) => return Some(MockBvResponse::exit_failure(1, message)),
+            };
             Some(match maybe_issue {
                 Some(issue) => MockBvResponse::success(next_bead_json(&issue)),
                 None => MockBvResponse::exit_failure(1, "no ready bead"),
@@ -1159,6 +1296,58 @@ mod tests {
             .expect("initial bv robot-next");
         assert_eq!(initial_next.id, ASSEMBLE_TASK_ID);
 
+        let mut externally_rewritten_issues =
+            load_bead_graph_issues(&issues_path).expect("load issues for external rewrite");
+        let assemble_issue = externally_rewritten_issues
+            .iter_mut()
+            .find(|issue| issue.id == ASSEMBLE_TASK_ID)
+            .expect("assemble issue in rewritten graph");
+        let externally_closed_at = assemble_issue.updated_at + chrono::Duration::seconds(30);
+        assemble_issue.status = BeadStatus::Closed;
+        assemble_issue.updated_at = externally_closed_at;
+        assemble_issue.closed_at = Some(externally_closed_at);
+        assemble_issue.close_reason = Some("External rewrite".to_owned());
+        crate::test_support::fixtures::write_bead_graph_issues(
+            &issues_path,
+            &externally_rewritten_issues,
+        )
+        .expect("persist externally rewritten graph");
+
+        let externally_closed_assemble: BeadDetail = br_read
+            .exec_json(&crate::adapters::br_process::BrCommand::show(
+                ASSEMBLE_TASK_ID,
+            ))
+            .await
+            .expect("br show after external rewrite");
+        assert_eq!(externally_closed_assemble.status, BeadStatus::Closed);
+
+        let next_after_external_rewrite: NextBeadResponse = bv
+            .exec_json(&BvCommand::robot_next())
+            .await
+            .expect("bv robot-next after external rewrite");
+        assert_eq!(next_after_external_rewrite.id, PREPARE_TASK_ID);
+
+        let assemble_issue = externally_rewritten_issues
+            .iter_mut()
+            .find(|issue| issue.id == ASSEMBLE_TASK_ID)
+            .expect("assemble issue in reopened graph");
+        let reopened_at = externally_closed_at + chrono::Duration::seconds(30);
+        assemble_issue.status = BeadStatus::Open;
+        assemble_issue.updated_at = reopened_at;
+        assemble_issue.closed_at = None;
+        assemble_issue.close_reason = None;
+        crate::test_support::fixtures::write_bead_graph_issues(
+            &issues_path,
+            &externally_rewritten_issues,
+        )
+        .expect("persist reopened graph");
+
+        let next_after_reopen: NextBeadResponse = bv
+            .exec_json(&BvCommand::robot_next())
+            .await
+            .expect("bv robot-next after reopen");
+        assert_eq!(next_after_reopen.id, ASSEMBLE_TASK_ID);
+
         let close_assemble: BrOutput = br_mutation
             .close_bead(
                 ASSEMBLE_TASK_ID,
@@ -1338,6 +1527,8 @@ mod tests {
                 .map(|call| call.args.clone())
                 .collect::<Vec<_>>(),
             vec![
+                vec!["--robot-next".to_owned()],
+                vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
