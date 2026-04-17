@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T20:13:04.976310644Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify valid issues. The first is a real correctness/maintainability defect in a public test fixture whose mocked `br` behavior does not actually mirror the staged bead graph or mutation results. The second is a legitimate test-stability problem: a hard one-second wall-clock assertion around real filesystem work is inherently load-sensitive and can produce spurious failures in slower CI or Nix environments.\n\n## Votes\n\n- `fr-3-ab07ff12`: Accept\n  `build_mock_br_adapter()` is implemented as a fixed response queue, not a command-aware or stateful mock. The queued responses only support one exact call sequence: `list`, `show(PREPARE_TASK_ID)`, `create`, `show(FOLLOW_UP_TASK_ID)`, `close`, `sync`. Any integration test that legitimately inspects another staged issue such as `ROOT_EPIC_ID` or `VALIDATE_TASK_ID`, or re-reads the created bead after `close`, will either consume the wrong queued response or exhaust the mock entirely. That means the fixture does not satisfy its own stated goal of mirroring the scenario graph, and it cannot represent post-mutation state consistently. This is a real robustness defect, not just a speculative extension request.\n- `fr-3-96eb17b8`: Accept\n  The smoke test uses `Instant::now()` and asserts the whole fixture build completes in under one second while performing actual temp-directory creation, file writes, reads, and JSON parsing. That makes success depend on host performance and scheduler noise rather than only functional correctness. Even if the fixture is normally fast, a hard wall-clock budget at this level is vulnerable to spurious failures on slower CI workers or Nix builders. Performance expectations are reasonable to track, but this specific assertion is flaky as written and should be moved to a benchmark/perf-oriented test or relaxed enough that it does not fail under ordinary environmental variance.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

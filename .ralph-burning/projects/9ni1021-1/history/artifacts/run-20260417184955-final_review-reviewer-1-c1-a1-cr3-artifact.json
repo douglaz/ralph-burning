@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T20:04:41.679978351Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` excluding `.ralph-burning`, read the new fixture and supporting test infrastructure end-to-end, and ran `cargo test build_e2e_milestone_scenario_fixture_smoke_test` successfully. I found two fix-now issues: the new `MockBrAdapter` fixture only supports a single scripted path and becomes inconsistent after mutations, and the new wall-clock assertion is likely to make CI flaky.\n\n## Amendments\n\n1. finding_summary: `build_mock_br_adapter()` scripts a single happy-path exchange instead of mirroring the staged bead graph. The returned fixture only has one initial `show` response (`PREPARE_TASK_ID`), then a synthetic follow-up `show`, and the synthetic bead stays `open` even after the mocked `close` because no later `show`/`list` state is updated. Any integration test that inspects `ROOT_EPIC_ID` or `VALIDATE_TASK_ID`, re-reads the created bead, or validates post-close state will either exhaust the queue or observe impossible data. affected_files: [\"src/test_support/e2e_fixtures.rs:318\", \"src/test_support/e2e_fixtures.rs:325\", \"src/test_support/e2e_fixtures.rs:343\"] remediation_hint: Make the fixture's `MockBrAdapter` stateful, or queue enough per-command responses so every staged bead can be shown and post-`create`/`close` reads reflect the created/closed state.\n   Rationale: The helper is exposed as reusable integration-test infrastructure, but its mocked mutation path does not stay consistent with the workspace state it returns. That will produce brittle or misleading tests as soon as callers do anything beyond the exact smoke-test sequence.\n2. finding_summary: The new smoke test enforces a strict one-second wall-clock budget around real filesystem work. That makes the test sensitive to host load and sandbox performance, so it can fail spuriously on slower CI or Nix builders even when the fixture is functionally correct. affected_files: [\"src/test_support/e2e_fixtures.rs:462\"] remediation_hint: Keep the fixture fast, but move the runtime budget to a benchmark/ignored perf test or replace the hard deadline with a much looser non-flaky assertion.\n   Rationale: This is a robustness problem in the new test itself: the repository's required verification runs under varying machine load, and a hard sub-second deadline is not deterministic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
