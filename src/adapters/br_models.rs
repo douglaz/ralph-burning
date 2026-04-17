@@ -235,6 +235,17 @@ pub struct DependencyRef {
     pub status: Option<BeadStatus>,
 }
 
+/// A comment attached to a bead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BeadComment {
+    pub id: u64,
+    pub issue_id: String,
+    pub author: String,
+    pub text: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
 // ── BeadSummary ─────────────────────────────────────────────────────────────
 
 /// Summary view of a bead, as returned by `br list --json`.
@@ -271,6 +282,8 @@ pub struct BeadDetail {
     pub dependencies: Vec<DependencyRef>,
     #[serde(default)]
     pub dependents: Vec<DependencyRef>,
+    #[serde(default)]
+    pub comments: Vec<BeadComment>,
     #[serde(default)]
     pub owner: Option<String>,
     #[serde(default)]
@@ -664,6 +677,15 @@ mod tests {
                     "kind": "blocks"
                 }
             ],
+            "comments": [
+                {
+                    "id": 7,
+                    "issue_id": "ralph-burning-9ni.4.1.2",
+                    "author": "planner",
+                    "text": "Ship it",
+                    "created_at": "2026-03-27T14:31:00Z"
+                }
+            ],
             "owner": "claude",
             "created_at": "2026-03-25T10:00:00Z",
             "updated_at": "2026-03-27T14:30:00Z"
@@ -688,6 +710,8 @@ mod tests {
         );
         assert_eq!(detail.dependents.len(), 1);
         assert!(detail.dependents[0].title.is_none());
+        assert_eq!(detail.comments.len(), 1);
+        assert_eq!(detail.comments[0].text, "Ship it");
         assert_eq!(detail.owner.as_deref(), Some("claude"));
         assert!(detail.created_at.is_some());
         assert!(detail.updated_at.is_some());
@@ -711,6 +735,7 @@ mod tests {
         assert!(detail.acceptance_criteria.is_empty());
         assert!(detail.dependencies.is_empty());
         assert!(detail.dependents.is_empty());
+        assert!(detail.comments.is_empty());
         assert!(detail.owner.is_none());
         assert!(detail.created_at.is_none());
         assert!(detail.updated_at.is_none());

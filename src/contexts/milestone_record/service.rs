@@ -1,5 +1,5 @@
 #![allow(clippy::too_many_arguments)]
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use tracing::Instrument;
 
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
-use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, BeadType};
+use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, BeadType, DependencyKind};
 use crate::adapters::br_process::{
     BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner, SyncIfDirtyHealthError,
 };
@@ -1466,8 +1466,16 @@ pub struct BeadMaterializationReport {
 #[derive(Debug, Clone)]
 struct MaterializedBeadState {
     id: String,
-    dependencies: BTreeSet<String>,
+    dependencies: HashSet<MaterializedDependency>,
+    comments: HashSet<String>,
     created: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MaterializedBeadRole {
+    RootEpic,
+    WorkstreamEpic,
+    Task,
 }
 
 #[derive(Debug, Clone)]
@@ -1477,13 +1485,20 @@ struct MaterializeBeadInput {
     priority: String,
     labels: Vec<String>,
     description: Option<String>,
+    role: MaterializedBeadRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MaterializedDependency {
+    id: String,
+    kind: DependencyKind,
 }
 
 #[derive(Debug, Clone)]
 struct MaterializedProposal {
     actual_id: String,
     depends_on: Vec<String>,
-    dependencies: BTreeSet<String>,
+    dependencies: HashSet<MaterializedDependency>,
 }
 
 /// Materialize a milestone bundle into `br` beads without altering plan files.
@@ -1499,7 +1514,7 @@ pub async fn materialize_beads<R: ProcessRunner>(
             action: "export beads".to_owned(),
             details: errors.join("; "),
         })?;
-    ensure_bead_export_preflight(bundle, br_mutation).await?;
+    ensure_bead_export_preflight(bundle, base_dir, br_mutation).await?;
     ensure_beads_mutation_health(
         base_dir,
         &MilestoneId::new(bundle.identity.id.clone())?,
@@ -1550,6 +1565,7 @@ pub async fn materialize_beads<R: ProcessRunner>(
                 &milestone_scope_label,
             ),
             description: None,
+            role: MaterializedBeadRole::RootEpic,
         },
     )
     .await?;
@@ -1569,6 +1585,7 @@ pub async fn materialize_beads<R: ProcessRunner>(
                 priority: "P1".to_owned(),
                 labels: materialized_bead_labels(&Vec::<String>::new(), &milestone_scope_label),
                 description: None,
+                role: MaterializedBeadRole::WorkstreamEpic,
             },
         )
         .await?;
@@ -1581,23 +1598,20 @@ pub async fn materialize_beads<R: ProcessRunner>(
             br_mutation,
             &mut workstream_epic,
             root.id.as_str(),
+            DependencyKind::ParentChild,
             "link workstream epic to milestone root",
         )
         .await?;
 
-        if workstream_epic.created {
-            if let Some(description) = workstream.description.as_deref() {
-                br_mutation
-                    .comment_bead(&workstream_epic.id, description)
-                    .await
-                    .map_err(|error| {
-                        milestone_bead_export_error(
-                            bundle,
-                            &format!("comment workstream epic '{}'", workstream.name),
-                            error,
-                        )
-                    })?;
-            }
+        if let Some(description) = workstream.description.as_deref() {
+            ensure_bead_comment(
+                bundle,
+                br_mutation,
+                &mut workstream_epic,
+                description,
+                &format!("comment workstream epic '{}'", workstream.name),
+            )
+            .await?;
         }
 
         for proposal in &workstream.beads {
@@ -1618,6 +1632,7 @@ pub async fn materialize_beads<R: ProcessRunner>(
                     priority: format!("P{}", proposal.priority.unwrap_or(2)),
                     labels: materialized_bead_labels(&proposal.labels, &milestone_scope_label),
                     description: proposal.description.clone(),
+                    role: MaterializedBeadRole::Task,
                 },
             )
             .await?;
@@ -1630,27 +1645,22 @@ pub async fn materialize_beads<R: ProcessRunner>(
                 br_mutation,
                 &mut bead,
                 workstream_epic.id.as_str(),
+                DependencyKind::ParentChild,
                 &format!("link bead '{}' to workstream epic", proposal.title),
             )
             .await?;
 
-            if bead.created {
-                if let Some(comment) = render_bead_planning_comment(
-                    workstream.name.as_str(),
-                    proposal,
-                    &acceptance_lookup,
-                ) {
-                    br_mutation
-                        .comment_bead(&bead.id, &comment)
-                        .await
-                        .map_err(|error| {
-                            milestone_bead_export_error(
-                                bundle,
-                                &format!("comment planning rationale for '{}'", proposal.title),
-                                error,
-                            )
-                        })?;
-                }
+            if let Some(comment) =
+                render_bead_planning_comment(workstream.name.as_str(), proposal, &acceptance_lookup)
+            {
+                ensure_bead_comment(
+                    bundle,
+                    br_mutation,
+                    &mut bead,
+                    &comment,
+                    &format!("comment planning rationale for '{}'", proposal.title),
+                )
+                .await?;
             }
 
             proposal_id_map.insert(canonical_proposal_id, bead.id.clone());
@@ -1666,6 +1676,7 @@ pub async fn materialize_beads<R: ProcessRunner>(
         let mut bead_state = MaterializedBeadState {
             id: proposal.actual_id.clone(),
             dependencies: proposal.dependencies,
+            comments: HashSet::new(),
             created: false,
         };
         for dependency in proposal.depends_on {
@@ -1695,6 +1706,7 @@ pub async fn materialize_beads<R: ProcessRunner>(
                 br_mutation,
                 &mut bead_state,
                 actual_dependency_id.as_str(),
+                DependencyKind::Blocks,
                 &action,
             )
             .await?;
@@ -1757,7 +1769,8 @@ async fn materialize_bead_entry<R: ProcessRunner>(
         resolve_exported_bead_id(bundle, br_mutation.inner(), &input, &output.stdout).await?;
     Ok(MaterializedBeadState {
         id: created_id,
-        dependencies: BTreeSet::new(),
+        dependencies: HashSet::new(),
+        comments: HashSet::new(),
         created: true,
     })
 }
@@ -1822,15 +1835,27 @@ async fn resolve_exported_bead_id<R: ProcessRunner>(
 
 async fn ensure_bead_export_preflight<R: ProcessRunner>(
     bundle: &MilestoneBundle,
+    base_dir: &Path,
     br_mutation: &BrMutationAdapter<R>,
 ) -> AppResult<()> {
     if br_mutation.working_dir().is_none() {
         return Ok(());
     }
-    br_mutation
-        .ensure_synced()
-        .await
-        .map_err(|error| milestone_bead_export_error(bundle, "prepare bead export", error))
+    match br_mutation.sync_own_dirty_if_beads_healthy(base_dir).await {
+        Ok(_) => Ok(()),
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            Err(AppError::MilestoneOperationFailed {
+                milestone_id: bundle.identity.id.clone(),
+                action: "prepare bead export".to_owned(),
+                details,
+            })
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => Err(milestone_bead_export_error(
+            bundle,
+            "prepare bead export",
+            error,
+        )),
+    }
 }
 
 fn milestone_export_label(milestone_id: &str) -> String {
@@ -1868,12 +1893,18 @@ fn canonical_export_proposal_id(
 }
 
 fn summary_matches_materialized_bead(summary: &BeadSummary, input: &MaterializeBeadInput) -> bool {
+    summary_matches_materialized_bead_except_role(summary, input)
+        && materialized_role_matches(&summary.labels, &input.role)
+}
+
+fn summary_matches_materialized_bead_except_role(
+    summary: &BeadSummary,
+    input: &MaterializeBeadInput,
+) -> bool {
     normalize_bead_match_text(&summary.title) == normalize_bead_match_text(&input.title)
         && bead_type_matches(summary.bead_type.clone(), &input.bead_type)
         && matches!(summary.status, BeadStatus::Open | BeadStatus::InProgress)
-        && input
-            .labels
-            .iter()
+        && shared_materialized_labels(&input.labels)
             .all(|label| summary.labels.iter().any(|existing| existing == label))
 }
 
@@ -1881,6 +1912,7 @@ fn detail_matches_materialized_bead(detail: &BeadDetail, input: &MaterializeBead
     normalize_bead_match_text(&detail.title) == normalize_bead_match_text(&input.title)
         && bead_type_matches(detail.bead_type.clone(), &input.bead_type)
         && matches!(detail.status, BeadStatus::Open | BeadStatus::InProgress)
+        && materialized_role_matches(&detail.labels, &input.role)
         && input
             .labels
             .iter()
@@ -1891,6 +1923,20 @@ fn bead_type_matches(bead_type: BeadType, expected: &str) -> bool {
     bead_type.to_string() == expected
 }
 
+fn materialized_role_matches(labels: &[String], role: &MaterializedBeadRole) -> bool {
+    let has_root_label = labels.iter().any(|label| label == "milestone-root");
+    match role {
+        MaterializedBeadRole::RootEpic => has_root_label,
+        MaterializedBeadRole::WorkstreamEpic | MaterializedBeadRole::Task => !has_root_label,
+    }
+}
+
+fn shared_materialized_labels(labels: &[String]) -> impl Iterator<Item = &String> {
+    labels
+        .iter()
+        .filter(|label| label.as_str() != "milestone-root")
+}
+
 async fn find_existing_materialized_bead<R: ProcessRunner>(
     bundle: &MilestoneBundle,
     br_read: &BrAdapter<R>,
@@ -1898,15 +1944,18 @@ async fn find_existing_materialized_bead<R: ProcessRunner>(
     input: &MaterializeBeadInput,
 ) -> AppResult<Option<MaterializedBeadState>> {
     let normalized_title = normalize_bead_match_text(&input.title);
-    let Some(matches) = existing_by_title.remove(&normalized_title) else {
+    let Some(matches) = existing_by_title.get_mut(&normalized_title) else {
         return Ok(None);
     };
 
-    let eligible = matches
+    let eligible_indices = matches
         .iter()
-        .filter(|summary| summary_matches_materialized_bead(summary, input))
+        .enumerate()
+        .filter_map(|(index, summary)| {
+            summary_matches_materialized_bead(summary, input).then_some(index)
+        })
         .collect::<Vec<_>>();
-    if eligible.len() > 1 {
+    if eligible_indices.len() > 1 {
         return Err(AppError::MilestoneOperationFailed {
             milestone_id: bundle.identity.id.clone(),
             action: "reuse exported bead".to_owned(),
@@ -1916,10 +1965,7 @@ async fn find_existing_materialized_bead<R: ProcessRunner>(
             ),
         });
     }
-    if eligible.is_empty() && matches.is_empty() {
-        return Ok(None);
-    }
-    if eligible.is_empty() {
+    if eligible_indices.is_empty() {
         let conflict_ids = matches
             .iter()
             .map(|summary| summary.id.as_str())
@@ -1934,11 +1980,21 @@ async fn find_existing_materialized_bead<R: ProcessRunner>(
             ),
         });
     }
-    if matches.len() != 1 {
+    let selected_index = eligible_indices[0];
+    let conflicting_matches = matches
+        .iter()
+        .enumerate()
+        .filter_map(|(index, summary)| (index != selected_index).then_some(summary))
+        .collect::<Vec<_>>();
+    if !conflicting_matches.is_empty()
+        && !conflicting_matches
+            .iter()
+            .all(|summary| summary_matches_materialized_bead_except_role(summary, input))
+    {
         let conflict_ids = matches
             .iter()
-            .filter(|summary| !summary_matches_materialized_bead(summary, input))
-            .map(|summary| summary.id.as_str())
+            .enumerate()
+            .filter_map(|(index, summary)| (index != selected_index).then_some(summary.id.as_str()))
             .collect::<Vec<_>>()
             .join(", ");
         return Err(AppError::MilestoneOperationFailed {
@@ -1951,7 +2007,10 @@ async fn find_existing_materialized_bead<R: ProcessRunner>(
         });
     }
 
-    let existing = eligible[0];
+    let existing = matches.swap_remove(selected_index);
+    if matches.is_empty() {
+        existing_by_title.remove(&normalized_title);
+    }
     let detail = br_read
         .exec_json::<BeadDetail>(&BrCommand::show(existing.id.clone()))
         .await
@@ -1978,7 +2037,15 @@ async fn find_existing_materialized_bead<R: ProcessRunner>(
         dependencies: detail
             .dependencies
             .into_iter()
-            .map(|dependency| dependency.id)
+            .map(|dependency| MaterializedDependency {
+                id: dependency.id,
+                kind: dependency.kind,
+            })
+            .collect(),
+        comments: detail
+            .comments
+            .into_iter()
+            .map(|comment| normalize_bead_match_text(&comment.text))
             .collect(),
         created: false,
     }))
@@ -1989,17 +2056,42 @@ async fn ensure_dependency<R: ProcessRunner>(
     br_mutation: &BrMutationAdapter<R>,
     from: &mut MaterializedBeadState,
     depends_on_id: &str,
+    kind: DependencyKind,
     action: &str,
 ) -> AppResult<()> {
-    if from.dependencies.contains(depends_on_id) {
+    let dependency = MaterializedDependency {
+        id: depends_on_id.to_owned(),
+        kind: kind.clone(),
+    };
+    if from.dependencies.contains(&dependency) {
         return Ok(());
     }
 
     br_mutation
-        .add_dependency(&from.id, depends_on_id)
+        .add_dependency_with_kind(&from.id, depends_on_id, kind)
         .await
         .map_err(|error| milestone_bead_export_error(bundle, action, error))?;
-    from.dependencies.insert(depends_on_id.to_owned());
+    from.dependencies.insert(dependency);
+    Ok(())
+}
+
+async fn ensure_bead_comment<R: ProcessRunner>(
+    bundle: &MilestoneBundle,
+    br_mutation: &BrMutationAdapter<R>,
+    bead: &mut MaterializedBeadState,
+    comment: &str,
+    action: &str,
+) -> AppResult<()> {
+    let normalized_comment = normalize_bead_match_text(comment);
+    if bead.comments.contains(&normalized_comment) {
+        return Ok(());
+    }
+
+    br_mutation
+        .comment_bead(&bead.id, comment)
+        .await
+        .map_err(|error| milestone_bead_export_error(bundle, action, error))?;
+    bead.comments.insert(normalized_comment);
     Ok(())
 }
 
@@ -5148,6 +5240,41 @@ mod tests {
         labels: &[&str],
         dependencies: &[&str],
     ) -> String {
+        bead_detail_with_comments_stdout(id, title, bead_type, status, labels, dependencies, &[])
+    }
+
+    fn bead_detail_with_comments_stdout(
+        id: &str,
+        title: &str,
+        bead_type: &str,
+        status: &str,
+        labels: &[&str],
+        dependencies: &[&str],
+        comments: &[&str],
+    ) -> String {
+        bead_detail_with_dependency_kinds_stdout(
+            id,
+            title,
+            bead_type,
+            status,
+            labels,
+            &dependencies
+                .iter()
+                .map(|dependency_id| (*dependency_id, "blocks"))
+                .collect::<Vec<_>>(),
+            comments,
+        )
+    }
+
+    fn bead_detail_with_dependency_kinds_stdout(
+        id: &str,
+        title: &str,
+        bead_type: &str,
+        status: &str,
+        labels: &[&str],
+        dependencies: &[(&str, &str)],
+        comments: &[&str],
+    ) -> String {
         serde_json::json!({
             "id": id,
             "title": title,
@@ -5156,11 +5283,19 @@ mod tests {
             "bead_type": bead_type,
             "labels": labels,
             "description": serde_json::Value::Null,
-            "dependencies": dependencies.iter().map(|dependency_id| serde_json::json!({
+            "dependencies": dependencies.iter().enumerate().map(|(index, (dependency_id, kind))| serde_json::json!({
                 "id": dependency_id,
-                "kind": "blocks"
+                "kind": kind,
+                "title": format!("dep-{index}")
             })).collect::<Vec<_>>(),
-            "dependents": []
+            "dependents": [],
+            "comments": comments.iter().enumerate().map(|(index, text)| serde_json::json!({
+                "id": index + 1,
+                "issue_id": id,
+                "author": "planner",
+                "text": text,
+                "created_at": "2026-04-17T12:00:00Z"
+            })).collect::<Vec<_>>()
         })
         .to_string()
     }
@@ -15502,6 +15637,26 @@ mod tests {
                 == vec![
                     "dep".to_owned(),
                     "add".to_owned(),
+                    "ws-core".to_owned(),
+                    "root-epic".to_owned(),
+                    "--type=parent-child".to_owned(),
+                ]
+        }));
+        assert!(calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "dep".to_owned(),
+                    "add".to_owned(),
+                    "task-1".to_owned(),
+                    "ws-core".to_owned(),
+                    "--type=parent-child".to_owned(),
+                ]
+        }));
+        assert!(calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "dep".to_owned(),
+                    "add".to_owned(),
                     "task-5".to_owned(),
                     "task-2".to_owned(),
                 ]
@@ -15544,6 +15699,55 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         setup_workspace(tmp.path());
         let bundle = bead_export_bundle("ms-alpha", "Alpha");
+        let acceptance_lookup = bundle
+            .acceptance_map
+            .iter()
+            .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+            .collect::<HashMap<_, _>>();
+        let core_description = bundle.workstreams[0]
+            .description
+            .as_deref()
+            .expect("core description");
+        let validation_description = bundle.workstreams[1]
+            .description
+            .as_deref()
+            .expect("validation description");
+        let core_comment_1 = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("core comment 1");
+        let core_comment_2 = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[1],
+            &acceptance_lookup,
+        )
+        .expect("core comment 2");
+        let core_comment_3 = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[2],
+            &acceptance_lookup,
+        )
+        .expect("core comment 3");
+        let validation_comment_1 = render_bead_planning_comment(
+            bundle.workstreams[1].name.as_str(),
+            &bundle.workstreams[1].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("validation comment 1");
+        let validation_comment_2 = render_bead_planning_comment(
+            bundle.workstreams[1].name.as_str(),
+            &bundle.workstreams[1].beads[1],
+            &acceptance_lookup,
+        )
+        .expect("validation comment 2");
+        let validation_comment_3 = render_bead_planning_comment(
+            bundle.workstreams[1].name.as_str(),
+            &bundle.workstreams[1].beads[2],
+            &acceptance_lookup,
+        )
+        .expect("validation comment 3");
         let list_all = serde_json::json!([
             bead_summary_value(
                 "root-epic",
@@ -15614,70 +15818,86 @@ mod tests {
                 &["milestone:ms-alpha", "milestone-root"],
                 &[],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "ws-core",
                 "Core",
                 "epic",
                 "open",
                 &["milestone:ms-alpha"],
-                &["root-epic"],
+                &[],
+                &[core_description],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-1",
                 "Create runtime scaffold",
                 "task",
                 "open",
                 &["milestone:ms-alpha", "backend"],
-                &["ws-core"],
+                &[],
+                &[core_comment_1.as_str()],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-2",
                 "Wire milestone exporter",
                 "feature",
                 "open",
                 &["milestone:ms-alpha", "backend", "cli"],
-                &["ws-core", "task-1"],
+                &["task-1"],
+                &[core_comment_2.as_str()],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-3",
                 "Persist export journal",
                 "task",
                 "open",
                 &["milestone:ms-alpha", "backend"],
-                &["ws-core", "task-2"],
+                &["task-2"],
+                &[core_comment_3.as_str()],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "ws-validation",
                 "Validation",
                 "epic",
                 "open",
                 &["milestone:ms-alpha"],
-                &["root-epic"],
+                &[],
+                &[validation_description],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-4",
                 "Add exporter smoke test",
                 "task",
                 "open",
                 &["milestone:ms-alpha", "test"],
-                &["ws-validation"],
+                &[],
+                &[validation_comment_1.as_str()],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-5",
                 "Verify idempotent export",
                 "task",
                 "open",
                 &["milestone:ms-alpha", "test"],
-                &["ws-validation", "task-2"],
+                &["task-2"],
+                &[validation_comment_2.as_str()],
             )),
-            MockBrResponse::success(bead_detail_stdout(
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success(bead_detail_with_comments_stdout(
                 "task-6",
                 "Handle partial export failure",
                 "bug",
                 "open",
                 &["milestone:ms-alpha", "test", "reliability"],
-                &["ws-validation", "task-5"],
+                &["task-5"],
+                &[validation_comment_3.as_str()],
             )),
+            MockBrResponse::success("dependency added"),
             MockBrResponse::success("synced"),
         ]);
 
@@ -15701,7 +15921,7 @@ mod tests {
                         && call.args.get(1).map(String::as_str) == Some("add")
                 })
                 .count(),
-            0
+            8
         );
         assert_eq!(
             calls
@@ -15710,6 +15930,16 @@ mod tests {
                 .count(),
             0
         );
+        assert!(calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "dep".to_owned(),
+                    "add".to_owned(),
+                    "ws-core".to_owned(),
+                    "root-epic".to_owned(),
+                    "--type=parent-child".to_owned(),
+                ]
+        }));
 
         Ok(())
     }
@@ -15935,6 +16165,270 @@ mod tests {
                     "task-1".to_owned(),
                 ]
         }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_beads_restores_missing_comments_for_reused_beads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let bundle = sample_bundle("ms-alpha", "Alpha");
+        let list_all = serde_json::json!([
+            bead_summary_value(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"]
+            ),
+            bead_summary_value("ws-core", "Core", "epic", "open", &["milestone:ms-alpha"]),
+            bead_summary_value(
+                "task-1",
+                "Implement feature",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend"]
+            ),
+        ])
+        .to_string();
+        let acceptance_lookup = bundle
+            .acceptance_map
+            .iter()
+            .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+            .collect::<HashMap<_, _>>();
+        let planning_comment = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("planning comment");
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success(list_all),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "ws-core",
+                "Core",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[("root-epic", "parent-child")],
+                &[],
+            )),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "task-1",
+                "Implement feature",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend"],
+                &[("ws-core", "parent-child")],
+                &[],
+            )),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success("synced"),
+        ]);
+
+        let report = materialize_beads(&bundle, tmp.path(), &mock.as_mutation_adapter()).await?;
+        let calls = mock.calls();
+
+        assert_eq!(report.created_beads, 0);
+        assert_eq!(report.reused_beads, 3);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.args.first().map(String::as_str) == Some("comments"))
+                .count(),
+            2
+        );
+        assert!(calls.iter().any(|call| {
+            call.args.first().map(String::as_str) == Some("comments")
+                && call.args.get(2).map(String::as_str) == Some("ws-core")
+                && call.args.get(3).map(String::as_str)
+                    == bundle.workstreams[0].description.as_deref()
+        }));
+        assert!(calls.iter().any(|call| {
+            call.args.first().map(String::as_str) == Some("comments")
+                && call.args.get(2).map(String::as_str) == Some("task-1")
+                && call.args.get(3).map(String::as_str) == Some(planning_comment.as_str())
+        }));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_beads_replays_own_pending_sync_before_retry(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let bundle = sample_bundle("ms-alpha", "Alpha");
+        let adapter_id = "milestone-export-beads-ms-alpha";
+        let own_record = tmp
+            .path()
+            .join(format!(".beads/.br-unsynced-mutations.d/{adapter_id}.json"));
+        std::fs::create_dir_all(
+            own_record
+                .parent()
+                .expect("pending record path should have a parent"),
+        )?;
+        std::fs::write(
+            &own_record,
+            r#"{"adapter_id":"milestone-export-beads-ms-alpha","operation":"create_bead","bead_id":"task-1","status":null}"#,
+        )?;
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success("synced"),
+            MockBrResponse::success("[]"),
+            MockBrResponse::success("Created bead root-epic"),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success("Created bead ws-core"),
+            MockBrResponse::success(bead_detail_stdout(
+                "ws-core",
+                "Core",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[],
+            )),
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success("Created bead task-1"),
+            MockBrResponse::success(bead_detail_stdout(
+                "task-1",
+                "Implement feature",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend"],
+                &[],
+            )),
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success("synced"),
+        ]);
+        let br_mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::with_runner(mock.clone()).with_working_dir(tmp.path().to_path_buf()),
+            adapter_id,
+        );
+
+        let report = materialize_beads(&bundle, tmp.path(), &br_mutation).await?;
+        let calls = mock.calls();
+
+        assert_eq!(report.created_beads, 3);
+        assert_eq!(
+            calls.first().map(|call| call.args.clone()),
+            Some(vec!["sync".to_owned(), "--flush-only".to_owned()])
+        );
+        assert_eq!(
+            calls.last().map(|call| call.args.clone()),
+            Some(vec!["sync".to_owned(), "--flush-only".to_owned()])
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_beads_reuses_same_title_root_and_workstream_without_ambiguity(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let mut bundle = sample_bundle("ms-alpha", "Alpha");
+        bundle.workstreams[0].name = "Alpha".to_owned();
+        let acceptance_lookup = bundle
+            .acceptance_map
+            .iter()
+            .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+            .collect::<HashMap<_, _>>();
+        let planning_comment = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("planning comment");
+        let list_all = serde_json::json!([
+            bead_summary_value(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"]
+            ),
+            bead_summary_value(
+                "workstream-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"]
+            ),
+            bead_summary_value(
+                "task-1",
+                "Implement feature",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend"]
+            ),
+        ])
+        .to_string();
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success(list_all),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "workstream-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[("root-epic", "parent-child")],
+                &[bundle.workstreams[0]
+                    .description
+                    .as_deref()
+                    .expect("workstream description")],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "task-1",
+                "Implement feature",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend"],
+                &[("workstream-epic", "parent-child")],
+                &[planning_comment.as_str()],
+            )),
+            MockBrResponse::success("synced"),
+        ]);
+
+        let report = materialize_beads(&bundle, tmp.path(), &mock.as_mutation_adapter()).await?;
+        let calls = mock.calls();
+
+        assert_eq!(report.root_epic_id, "root-epic");
+        assert_eq!(report.workstream_epic_ids, vec!["workstream-epic"]);
+        assert_eq!(report.created_beads, 0);
+        assert_eq!(report.reused_beads, 3);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.args.first().map(String::as_str) == Some("create"))
+                .count(),
+            0
+        );
+
         Ok(())
     }
 

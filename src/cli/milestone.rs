@@ -368,8 +368,10 @@ async fn handle_export_beads(milestone_id: String) -> AppResult<()> {
     load_existing_milestone(&store, &current_dir, &milestone_id)?;
     let (bundle, plan_hash) =
         milestone_service::load_plan_bundle(&plan_store, &current_dir, &milestone_id)?;
-    let br_mutation =
-        BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(current_dir.clone()));
+    let br_mutation = BrMutationAdapter::with_adapter_id(
+        BrAdapter::new().with_working_dir(current_dir.clone()),
+        format!("milestone-export-beads-{milestone_id}"),
+    );
 
     let report = milestone_service::materialize_beads(&bundle, &current_dir, &br_mutation).await?;
     milestone_service::record_beads_exported_event(

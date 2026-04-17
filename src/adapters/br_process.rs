@@ -22,6 +22,7 @@ use uuid::Uuid;
 use crate::adapters::br_health::{
     beads_health_failure_details, check_beads_health_with_availability,
 };
+use crate::adapters::br_models::DependencyKind;
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 
@@ -414,7 +415,21 @@ impl BrCommand {
 
     /// `br dep add <from> <to>`
     pub fn dep_add(from: impl Into<String>, to: impl Into<String>) -> Self {
-        Self::new("dep").arg("add").arg(from).arg(to)
+        Self::dep_add_with_kind(from, to, DependencyKind::Blocks)
+    }
+
+    /// `br dep add <from> <to> --type=<kind>`
+    pub fn dep_add_with_kind(
+        from: impl Into<String>,
+        to: impl Into<String>,
+        kind: DependencyKind,
+    ) -> Self {
+        let cmd = Self::new("dep").arg("add").arg(from).arg(to);
+        if matches!(kind, DependencyKind::Blocks) {
+            cmd
+        } else {
+            cmd.kv("type", dependency_kind_arg(&kind))
+        }
     }
 
     /// `br dep remove <from> <to>`
@@ -437,6 +452,13 @@ impl BrCommand {
             .kv("title", title)
             .kv("type", bead_type)
             .kv("priority", priority)
+    }
+}
+
+fn dependency_kind_arg(kind: &DependencyKind) -> &'static str {
+    match kind {
+        DependencyKind::Blocks => "blocks",
+        DependencyKind::ParentChild => "parent-child",
     }
 }
 
@@ -1374,7 +1396,18 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         from_id: &str,
         depends_on_id: &str,
     ) -> Result<BrOutput, BrError> {
-        let cmd = BrCommand::dep_add(from_id, depends_on_id);
+        self.add_dependency_with_kind(from_id, depends_on_id, DependencyKind::Blocks)
+            .await
+    }
+
+    /// Add a dependency with an explicit dependency kind.
+    pub async fn add_dependency_with_kind(
+        &self,
+        from_id: &str,
+        depends_on_id: &str,
+        kind: DependencyKind,
+    ) -> Result<BrOutput, BrError> {
+        let cmd = BrCommand::dep_add_with_kind(from_id, depends_on_id, kind.clone());
         let output = self
             .exec_tracked_mutation("add_dependency", Some(from_id), None, &cmd)
             .await?;
@@ -1382,6 +1415,7 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             operation = "add_dependency",
             bead_id = from_id,
             dependency_id = depends_on_id,
+            dependency_kind = %kind,
             outcome = "success",
             "added bead dependency"
         );
@@ -2046,6 +2080,17 @@ mod tests {
         let cmd = BrCommand::dep_add("bead-a", "bead-b");
         let args = cmd.build_args();
         assert_eq!(args, vec!["dep", "add", "bead-a", "bead-b"]);
+        Ok(())
+    }
+
+    #[test]
+    fn command_builder_dep_add_parent_child() -> Result<(), Box<dyn std::error::Error>> {
+        let cmd = BrCommand::dep_add_with_kind("bead-a", "bead-b", DependencyKind::ParentChild);
+        let args = cmd.build_args();
+        assert_eq!(
+            args,
+            vec!["dep", "add", "bead-a", "bead-b", "--type=parent-child",]
+        );
         Ok(())
     }
 
