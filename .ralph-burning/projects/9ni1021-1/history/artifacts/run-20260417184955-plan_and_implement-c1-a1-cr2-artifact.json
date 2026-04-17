@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T19:30:46.927834292Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/test_support/e2e_fixtures.rs` so the E2E milestone fixture derives the staged `.beads` graph from the same milestone bundle ids and titles used in the planned milestone, preserving the root-epic plus two-task shape while marking root links as `parent_child` and the task sequencing link as `blocks`. Also fixed the mocked `br create` flow to return a distinct follow-up bead id with a matching mocked `show` payload, and strengthened the smoke test to verify bundle/graph identity alignment, dependency kinds, and the post-create inspection path.\n\n## Steps\n\n1. [Completed] Inspected the existing E2E fixture, bundle definitions, staged bead graph, and mock adapter sequencing to confirm the reported bundle/graph mismatch and duplicate create-id behavior.\n2. [Completed] Patched the fixture so the milestone bundle now uses the same bead ids and titles as the staged graph, and rebuilt the graph from bundle data with explicit `parent_child` versus `blocks` dependency kinds.\n3. [Completed] Adjusted the mocked `br` responses to create a distinct synthetic follow-up bead and return a matching `show` payload, then expanded the smoke test and ran the required verification stack.\n\n## Validation Evidence\n\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo fmt --check` passed after formatting the updated fixture file.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}

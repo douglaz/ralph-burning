@@ -1,5 +1,6 @@
 //! Scenario-specific workspace fixtures for integration-style tests.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -31,6 +32,8 @@ const MILESTONE_NAME: &str = "E2E Milestone Scenario Fixture";
 const ROOT_EPIC_ID: &str = "ms-e2e-scenario.root-epic";
 const PREPARE_TASK_ID: &str = "ms-e2e-scenario.task-prepare-workspace";
 const VALIDATE_TASK_ID: &str = "ms-e2e-scenario.task-validate-mocks";
+const FOLLOW_UP_TASK_ID: &str = "ms-e2e-scenario.task-follow-up-validation";
+const FOLLOW_UP_TASK_TITLE: &str = "Follow-up validation bead";
 
 fn scenario_timestamp() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 4, 17, 9, 0, 0)
@@ -53,7 +56,7 @@ pub struct E2eScenarioFixture {
 /// queued mock adapter responses for scenario-style tests.
 pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
     let bundle = scenario_bundle();
-    let bead_graph_issues = scenario_bead_graph_issues();
+    let bead_graph_issues = scenario_bead_graph_issues(&bundle);
     let bead_graph = bead_graph_issues
         .iter()
         .cloned()
@@ -130,17 +133,17 @@ fn scenario_bundle() -> MilestoneBundle {
             AcceptanceCriterion {
                 id: "AC-1".to_owned(),
                 description: "Workspace scaffolding is prepared in the temp directory.".to_owned(),
-                covered_by: vec![format!("{MILESTONE_ID}.bead-1")],
+                covered_by: vec![ROOT_EPIC_ID.to_owned()],
             },
             AcceptanceCriterion {
                 id: "AC-2".to_owned(),
                 description: "Milestone plan artifacts are written and readable.".to_owned(),
-                covered_by: vec![format!("{MILESTONE_ID}.bead-2")],
+                covered_by: vec![PREPARE_TASK_ID.to_owned()],
             },
             AcceptanceCriterion {
                 id: "AC-3".to_owned(),
                 description: "Mock adapters mirror the staged bead graph.".to_owned(),
-                covered_by: vec![format!("{MILESTONE_ID}.bead-3")],
+                covered_by: vec![VALIDATE_TASK_ID.to_owned()],
             },
         ],
         workstreams: vec![
@@ -152,31 +155,32 @@ fn scenario_bundle() -> MilestoneBundle {
                 ),
                 beads: vec![
                     BeadProposal {
-                        bead_id: Some(format!("{MILESTONE_ID}.bead-1")),
+                        bead_id: Some(ROOT_EPIC_ID.to_owned()),
                         explicit_id: Some(true),
-                        title: "Initialize temp workspace".to_owned(),
+                        title: "Assemble temp workspace fixture".to_owned(),
                         description: Some(
-                            "Create the workspace roots and baseline milestone directory."
+                            "Parent epic for the scenario-specific temp workspace and milestone setup."
                                 .to_owned(),
                         ),
-                        bead_type: Some("task".to_owned()),
+                        bead_type: Some("epic".to_owned()),
                         priority: Some(1),
-                        labels: vec!["tests".to_owned(), "workspace".to_owned()],
+                        labels: vec!["integration".to_owned(), "scenario".to_owned()],
                         depends_on: Vec::new(),
                         acceptance_criteria: vec!["AC-1".to_owned()],
                         flow_override: None,
                     },
                     BeadProposal {
-                        bead_id: Some(format!("{MILESTONE_ID}.bead-2")),
+                        bead_id: Some(PREPARE_TASK_ID.to_owned()),
                         explicit_id: Some(true),
-                        title: "Persist milestone plan artifacts".to_owned(),
+                        title: "Prepare scenario workspace".to_owned(),
                         description: Some(
-                            "Write plan.md and plan.json for the scenario milestone.".to_owned(),
+                            "Seed the temp workspace with milestone artifacts and ready bead state."
+                                .to_owned(),
                         ),
                         bead_type: Some("task".to_owned()),
                         priority: Some(1),
-                        labels: vec!["tests".to_owned(), "milestones".to_owned()],
-                        depends_on: vec![format!("{MILESTONE_ID}.bead-1")],
+                        labels: vec!["integration".to_owned(), "workspace".to_owned()],
+                        depends_on: vec![ROOT_EPIC_ID.to_owned()],
                         acceptance_criteria: vec!["AC-2".to_owned()],
                         flow_override: None,
                     },
@@ -188,17 +192,17 @@ fn scenario_bundle() -> MilestoneBundle {
                     "Exercise the mocked adapters against the prepared workspace.".to_owned(),
                 ),
                 beads: vec![BeadProposal {
-                    bead_id: Some(format!("{MILESTONE_ID}.bead-3")),
+                    bead_id: Some(VALIDATE_TASK_ID.to_owned()),
                     explicit_id: Some(true),
-                    title: "Validate mock adapter flow".to_owned(),
+                    title: "Validate mocked adapter responses".to_owned(),
                     description: Some(
-                        "Ensure `br` and `bv` responses align with the scenario bead graph."
+                        "Confirm the staged br/bv responses line up with the workspace bead graph."
                             .to_owned(),
                     ),
                     bead_type: Some("task".to_owned()),
                     priority: Some(2),
-                    labels: vec!["tests".to_owned(), "mocks".to_owned()],
-                    depends_on: vec![format!("{MILESTONE_ID}.bead-2")],
+                    labels: vec!["integration".to_owned(), "mocks".to_owned()],
+                    depends_on: vec![ROOT_EPIC_ID.to_owned(), PREPARE_TASK_ID.to_owned()],
                     acceptance_criteria: vec!["AC-3".to_owned()],
                     flow_override: None,
                 }],
@@ -212,107 +216,87 @@ fn scenario_bundle() -> MilestoneBundle {
     }
 }
 
-fn scenario_bead_graph_issues() -> Vec<BeadGraphIssue> {
+fn scenario_bead_graph_issues(bundle: &MilestoneBundle) -> Vec<BeadGraphIssue> {
+    let acceptance_lookup = bundle
+        .acceptance_map
+        .iter()
+        .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+        .collect::<HashMap<_, _>>();
+    let proposals = bundle
+        .workstreams
+        .iter()
+        .flat_map(|workstream| workstream.beads.iter())
+        .collect::<Vec<_>>();
+    let proposal_lookup = proposals
+        .iter()
+        .filter_map(|proposal| {
+            proposal
+                .bead_id
+                .as_deref()
+                .map(|bead_id| (bead_id, *proposal))
+        })
+        .collect::<BTreeMap<_, _>>();
     let created_at = scenario_timestamp();
     let actor = "fixture".to_owned();
+    [ROOT_EPIC_ID, PREPARE_TASK_ID, VALIDATE_TASK_ID]
+        .into_iter()
+        .map(|bead_id| {
+            let proposal = proposal_lookup
+                .get(bead_id)
+                .copied()
+                .expect("scenario bead proposal must exist");
+            let dependencies = proposal
+                .depends_on
+                .iter()
+                .map(|depends_on_id| {
+                    let kind = if depends_on_id == ROOT_EPIC_ID {
+                        DependencyKind::ParentChild
+                    } else {
+                        DependencyKind::Blocks
+                    };
+                    BeadGraphDependency::new(
+                        bead_id,
+                        depends_on_id.as_str(),
+                        kind,
+                        created_at,
+                        actor.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
 
-    let root_epic = BeadGraphIssue {
-        id: ROOT_EPIC_ID.to_owned(),
-        title: "Assemble temp workspace fixture".to_owned(),
-        status: BeadStatus::Open,
-        priority: BeadPriority::new(1),
-        bead_type: BeadType::Epic,
-        labels: vec!["integration".to_owned(), "scenario".to_owned()],
-        description: Some(
-            "Parent epic for the scenario-specific temp workspace and milestone setup.".to_owned(),
-        ),
-        acceptance_criteria: vec![
-            "Workspace roots exist under the temp directory.".to_owned(),
-            "Scenario tasks can derive their sequencing from explicit dependencies.".to_owned(),
-        ],
-        created_at,
-        created_by: actor.clone(),
-        updated_at: created_at,
-        source_repo: ".".to_owned(),
-        compaction_level: 0,
-        original_size: 0,
-        dependencies: Vec::new(),
-        closed_at: None,
-        close_reason: None,
-    };
-
-    let prepare_task = BeadGraphIssue {
-        id: PREPARE_TASK_ID.to_owned(),
-        title: "Prepare scenario workspace".to_owned(),
-        status: BeadStatus::Open,
-        priority: BeadPriority::new(1),
-        bead_type: BeadType::Task,
-        labels: vec!["integration".to_owned(), "workspace".to_owned()],
-        description: Some(
-            "Seed the temp workspace with milestone artifacts and ready bead state.".to_owned(),
-        ),
-        acceptance_criteria: vec![
-            "plan.md and plan.json are present for the Ready milestone.".to_owned(),
-            "The first task is available for `bv --robot-next`.".to_owned(),
-        ],
-        created_at,
-        created_by: actor.clone(),
-        updated_at: created_at,
-        source_repo: ".".to_owned(),
-        compaction_level: 0,
-        original_size: 0,
-        dependencies: vec![BeadGraphDependency::new(
-            PREPARE_TASK_ID,
-            ROOT_EPIC_ID,
-            DependencyKind::ParentChild,
-            created_at,
-            actor.clone(),
-        )],
-        closed_at: None,
-        close_reason: None,
-    };
-
-    let validate_task = BeadGraphIssue {
-        id: VALIDATE_TASK_ID.to_owned(),
-        title: "Validate mocked adapter responses".to_owned(),
-        status: BeadStatus::Open,
-        priority: BeadPriority::new(2),
-        bead_type: BeadType::Task,
-        labels: vec!["integration".to_owned(), "mocks".to_owned()],
-        description: Some(
-            "Confirm the staged br/bv responses line up with the workspace bead graph.".to_owned(),
-        ),
-        acceptance_criteria: vec![
-            "br list/show return the staged bead graph.".to_owned(),
-            "The validation task remains blocked until workspace preparation completes.".to_owned(),
-        ],
-        created_at,
-        created_by: actor.clone(),
-        updated_at: created_at,
-        source_repo: ".".to_owned(),
-        compaction_level: 0,
-        original_size: 0,
-        dependencies: vec![
-            BeadGraphDependency::new(
-                VALIDATE_TASK_ID,
-                ROOT_EPIC_ID,
-                DependencyKind::ParentChild,
+            BeadGraphIssue {
+                id: bead_id.to_owned(),
+                title: proposal.title.clone(),
+                status: BeadStatus::Open,
+                priority: BeadPriority::new(proposal.priority.unwrap_or(2)),
+                bead_type: match proposal.bead_type.as_deref() {
+                    Some("epic") => BeadType::Epic,
+                    Some("task") | None => BeadType::Task,
+                    Some(other) => BeadType::Other(other.to_owned()),
+                },
+                labels: proposal.labels.clone(),
+                description: proposal.description.clone(),
+                acceptance_criteria: proposal
+                    .acceptance_criteria
+                    .iter()
+                    .filter_map(|criterion_id| {
+                        acceptance_lookup
+                            .get(criterion_id.as_str())
+                            .map(|description| (*description).to_owned())
+                    })
+                    .collect(),
                 created_at,
-                actor.clone(),
-            ),
-            BeadGraphDependency::new(
-                VALIDATE_TASK_ID,
-                PREPARE_TASK_ID,
-                DependencyKind::Blocks,
-                created_at,
-                actor,
-            ),
-        ],
-        closed_at: None,
-        close_reason: None,
-    };
-
-    vec![root_epic, prepare_task, validate_task]
+                created_by: actor.clone(),
+                updated_at: created_at,
+                source_repo: ".".to_owned(),
+                compaction_level: 0,
+                original_size: 0,
+                dependencies,
+                closed_at: None,
+                close_reason: None,
+            }
+        })
+        .collect()
 }
 
 fn load_materialized_fixture(base_dir: &Path, bundle: &MilestoneBundle) -> MilestoneFixture {
@@ -344,12 +328,14 @@ fn build_mock_br_adapter(issues: &[BeadGraphIssue]) -> MockBrAdapter {
         .iter()
         .find(|issue| issue.id == PREPARE_TASK_ID)
         .expect("prepare task issue");
+    let follow_up_issue = follow_up_validation_issue();
 
     MockBrAdapter::from_responses([
         MockBrResponse::success(br_list_json(issues)),
         MockBrResponse::success(br_show_json(prepare_issue, issues)),
-        MockBrResponse::success(format!("Created bead {VALIDATE_TASK_ID}")),
-        MockBrResponse::success(format!("Closed {VALIDATE_TASK_ID}")),
+        MockBrResponse::success(format!("Created bead {}", follow_up_issue.id)),
+        MockBrResponse::success(br_show_json(&follow_up_issue, issues)),
+        MockBrResponse::success(format!("Closed {}", follow_up_issue.id)),
         MockBrResponse::success("synced"),
     ])
 }
@@ -360,6 +346,40 @@ fn build_mock_bv_adapter(issues: &[BeadGraphIssue]) -> MockBvAdapter {
         .find(|issue| issue.id == PREPARE_TASK_ID)
         .expect("prepare task issue");
     MockBvAdapter::from_responses([MockBvResponse::success(next_bead_json(prepare_issue))])
+}
+
+fn follow_up_validation_issue() -> BeadGraphIssue {
+    let created_at = scenario_timestamp() + Duration::minutes(2);
+    BeadGraphIssue {
+        id: FOLLOW_UP_TASK_ID.to_owned(),
+        title: FOLLOW_UP_TASK_TITLE.to_owned(),
+        status: BeadStatus::Open,
+        priority: BeadPriority::new(2),
+        bead_type: BeadType::Task,
+        labels: vec!["integration".to_owned(), "follow-up".to_owned()],
+        description: Some(
+            "Capture a synthetic follow-up task created during scenario execution.".to_owned(),
+        ),
+        acceptance_criteria: vec![
+            "The mocked `br create` flow returns a unique bead id.".to_owned(),
+            "A subsequent `br show` can inspect the created bead.".to_owned(),
+        ],
+        created_at,
+        created_by: "fixture".to_owned(),
+        updated_at: created_at,
+        source_repo: ".".to_owned(),
+        compaction_level: 0,
+        original_size: 0,
+        dependencies: vec![BeadGraphDependency::new(
+            FOLLOW_UP_TASK_ID,
+            VALIDATE_TASK_ID,
+            DependencyKind::Blocks,
+            created_at,
+            "fixture",
+        )],
+        closed_at: None,
+        close_reason: None,
+    }
 }
 
 fn br_list_json(issues: &[BeadGraphIssue]) -> String {
@@ -485,6 +505,35 @@ mod tests {
                 .sum::<usize>(),
             3
         );
+        assert_eq!(
+            persisted_bundle
+                .workstreams
+                .iter()
+                .flat_map(|workstream| workstream.beads.iter())
+                .map(|bead| {
+                    (
+                        bead.bead_id.clone().expect("explicit scenario bead id"),
+                        bead.title.clone(),
+                    )
+                })
+                .collect::<BTreeSet<_>>(),
+            [
+                (
+                    ROOT_EPIC_ID.to_owned(),
+                    "Assemble temp workspace fixture".to_owned()
+                ),
+                (
+                    PREPARE_TASK_ID.to_owned(),
+                    "Prepare scenario workspace".to_owned()
+                ),
+                (
+                    VALIDATE_TASK_ID.to_owned(),
+                    "Validate mocked adapter responses".to_owned(),
+                ),
+            ]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        );
 
         let raw_beads = fs::read_to_string(fixture.workspace.beads_root().join("issues.jsonl"))
             .expect("read bead graph");
@@ -510,6 +559,25 @@ mod tests {
             validate_row["dependencies"].as_array().map(Vec::len),
             Some(2)
         );
+        let prepare_row = bead_rows
+            .iter()
+            .find(|row| row["id"] == PREPARE_TASK_ID)
+            .expect("prepare task row");
+        assert_eq!(
+            prepare_row["dependencies"][0]["type"].as_str(),
+            Some("parent_child")
+        );
+        assert_eq!(
+            validate_row["dependencies"]
+                .as_array()
+                .expect("validate dependencies")
+                .iter()
+                .map(|dependency| dependency["type"].as_str().expect("dependency type"))
+                .collect::<BTreeSet<_>>(),
+            ["blocks", "parent_child"]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+        );
 
         let working_dir = fixture.workspace.path().to_path_buf();
         let br = fixture
@@ -525,6 +593,7 @@ mod tests {
         assert_eq!(listed.len(), 3);
         assert_eq!(listed[0].id, ROOT_EPIC_ID);
         assert_eq!(listed[1].id, PREPARE_TASK_ID);
+        assert_eq!(listed[2].id, VALIDATE_TASK_ID);
 
         let detail: BeadDetail = br
             .exec_json(&BrCommand::show(PREPARE_TASK_ID))
@@ -538,13 +607,22 @@ mod tests {
             .exec_read(&BrCommand::create("Follow-up validation bead", "task", "2"))
             .await
             .expect("br create");
-        assert!(create_output.stdout.contains(VALIDATE_TASK_ID));
+        assert!(create_output.stdout.contains(FOLLOW_UP_TASK_ID));
+
+        let created_detail: BeadDetail = br
+            .exec_json(&BrCommand::show(FOLLOW_UP_TASK_ID))
+            .await
+            .expect("br show created bead");
+        assert_eq!(created_detail.id, FOLLOW_UP_TASK_ID);
+        assert_eq!(created_detail.title, FOLLOW_UP_TASK_TITLE);
+        assert_eq!(created_detail.dependencies.len(), 1);
+        assert_eq!(created_detail.dependencies[0].id, VALIDATE_TASK_ID);
 
         let close_output = br
-            .exec_read(&BrCommand::close(VALIDATE_TASK_ID, "Fixture cleanup"))
+            .exec_read(&BrCommand::close(FOLLOW_UP_TASK_ID, "Fixture cleanup"))
             .await
             .expect("br close");
-        assert!(close_output.stdout.contains(VALIDATE_TASK_ID));
+        assert!(close_output.stdout.contains(FOLLOW_UP_TASK_ID));
 
         let sync_output = br
             .exec_read(&BrCommand::sync_flush())
@@ -580,8 +658,13 @@ mod tests {
                     "--priority=2".to_owned(),
                 ],
                 vec![
+                    "show".to_owned(),
+                    FOLLOW_UP_TASK_ID.to_owned(),
+                    "--json".to_owned()
+                ],
+                vec![
                     "close".to_owned(),
-                    VALIDATE_TASK_ID.to_owned(),
+                    FOLLOW_UP_TASK_ID.to_owned(),
                     "--reason=Fixture cleanup".to_owned(),
                 ],
                 vec!["sync".to_owned(), "--flush-only".to_owned()],

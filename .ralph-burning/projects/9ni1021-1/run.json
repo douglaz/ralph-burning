@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-57df9766",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The fixture's milestone plan and staged bead graph are disconnected. `scenario_bundle()` defines milestone beads `ms-e2e-scenario.bead-1..3` with titles like \"Initialize temp workspace\" and \"Validate mock adapter flow\" [src/test_support/e2e_fixtures.rs:155-202], but `scenario_bead_graph_issues()` and the mocked `br`/`bv` outputs expose `ms-e2e-scenario.root-epic`, `ms-e2e-scenario.task-prepare-workspace`, and `ms-e2e-scenario.task-validate-mocks` with different titles [src/test_support/e2e_fixtures.rs:219-315,342-363]. Plan-aware code only confirms milestone membership when the selected bead matches a proposal by id or title [src/cli/project.rs:1342-1414], so this fixture cannot actually exercise the real milestone-linked path it is supposed to support. affected_files: [\"src/test_support/e2e_fixtures.rs\", \"src/cli/project.rs\"] remediation_hint: Derive the `.beads` graph and mock adapter payloads from the same bead ids/titles used in `scenario_bundle()` so the selected bead resolves back to the milestone plan.",
-        "created_at": "2026-04-17T19:16:59.965370744Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "00631bcda08c0c198d0579b806737fdc094c4f3e2c619f0a6bacb9bc9c7a8c92"
-      },
-      {
-        "amendment_id": "fr-1-15b8289d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The preloaded `br create` mock returns `Created bead ms-e2e-scenario.task-validate-mocks` [src/test_support/e2e_fixtures.rs:348-352], but that id is already present in the staged bead graph as the existing validation task [src/test_support/e2e_fixtures.rs:275-315]. Creation/reconciliation code resolves the created bead id from `br create` stdout and then inspects that bead [src/contexts/milestone_record/service.rs:4056-4095], so reusing an existing id makes the fixture unusable for any creation flow and can mask duplicate-id bugs. affected_files: [\"src/test_support/e2e_fixtures.rs\", \"src/contexts/milestone_record/service.rs\"] remediation_hint: Return a distinct synthetic id for the mocked create response and queue a matching `show` payload for that new bead, or avoid embedding an existing bead id in the mocked stdout.",
-        "created_at": "2026-04-17T19:16:59.965375673Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "7c816bada32c2e270cc0c529d5bf4eabd0d04e84770ab1c7ac8b5609748aba89"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 2
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T19:07:42.554013283Z",
