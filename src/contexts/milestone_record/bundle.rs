@@ -658,7 +658,7 @@ fn apply_explicit_id_hints(
     Ok(with_hints)
 }
 
-fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if raw != trimmed {
         return Err("must not contain leading or trailing whitespace".to_owned());
@@ -688,7 +688,7 @@ fn normalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, Str
     Ok(trimmed.to_owned())
 }
 
-fn canonicalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
+pub(crate) fn canonicalize_bead_reference(milestone_id: &str, raw: &str) -> Result<String, String> {
     normalize_bead_reference(milestone_id, raw)
         .map(|normalized| format!("{milestone_id}.{normalized}"))
 }

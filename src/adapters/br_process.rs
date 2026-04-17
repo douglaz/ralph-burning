@@ -837,6 +837,10 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         &self.adapter_id
     }
 
+    pub fn working_dir(&self) -> Option<&Path> {
+        self.adapter.working_dir.as_deref()
+    }
+
     /// Provide read-only access to the inner adapter for queries.
     pub fn inner(&self) -> &BrAdapter<R> {
         &self.adapter

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417123935",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,88 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-34318126",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The idempotency guard reuses any bead whose normalized title matches, even though it is searching across `br list --all`, so a generic title like `Core`, `Validation`, or `Add exporter smoke test` can cause this export to adopt an unrelated or closed bead from another milestone and then wire it under the new root/workstream hierarchy.\naffected_files:\n- src/contexts/milestone_record/service.rs:1491-1504\n- src/contexts/milestone_record/service.rs:1669-1693\n- src/adapters/br_process.rs:366-373\nremediation_hint: Restrict reuse to beads that are already provably owned by this milestone export (for example via a persisted milestone-specific marker/label/comment plus the expected parent chain), and reject ambiguous, closed, or type-mismatched title matches instead of blindly popping the first summary.",
-        "created_at": "2026-04-17T13:14:46.987967301Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "cdd5e7f311f1895a2e8ccf12572f07054d7ef8c90b443d70b2557c461ee7714f"
-      },
-      {
-        "amendment_id": "fr-1-d3e593a6",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The export path ends with an unconditional `sync_flush()`, but this command is created from a fresh `BrMutationAdapter` and never performs the existing ownership/health checks before flushing. Because `sync_flush()` clears all pending mutation markers, an `export-beads` run can publish someone else's unsynced local bead edits that were already present in `.beads/.br-unsynced-mutations.d/`.\naffected_files:\n- src/contexts/milestone_record/service.rs:1647-1650\n- src/adapters/br_process.rs:1423-1432\n- src/adapters/br_process.rs:1556-1562\nremediation_hint: Use the guarded sync path (`sync_own_dirty_if_beads_healthy`) or fail fast before mutating when foreign pending mutation records exist, so this workflow only ever flushes its own export work.",
-        "created_at": "2026-04-17T13:14:46.987974715Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "4de7c1f6e60f19545e82b2d64da45f2f3d5b025e647087c62a0ddcd5b0ebd94e"
-      },
-      {
-        "amendment_id": "fr-1-333b58da",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: Created bead IDs are resolved by taking the first token-like suffix from `br create` stdout, with no verification that the token is actually a bead ID for the requested title. If the CLI prints any trailing word or echoes the title, this path can resolve the wrong ID and then attach dependencies/comments to the wrong bead or to a nonexistent bead.\naffected_files:\n- src/contexts/milestone_record/service.rs:1702-1730\n- src/contexts/milestone_record/service.rs:3237-3255\nremediation_hint: Reuse the existing verified resolution strategy already used elsewhere in this file: treat stdout candidates as hints, then confirm them with `br show`/title matching before returning an ID, and only fall back to title lookup after that verification fails.",
-        "created_at": "2026-04-17T13:14:46.987981618Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "368cf19b8aea7d25e4a38169722010c3c83df123bb6552cc02e9cc5294d2b323"
-      },
-      {
-        "amendment_id": "fr-1-08a2a084",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Comment writes in `materialize_beads` are not idempotent. In `src/contexts/milestone_record/service.rs:1552-1563`, the workstream description is unconditionally posted via `comment_bead(&workstream_epic.id, description)` on every call — even when the workstream epic was just matched (`created = false`). Likewise the per-bead planning rationale at lines 1591-1604 is posted every time `render_bead_planning_comment(...)` returns `Some`, with no guard against the bead being reused. The `materialize_beads_is_idempotent_for_existing_titles` test at lines 15156-15245 actually *codifies* this behavior: on a full rerun it accepts 8 fresh \"comment added\" mutations even though `created_beads == 0`. This directly violates the acceptance criterion \"Idempotent: running twice doesn't create duplicates\" and will accumulate duplicate rationale comments on every subsequent export (e.g. when one new bead is added to the plan and the user reruns export-beads, every previously-exported bead gets a second copy of its rationale). Gate the two `comment_bead` calls on `created == true` (or diff against the existing comment set via `br comments list --json`) so reused beads skip comment reposting. Update the idempotent test to assert zero comment mutations on rerun.",
-        "created_at": "2026-04-17T13:14:46.987991216Z",
-        "batch_sequence": 4,
-        "source": "workflow_stage",
-        "dedup_key": "590f3dcbacf9de1c9e7e813ee8357ee4d3fecf7faef85019d6d2d9936e2f3347"
-      },
-      {
-        "amendment_id": "fr-1-03293bf5",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Cross-milestone title collisions silently reuse unrelated beads. `materialize_beads` builds `existing_by_title` from `BrCommand::list_all()` (`src/contexts/milestone_record/service.rs:1491-1504`), which returns every bead in the repo. `materialize_bead_entry` (lines 1659-1694) then pops a match by normalized title alone — no filter by milestone, label, or type. Consequences: (1) the root epic is materialized with `bundle.identity.name` (e.g. \"Alpha\") as its title and no scoping, so a pre-existing bead titled \"Alpha\" from an unrelated milestone is reused as this milestone's root; (2) workstream epics use generic names like \"Core\" or \"Validation\" that are highly likely to collide across milestones — the exporter will link this milestone's new tasks under another milestone's \"Core\" epic; (3) the created root is labeled `milestone-root` but the match ignores labels, so the label does not protect against misreuse. Recommended: label every materialized bead with a milestone-scoped label (e.g. `milestone:<id>`) and filter `existing_by_title` to entries carrying that label before matching. Add a test where two milestones share a workstream name and the second export does not rebind to the first's epic.",
-        "created_at": "2026-04-17T13:14:46.988000924Z",
-        "batch_sequence": 5,
-        "source": "workflow_stage",
-        "dedup_key": "b5e5b27aa66bce26207d00d828790593ca75db5da710728939cf20cb381948dc"
-      },
-      {
-        "amendment_id": "fr-1-9c45d658",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Implicit bead IDs in `depends_on` cause export to fail. In `src/contexts/milestone_record/service.rs:1606-1608`, `proposal_id_map` is populated only when `proposal.bead_id.is_some()`. The final dependency loop at lines 1617-1644 looks up `proposal_id_map.get(&dependency)` and errors with \"bead depends on unknown proposal id\" on miss. However, `MilestoneBundle::validate` in Compatibility mode (`src/contexts/milestone_record/bundle.rs:91-410`) accepts proposals without an explicit `bead_id` — they get an implicit identity like `<milestone>.bead-N` and may be referenced from other proposals' `depends_on` using that implicit form. Running `materialize_beads` on such a valid bundle will fail mid-way (after creating root + workstream epics + some tasks) with no sync flush. Fix: when building `proposal_id_map`, also register the implicit canonical bead id (same form used by `backfill_legacy_explicit_bead_flags` / `normalize_bead_reference`), and have the dependency loop normalize each `depends_on` reference through the same function before lookup. Add a test bundle that uses implicit IDs in `depends_on`.",
-        "created_at": "2026-04-17T13:14:46.988009149Z",
-        "batch_sequence": 6,
-        "source": "workflow_stage",
-        "dedup_key": "18214bcc17b4e035902bc88c4d902bb36f0859e4ef2aa93d5a91210a14815f6e"
-      },
-      {
-        "amendment_id": "fr-1-988679fb",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "`handle_export_beads` records nothing in the milestone journal. `src/cli/milestone.rs:360-380` creates beads, comments, and dependency edges against `br`, then sets the active milestone and prints a summary — but it never appends a `MilestoneJournalEvent` recording that an export happened, what root/workstream/task IDs were produced, or which bundle hash was exported. Other mutating milestone commands (plan/run/next) keep a journal trail. Without an event here, forensics after a failed or partial export (e.g., to reconcile which IDs `br` owns for this milestone) has to reverse-engineer state from the `br` tracker alone. Consider appending a `BeadsExported` (or similar) journal event with the bundle hash and the `BeadMaterializationReport` details before returning.",
-        "created_at": "2026-04-17T13:14:46.988015932Z",
-        "batch_sequence": 7,
-        "source": "workflow_stage",
-        "dedup_key": "6c5941ba67d4ee64576dc12ef8c65fa226de6662a75326859daab6a68c895cac"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 7
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T13:01:10.788205128Z",

@@ -362,15 +362,24 @@ async fn handle_export_beads(milestone_id: String) -> AppResult<()> {
     validate_workspace(&current_dir)?;
 
     let store = FsMilestoneStore;
+    let journal_store = FsMilestoneJournalStore;
     let plan_store = FsMilestonePlanStore;
     let milestone_id = MilestoneId::new(milestone_id)?;
     load_existing_milestone(&store, &current_dir, &milestone_id)?;
-    let (bundle, _) =
+    let (bundle, plan_hash) =
         milestone_service::load_plan_bundle(&plan_store, &current_dir, &milestone_id)?;
     let br_mutation =
         BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(current_dir.clone()));
 
-    let report = milestone_service::materialize_beads(&bundle, &br_mutation).await?;
+    let report = milestone_service::materialize_beads(&bundle, &current_dir, &br_mutation).await?;
+    milestone_service::record_beads_exported_event(
+        &journal_store,
+        &current_dir,
+        &milestone_id,
+        &plan_hash,
+        &report,
+        Utc::now(),
+    )?;
     workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
     println!(
         "Exported beads for milestone '{}' (root: {}, created: {}, reused: {})",
