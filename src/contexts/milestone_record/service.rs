@@ -2034,7 +2034,7 @@ fn explicit_export_bead_id(
 fn summary_matches_materialized_bead(summary: &BeadSummary, input: &MaterializeBeadInput) -> bool {
     summary_matches_materialized_bead_except_role(summary, input)
         && identity_label_matches(&summary.labels, input.identity_label.as_ref())
-        && materialized_role_matches(&summary.labels, &input.role)
+        && materialized_role_matches(&summary.labels, &summary.bead_type, &input.role)
 }
 
 fn summary_matches_materialized_bead_except_role(
@@ -2049,7 +2049,7 @@ fn summary_matches_materialized_bead_except_role(
 fn detail_matches_materialized_bead(detail: &BeadDetail, input: &MaterializeBeadInput) -> bool {
     normalize_bead_match_text(&detail.title) == normalize_bead_match_text(&input.title)
         && bead_type_matches(detail.bead_type.clone(), &input.bead_type)
-        && materialized_role_matches(&detail.labels, &input.role)
+        && materialized_role_matches(&detail.labels, &detail.bead_type, &input.role)
         && identity_label_matches(&detail.labels, input.identity_label.as_ref())
         && materialized_metadata_labels_match(&detail.labels, input)
 }
@@ -2062,11 +2062,29 @@ fn bead_type_matches(bead_type: BeadType, expected: &str) -> bool {
     bead_type.to_string() == expected
 }
 
-fn materialized_role_matches(labels: &[String], role: &MaterializedBeadRole) -> bool {
+fn materialized_role_matches(
+    labels: &[String],
+    bead_type: &BeadType,
+    role: &MaterializedBeadRole,
+) -> bool {
     let has_root_label = labels.iter().any(|label| label == "milestone-root");
+    let has_workstream_label = labels.iter().any(|label| is_workstream_export_label(label));
+    let has_proposal_label = labels.iter().any(|label| is_proposal_export_label(label));
     match role {
         MaterializedBeadRole::RootEpic => has_root_label,
-        MaterializedBeadRole::WorkstreamEpic | MaterializedBeadRole::Task => !has_root_label,
+        MaterializedBeadRole::WorkstreamEpic => {
+            !has_root_label
+                && matches!(bead_type, BeadType::Epic)
+                && (has_workstream_label || !has_proposal_label)
+        }
+        MaterializedBeadRole::Task => {
+            !has_root_label
+                && if has_proposal_label {
+                    true
+                } else {
+                    !has_workstream_label && !matches!(bead_type, BeadType::Epic)
+                }
+        }
     }
 }
 
@@ -2307,6 +2325,12 @@ fn explicit_materialized_bead_matches(
         .labels
         .iter()
         .any(|label| label == &milestone_scope_label);
+    let shape_matches = bead_type_matches(detail.bead_type.clone(), &input.bead_type)
+        && materialized_role_matches(&detail.labels, &detail.bead_type, &input.role);
+
+    if !shape_matches {
+        return false;
+    }
 
     if input.identity_label.as_ref().is_some_and(|identity_label| {
         milestone_scoped && detail.labels.iter().any(|label| label == identity_label)
@@ -16549,7 +16573,7 @@ mod tests {
             MockBrResponse::success(bead_detail_stdout(
                 "ms-alpha.authored-42",
                 "Already authored task",
-                "bug",
+                "task",
                 "open",
                 &["existing-label"],
                 &[],
@@ -16623,6 +16647,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn materialize_beads_reuses_epic_tasks_without_collapsing_into_workstream_epics(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let mut bundle = sample_bundle("ms-alpha", "Alpha");
+        bundle.workstreams[0].beads[0].title = "Core".to_owned();
+        bundle.workstreams[0].beads[0].bead_type = Some("epic".to_owned());
+        bundle.workstreams[0].beads[0].description =
+            Some("Do not collapse this epic task into the workstream.".to_owned());
+
+        let acceptance_lookup = bundle
+            .acceptance_map
+            .iter()
+            .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+            .collect::<HashMap<_, _>>();
+        let workstream_comment = bundle.workstreams[0]
+            .description
+            .as_deref()
+            .expect("workstream description")
+            .to_owned();
+        let planning_comment = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("planning comment");
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success(list_all_stdout(vec![
+                bead_summary_value(
+                    "root-epic",
+                    "Alpha",
+                    "epic",
+                    "open",
+                    &["milestone:ms-alpha", "milestone-root"],
+                ),
+                bead_summary_value("ws-core", "Core", "epic", "open", &["milestone:ms-alpha"]),
+                bead_summary_value(
+                    "task-core",
+                    "Core",
+                    "epic",
+                    "closed",
+                    &["milestone:ms-alpha", "proposal:bead-1"],
+                ),
+            ])),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "ws-core",
+                "Core",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[("root-epic", "parent-child")],
+                &[workstream_comment.as_str()],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "task-core",
+                "Core",
+                "epic",
+                "closed",
+                &["milestone:ms-alpha", "proposal:bead-1"],
+                &[("ws-core", "parent-child")],
+                &[planning_comment.as_str()],
+            )),
+        ]);
+
+        let report = materialize_beads(&bundle, tmp.path(), &mock.as_mutation_adapter()).await?;
+        let calls = mock.calls();
+
+        assert_eq!(report.created_beads, 0);
+        assert_eq!(report.reused_beads, 3);
+        assert_eq!(report.task_bead_ids, vec!["task-core"]);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.args.first().map(String::as_str) == Some("create"))
+                .count(),
+            0
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.args.first().map(String::as_str) == Some("dep"))
+                .count(),
+            0
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.args.first().map(String::as_str) == Some("comments"))
+                .count(),
+            0
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn materialize_beads_propagates_non_missing_explicit_lookup_failures(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -16691,6 +16819,129 @@ mod tests {
         assert!(!calls
             .iter()
             .any(|call| call.args == vec!["sync".to_owned(), "--flush-only".to_owned()]));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_beads_does_not_reuse_explicit_ids_with_incompatible_shape(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let mut bundle = sample_bundle("ms-alpha", "Alpha");
+        bundle.acceptance_map[0].covered_by = vec!["authored-42".to_owned()];
+        bundle.workstreams[0].beads[0].bead_id = Some("authored-42".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        bundle.workstreams[0].beads[0].title = "Renamed explicit bead".to_owned();
+        bundle.workstreams[0].beads[0].description =
+            Some("Create a new task when the explicit id points at the wrong shape.".to_owned());
+
+        let acceptance_lookup = bundle
+            .acceptance_map
+            .iter()
+            .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+            .collect::<HashMap<_, _>>();
+        let planning_comment = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("planning comment");
+
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success(list_all_stdout(vec![])),
+            MockBrResponse::success("Created bead root-epic"),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success("Created bead ws-core"),
+            MockBrResponse::success(bead_detail_stdout(
+                "ws-core",
+                "Core",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[],
+            )),
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success(bead_detail_stdout(
+                "ms-alpha.authored-42",
+                "Historical epic",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[],
+            )),
+            MockBrResponse::exit_failure(1, "issue 'authored-42' not found"),
+            MockBrResponse::success("Created bead task-1"),
+            MockBrResponse::success(bead_detail_stdout(
+                "task-1",
+                "Renamed explicit bead",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend", "proposal:authored-42"],
+                &[],
+            )),
+            MockBrResponse::success("dependency added"),
+            MockBrResponse::success("comment added"),
+            MockBrResponse::success("synced"),
+        ]);
+
+        let report = materialize_beads(&bundle, tmp.path(), &mock.as_mutation_adapter()).await?;
+        let calls = mock.calls();
+
+        assert_eq!(report.created_beads, 3);
+        assert_eq!(report.reused_beads, 0);
+        assert_eq!(report.task_bead_ids, vec!["task-1"]);
+        assert_eq!(
+            report.planned_bead_id_map.get("ms-alpha.authored-42"),
+            Some(&"task-1".to_owned())
+        );
+        assert!(calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "show".to_owned(),
+                    "ms-alpha.authored-42".to_owned(),
+                    "--json".to_owned(),
+                ]
+        }));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| {
+                    call.args.first().map(String::as_str) == Some("create")
+                        && call
+                            .args
+                            .iter()
+                            .any(|arg| arg == "--title=Renamed explicit bead")
+                })
+                .count(),
+            1
+        );
+        assert!(calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "comments".to_owned(),
+                    "add".to_owned(),
+                    "task-1".to_owned(),
+                    planning_comment.clone(),
+                ]
+        }));
+        assert!(!calls.iter().any(|call| {
+            call.args
+                == vec![
+                    "comments".to_owned(),
+                    "add".to_owned(),
+                    "ms-alpha.authored-42".to_owned(),
+                    planning_comment.clone(),
+                ]
+        }));
 
         Ok(())
     }
