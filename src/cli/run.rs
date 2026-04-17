@@ -4962,10 +4962,7 @@ mod tests {
         let _path_lock = lock_path_mutex();
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
-        let now = Utc
-            .with_ymd_and_hms(2026, 4, 17, 13, 0, 0)
-            .single()
-            .expect("valid timestamp");
+        let now = Utc::now() + chrono::Duration::seconds(60);
         let milestone = create_milestone_with_plan(base_dir, now);
         let project_id = ProjectId::new("bead-run").expect("project id");
         install_fake_br_show_script(
