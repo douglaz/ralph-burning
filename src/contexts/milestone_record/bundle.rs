@@ -649,6 +649,12 @@ struct DependencyGraphAnalysis {
     dependency_depth: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkstreamOrderAnalysis {
+    ordered: Vec<usize>,
+    blocked: Vec<usize>,
+}
+
 fn inferred_bead_identifier(raw_bead_id: Option<&str>, implicit_index: usize) -> String {
     raw_bead_id
         .map(str::trim)
@@ -691,6 +697,66 @@ fn inferred_dependency_nodes(workstreams: &[Workstream]) -> Vec<DependencyNode> 
     }
 
     nodes
+}
+
+fn analyze_workstream_order(workstreams: &[Workstream]) -> WorkstreamOrderAnalysis {
+    let nodes = inferred_dependency_nodes(workstreams);
+    let mut bead_index = BTreeMap::new();
+    let mut ambiguous_aliases = BTreeSet::new();
+
+    for (index, node) in nodes.iter().enumerate() {
+        for alias in bead_reference_aliases(&node.bead_id) {
+            if bead_index.insert(alias.clone(), index).is_some() {
+                ambiguous_aliases.insert(alias);
+            }
+        }
+    }
+    for alias in ambiguous_aliases {
+        bead_index.remove(&alias);
+    }
+
+    let mut workstream_edges = vec![BTreeSet::new(); workstreams.len()];
+    let mut indegree = vec![0usize; workstreams.len()];
+    for node in &nodes {
+        for depends_on in &node.depends_on {
+            for alias in bead_reference_aliases(depends_on) {
+                if let Some(dependency_index) = bead_index.get(&alias) {
+                    let upstream = nodes[*dependency_index].workstream_index;
+                    let downstream = node.workstream_index;
+                    if upstream != downstream && workstream_edges[upstream].insert(downstream) {
+                        indegree[downstream] += 1;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut ready = BTreeSet::new();
+    for (index, count) in indegree.iter().enumerate() {
+        if *count == 0 {
+            ready.insert(index);
+        }
+    }
+
+    let mut ordered = Vec::new();
+    while let Some(index) = ready.pop_first() {
+        ordered.push(index);
+        for dependent in &workstream_edges[index] {
+            indegree[*dependent] -= 1;
+            if indegree[*dependent] == 0 {
+                ready.insert(*dependent);
+            }
+        }
+    }
+
+    let blocked = indegree
+        .iter()
+        .enumerate()
+        .filter_map(|(index, count)| (*count > 0).then_some(index))
+        .collect();
+
+    WorkstreamOrderAnalysis { ordered, blocked }
 }
 
 fn dependency_graph_analysis_from_canonical(
@@ -886,63 +952,12 @@ fn collect_deferred_items(bundle: &MilestoneBundle, workstream_labels: &[String]
 }
 
 pub fn infer_workstream_order(workstreams: &[Workstream]) -> Vec<usize> {
-    let nodes = inferred_dependency_nodes(workstreams);
-    let mut bead_index = BTreeMap::new();
-    let mut ambiguous_aliases = BTreeSet::new();
-
-    for (index, node) in nodes.iter().enumerate() {
-        for alias in bead_reference_aliases(&node.bead_id) {
-            if bead_index.insert(alias.clone(), index).is_some() {
-                ambiguous_aliases.insert(alias);
-            }
-        }
+    let analysis = analyze_workstream_order(workstreams);
+    if analysis.blocked.is_empty() {
+        analysis.ordered
+    } else {
+        Vec::new()
     }
-    for alias in ambiguous_aliases {
-        bead_index.remove(&alias);
-    }
-
-    let mut workstream_edges = vec![BTreeSet::new(); workstreams.len()];
-    let mut indegree = vec![0usize; workstreams.len()];
-    for node in &nodes {
-        for depends_on in &node.depends_on {
-            for alias in bead_reference_aliases(depends_on) {
-                if let Some(dependency_index) = bead_index.get(&alias) {
-                    let upstream = nodes[*dependency_index].workstream_index;
-                    let downstream = node.workstream_index;
-                    if upstream != downstream && workstream_edges[upstream].insert(downstream) {
-                        indegree[downstream] += 1;
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    let mut ready = BTreeSet::new();
-    for (index, count) in indegree.iter().enumerate() {
-        if *count == 0 {
-            ready.insert(index);
-        }
-    }
-
-    let mut ordered = Vec::new();
-    while let Some(index) = ready.pop_first() {
-        ordered.push(index);
-        for dependent in &workstream_edges[index] {
-            indegree[*dependent] -= 1;
-            if indegree[*dependent] == 0 {
-                ready.insert(*dependent);
-            }
-        }
-    }
-
-    for index in 0..workstreams.len() {
-        if !ordered.contains(&index) {
-            ordered.push(index);
-        }
-    }
-
-    ordered
 }
 
 pub fn validate_dependency_graph(bundle: &MilestoneBundle) -> Result<(), Vec<String>> {
@@ -955,10 +970,18 @@ pub fn summarize_bundle(bundle: &MilestoneBundle) -> BundleSummary {
     let dependency_depth = dependency_graph_analysis(&canonical)
         .map(|analysis| analysis.dependency_depth)
         .unwrap_or(0);
+    let covered_acceptance_ids = canonical
+        .workstreams
+        .iter()
+        .flat_map(|workstream| workstream.beads.iter())
+        .flat_map(|bead| bead.acceptance_criteria.iter())
+        .map(|acceptance_id| acceptance_id.trim().to_owned())
+        .filter(|acceptance_id| !acceptance_id.is_empty())
+        .collect::<BTreeSet<_>>();
     let covered_acceptance_criteria = canonical
         .acceptance_map
         .iter()
-        .filter(|criterion| !criterion.covered_by.is_empty())
+        .filter(|criterion| covered_acceptance_ids.contains(criterion.id.trim()))
         .count();
     let total_acceptance_criteria = canonical.acceptance_map.len();
     let acceptance_coverage_percentage = covered_acceptance_criteria
@@ -1181,7 +1204,7 @@ pub(crate) fn render_plan_md_checked(bundle: &MilestoneBundle) -> Result<String,
     let workstream_labels = render_workstream_labels(&canonical.workstreams);
     let summary = summarize_bundle(&canonical);
     let dependency_graph = dependency_graph_analysis_from_canonical(&canonical)?;
-    let workstream_order = infer_workstream_order(&canonical.workstreams);
+    let workstream_order = analyze_workstream_order(&canonical.workstreams);
     let deferred_items = collect_deferred_items(&canonical, &workstream_labels);
     let mut out = String::new();
 
@@ -1306,15 +1329,38 @@ pub(crate) fn render_plan_md_checked(bundle: &MilestoneBundle) -> Result<String,
     writeln!(out, "## Dependency Graph").unwrap();
     writeln!(out).unwrap();
     let ordered_workstreams = workstream_order
+        .ordered
         .into_iter()
         .filter_map(|index| workstream_labels.get(index).cloned())
         .collect::<Vec<_>>();
-    writeln!(
-        out,
-        "- **Workstream order:** {}",
-        ordered_workstreams.join(" -> ")
-    )
-    .unwrap();
+    if workstream_order.blocked.is_empty() {
+        writeln!(
+            out,
+            "- **Workstream order:** {}",
+            ordered_workstreams.join(" -> ")
+        )
+        .unwrap();
+    } else {
+        let blocked_workstreams = workstream_order
+            .blocked
+            .into_iter()
+            .filter_map(|index| workstream_labels.get(index).cloned())
+            .collect::<Vec<_>>();
+        writeln!(
+            out,
+            "- **Workstream order:** No single topological workstream order; cross-workstream dependencies interleave across {}",
+            blocked_workstreams.join(", ")
+        )
+        .unwrap();
+        if !ordered_workstreams.is_empty() {
+            writeln!(
+                out,
+                "- **Workstream prefixes before interleaving:** {}",
+                ordered_workstreams.join(" -> ")
+            )
+            .unwrap();
+        }
+    }
     writeln!(
         out,
         "- **Bead order:** {}",
@@ -1770,6 +1816,74 @@ mod tests {
     }
 
     #[test]
+    fn infer_workstream_order_returns_empty_when_workstream_dependencies_interleave() {
+        let workstreams = vec![
+            Workstream {
+                name: "API".to_owned(),
+                description: None,
+                beads: vec![
+                    BeadProposal {
+                        bead_id: Some("api-1".to_owned()),
+                        explicit_id: None,
+                        title: "Add endpoints".to_owned(),
+                        description: None,
+                        bead_type: Some("feature".to_owned()),
+                        priority: Some(1),
+                        labels: vec!["api".to_owned()],
+                        depends_on: vec!["data-1".to_owned()],
+                        acceptance_criteria: vec![],
+                        flow_override: None,
+                    },
+                    BeadProposal {
+                        bead_id: Some("api-2".to_owned()),
+                        explicit_id: None,
+                        title: "Refine responses".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(2),
+                        labels: vec!["api".to_owned()],
+                        depends_on: vec!["api-1".to_owned()],
+                        acceptance_criteria: vec![],
+                        flow_override: None,
+                    },
+                ],
+            },
+            Workstream {
+                name: "Data".to_owned(),
+                description: None,
+                beads: vec![
+                    BeadProposal {
+                        bead_id: Some("data-1".to_owned()),
+                        explicit_id: None,
+                        title: "Create schema".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(1),
+                        labels: vec!["backend".to_owned()],
+                        depends_on: vec![],
+                        acceptance_criteria: vec![],
+                        flow_override: None,
+                    },
+                    BeadProposal {
+                        bead_id: Some("data-2".to_owned()),
+                        explicit_id: None,
+                        title: "Persist api fields".to_owned(),
+                        description: None,
+                        bead_type: Some("task".to_owned()),
+                        priority: Some(2),
+                        labels: vec!["backend".to_owned()],
+                        depends_on: vec!["api-2".to_owned()],
+                        acceptance_criteria: vec![],
+                        flow_override: None,
+                    },
+                ],
+            },
+        ];
+
+        assert!(infer_workstream_order(&workstreams).is_empty());
+    }
+
+    #[test]
     fn validate_dependency_graph_rejects_cycles() -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.workstreams[0].beads[0].depends_on = vec!["bead-3".to_owned()];
@@ -1824,6 +1938,20 @@ mod tests {
                 bead_count: 3,
             }]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_bundle_derives_acceptance_coverage_from_beads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[2].acceptance_criteria.clear();
+
+        let summary = summarize_bundle(&bundle);
+
+        assert_eq!(summary.covered_acceptance_criteria, 1);
+        assert_eq!(summary.total_acceptance_criteria, 2);
+        assert_eq!(summary.acceptance_coverage_percentage, 50);
         Ok(())
     }
 
@@ -2017,6 +2145,112 @@ mod tests {
         assert!(rendered
             .contains("**Bead order:** ms-alpha.bead-1 -> ms-alpha.bead-2 -> ms-alpha.bead-3"));
         assert!(rendered.contains("deferred CLI polish"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_plan_md_surfaces_interleaved_workstream_dependencies(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = MilestoneBundle {
+            schema_version: MILESTONE_BUNDLE_VERSION,
+            identity: MilestoneIdentity {
+                id: "ms-interleaved".to_owned(),
+                name: "Interleaved Milestone".to_owned(),
+            },
+            executive_summary: "Allow valid bead ordering even when workstreams interleave."
+                .to_owned(),
+            goals: vec!["Respect bead sequencing".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Interleaved sequencing is preserved.".to_owned(),
+                covered_by: vec![
+                    "bead-b1".to_owned(),
+                    "bead-a1".to_owned(),
+                    "bead-a2".to_owned(),
+                    "bead-b2".to_owned(),
+                ],
+            }],
+            workstreams: vec![
+                Workstream {
+                    name: "API".to_owned(),
+                    description: Some(
+                        "Deliver API changes without forcing a fake workstream order.".to_owned(),
+                    ),
+                    beads: vec![
+                        BeadProposal {
+                            bead_id: Some("bead-a1".to_owned()),
+                            explicit_id: None,
+                            title: "Implement API step one".to_owned(),
+                            description: Some("Depends on the initial data model work.".to_owned()),
+                            bead_type: Some("feature".to_owned()),
+                            priority: Some(1),
+                            labels: vec!["api".to_owned()],
+                            depends_on: vec!["bead-b1".to_owned()],
+                            acceptance_criteria: vec!["AC-1".to_owned()],
+                            flow_override: None,
+                        },
+                        BeadProposal {
+                            bead_id: Some("bead-a2".to_owned()),
+                            explicit_id: None,
+                            title: "Implement API step two".to_owned(),
+                            description: Some(
+                                "Completes the API slice before tests resume.".to_owned(),
+                            ),
+                            bead_type: Some("task".to_owned()),
+                            priority: Some(1),
+                            labels: vec!["api".to_owned()],
+                            depends_on: vec!["bead-a1".to_owned()],
+                            acceptance_criteria: vec!["AC-1".to_owned()],
+                            flow_override: None,
+                        },
+                    ],
+                },
+                Workstream {
+                    name: "Data".to_owned(),
+                    description: Some(
+                        "Own the storage prerequisites and the final follow-up.".to_owned(),
+                    ),
+                    beads: vec![
+                        BeadProposal {
+                            bead_id: Some("bead-b1".to_owned()),
+                            explicit_id: None,
+                            title: "Prepare storage".to_owned(),
+                            description: Some("Unblocks the API slice.".to_owned()),
+                            bead_type: Some("task".to_owned()),
+                            priority: Some(1),
+                            labels: vec!["backend".to_owned()],
+                            depends_on: vec![],
+                            acceptance_criteria: vec!["AC-1".to_owned()],
+                            flow_override: None,
+                        },
+                        BeadProposal {
+                            bead_id: Some("bead-b2".to_owned()),
+                            explicit_id: None,
+                            title: "Finalize storage".to_owned(),
+                            description: Some("Resumes after the API work lands.".to_owned()),
+                            bead_type: Some("task".to_owned()),
+                            priority: Some(2),
+                            labels: vec!["backend".to_owned()],
+                            depends_on: vec!["bead-a2".to_owned()],
+                            acceptance_criteria: vec!["AC-1".to_owned()],
+                            flow_override: None,
+                        },
+                    ],
+                },
+            ],
+            default_flow: FlowPreset::QuickDev,
+            agents_guidance: None,
+        };
+
+        let rendered = render_plan_md(&bundle);
+
+        assert!(rendered.contains("No single topological workstream order"));
+        assert!(rendered.contains("API, Data"));
+        assert!(rendered.contains(
+            "**Bead order:** ms-interleaved.bead-b1 -> ms-interleaved.bead-a1 -> ms-interleaved.bead-a2 -> ms-interleaved.bead-b2"
+        ));
         Ok(())
     }
 
