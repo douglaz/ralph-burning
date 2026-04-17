@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417041435-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417041435-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T04:32:45.446736208Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded additive controller runtime coverage in `tests/unit/controller_runtime_test.rs` for the requested sequential scenarios: happy-path progression through completion, blocked/no-ready handling with resume, restart-from-persisted-running-state, `br` tool-failure escalation to `NeedsOperator`, and the one-active-bead invariant. Wired the new module into `tests/unit.rs`. The new tests use `TempWorkspaceBuilder`, milestone fixtures, `MockBrAdapter`, `MockBvAdapter`, controller transition journals, milestone journals/progress snapshots, and `StructuredLogCapture` without modifying runtime source behavior.\n\n## Steps\n\n1. [Completed] Inspect existing controller APIs, milestone fixture helpers, mock `br`/`bv` adapters, and current runtime-selection patterns to keep the change additive and aligned with repo conventions.\n2. [Completed] Implement `tests/unit/controller_runtime_test.rs` with helper fixtures/runtime shims plus five controller runtime tests covering happy path, blocked path and resume, restart/resume continuity, tool failure escalation, and sequential-execution enforcement.\n3. [Completed] Wire the new test module into the unit harness by adding `mod controller_runtime_test;` to `tests/unit.rs`.\n4. [Completed] Run focused validation on the new test target, then run repo-level `cargo test`, `cargo clippy -- -D warnings`, and attempt `nix build` to confirm the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed after formatting the new test file.\n- `cargo test --test unit controller_runtime_test -- --nocapture` passed with all 5 new controller runtime tests green.\n- `cargo test` passed on the current tree.\n- `cargo clippy -- -D warnings` passed on the current tree.\n- Initial `nix build` failure was due to the clean-source build not seeing the untracked new test file; after staging `tests/unit.rs` and `tests/unit/controller_runtime_test.rs`, `nix build` progressed further but later hung in a sandboxed `ralph-burning run start` path and was interrupted.\n\n## Outstanding Risks\n\n- `nix build` did not complete cleanly in the sandbox. After fixing the initial clean-source issue by staging the new test files, the build later hung inside a sandboxed `ralph-burning run start` path and had to be interrupted, so the authoritative Nix gate is still unresolved.\n- The new test file and `tests/unit.rs` are staged locally because the Nix clean-source build excluded the untracked test file until it was added to the Git index.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

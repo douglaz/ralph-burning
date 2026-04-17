@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr25-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:43:07.987418907Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nThe failure reconciliation implementation is thorough, well-structured, and follows the patterns established by success reconciliation. The core module (failure_reconciliation.rs) correctly: records failures without closing beads, counts attempts and escalates at MAX_RETRIES=3, handles idempotent replays, repairs partial historical state, and transitions the controller to Blocked (retryable) or NeedsOperator (exhausted). The daemon_loop integration is solid — try_reconcile_failure is called from both dispatch error paths and fails gracefully if reconciliation itself errors. Controller state machine changes (Blocked now preserves active context, new Blocked→Running/Reconciling transitions) are correctly tested. The model.rs changes to TaskRunEntry grouping enable same-run-id retries as distinct entries. Tests are comprehensive, covering first/second/third failures, idempotency, stale replay protection, cross-project retry counting, and historical state repair. No critical bugs found.\n\n## Amendments\n\n1. The `model.rs` change to `group_matches_named_attempt` (line 398) and `group_accepts_entry` (line 674) changes the global semantics of how TaskRunEntry records with the same run_id but different started_at values are grouped. Previously, same run_id always collapsed into one group; now they create separate rows when both are terminal or have different started_at. The existing service.rs tests were updated to reflect this, but the change affects ALL consumers of task run grouping, not just failure reconciliation. This is a semantic data model change that enables the retry feature but could have edge-case effects in untested paths (e.g., external tools reading the lineage NDJSON). The risk is low given the test updates, but worth noting for awareness.\n   Rationale: The model.rs change alters a global data invariant (same run_id = same attempt) that existed before this bead. While the known consumers are tested, a sweep of all callers would confirm no latent issues.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 25
+}

@@ -107,3 +107,6 @@ mod execution_config_test;
 
 #[path = "unit/template_catalog_test.rs"]
 mod template_catalog_test;
+
+#[path = "unit/controller_runtime_test.rs"]
+mod controller_runtime_test;

@@ -1,0 +1,7 @@
+id = "9ni87-1"
+name = "controller-runtime-tests"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "9cb68b05c77dc985e4d497a0f6ccfd3b1a5131d1b72bb0bd332f6e87c16fff02"
+created_at = "2026-04-17T04:14:35.331904584Z"
+status_summary = "created"

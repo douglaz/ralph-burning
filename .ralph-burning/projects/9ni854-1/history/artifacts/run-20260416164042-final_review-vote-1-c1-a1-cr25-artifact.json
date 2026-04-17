@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr25-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:51:47.447493651Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted two concrete defects: failure reconciliation can race with a newly started retry and overwrite the controller with stale blocked/operator-needed state, and terminal CLI sync can persist a blank failure task provenance that gets normalized away. Rejected the third amendment because it points out a broad semantic change and hypothetical downstream risk, but does not identify a specific incorrect or unsafe behavior in a current consumer.\n\n## Votes\n\n- `fr-25-b8696617`: Accept\n  `reconcile_failure_sync` snapshots attempt history before controller work, and `transition_controller_after_failure` only consults that passed-in snapshot when calling `newer_attempt_exists(...)`. It never reloads lineage after `load_controller(...)` / `sync_controller_task_reconciling(...)` and before `sync_controller_state(...)`. That leaves a real interleaving where a newer retry starts after the snapshot but before the controller mutation; for same bead/project retries the controller context still aligns, so the stale failure path can drive `Running -> Reconciling -> Blocked/NeedsOperator` and overwrite the live retry. The existing tests cover retries already present before reconciliation starts, not this race window.\n- `fr-25-1c24e07a`: Accept\n  `authoritative_failed_sync_task_id(...)` returns `Option<String>`, and the caller currently converts `None` into `\"\"` before calling `reconcile_failure_sync(...)`. Failure reconciliation then serializes that as `task_id=`. Both the structured parser and `extract_task_id_from_outcome_detail(...)` explicitly treat an empty value as absent, so the resulting lineage row and `BeadFailed` journal details end up with `task_id: None` instead of preserving a non-empty placeholder. That is a real provenance regression and undermines the placeholder-repair behavior the reconciliation code otherwise supports.\n- `fr-25-b9eb4a72`: Reject\n  This notes an intentional semantic change, but it does not demonstrate a concrete correctness, safety, or maintainability defect in a specific consumer. The model and service tests were updated to preserve distinct same-`run_id` attempts by `started_at`, and the cited risk is phrased as possible edge cases in untested paths or external readers. Without an identified broken path, this is too speculative to accept as a valid amendment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 25
+}

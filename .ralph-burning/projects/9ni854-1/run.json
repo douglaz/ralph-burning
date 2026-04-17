@@ -1,5 +1,6 @@
 {
-  "active_run": {
+  "active_run": null,
+  "interrupted_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
       "stage": "final_review",
@@ -12,9 +13,31 @@
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 24
+    "final_review_restart_count": 24,
+    "stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-04-17T03:39:56.335675322Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4-xhigh"
+        },
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6-max"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.3-codex-spark-xhigh"
+        }
+      ],
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      }
+    }
   },
-  "status": "running",
+  "status": "failed",
   "cycle_history": [],
   "completion_rounds": 25,
   "max_completion_rounds": 25,
@@ -26,10 +49,10 @@
     "pending": [],
     "processed_count": 48
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "failed at Final Review: stage commit failed for stage 'final_review': max completion rounds exceeded: 26/25",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T03:14:37.315385285Z",
+    "resolved_at": "2026-04-17T03:39:56.335675322Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
