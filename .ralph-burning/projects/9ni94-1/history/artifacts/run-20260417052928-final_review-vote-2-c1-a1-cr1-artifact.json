@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417052928-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T05:49:50.410765221Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify the same real defect: `project create --from-requirements` dispatches to `handle_create_from_requirements` (src/cli/project.rs:267) without calling `print_deprecation_notice`, while the sibling `handle_create` path (line 201) does. Verified by reading the code: lines 185-191 branch before the notice is emitted, and the `handle_create_from_requirements` body (lines 267-319) contains no such call. This inconsistency lets one supported legacy surface skip the promised stderr warning. Both findings are valid and their remediations are small and consistent.\n\n## Votes\n\n- `fr-1-52755d8e`: Accept\n  Confirmed by inspecting src/cli/project.rs: the `Create` arm at lines 185-191 routes to `handle_create_from_requirements` (line 267) when `--from-requirements` is set, and that function never calls `print_deprecation_notice`, while its sibling `handle_create` (line 201-205) does. This leaves a primary legacy `project create` entry point without the stderr notice, which is a real gap in the intended deprecation coverage. The remediation (emit notice before branching or at the top of `handle_create_from_requirements`, plus extend a regression test to assert stderr) is small, targeted, and consistent with the established pattern used by other deprecated subcommands (create-from-bead, select, list, show).\n- `fr-1-eb904524`: Accept\n  Same underlying defect as fr-1-52755d8e and independently verified: `handle_create_from_requirements` is missing the `print_deprecation_notice` call that every other legacy `project` subcommand performs. This amendment adds useful nuance by acknowledging there is no direct `milestone create --from-requirements` replacement today and suggesting a softer phrasing, which is realistic given the current milestone CLI surface. Accepting both findings is reasonable because they converge on the same fix; implementers can reconcile wording during remediation. The change is low-risk and preserves the invariant that every `project create ...` invocation emits a consistent deprecation signal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

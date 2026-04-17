@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417052928-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T05:51:03.914005927Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments correctly identify the same real defect: `project create --from-requirements` bypasses the normal `handle_create` path and therefore never emits the deprecation notice that other deprecated `project create` invocations print. Existing tests cover success behavior for that branch but do not verify stderr, so the inconsistency is currently untested.\n\n## Votes\n\n- `fr-1-52755d8e`: Accept\n  The code path matches the amendment exactly: `ProjectSubcommand::Create` dispatches straight to `handle_create_from_requirements` when `--from-requirements` is set, and that helper never calls `print_deprecation_notice`. As a result, one deprecated `project create` entry point silently skips the warning while the sibling path emits it. The cited tests exercise the branch's functional behavior but do not assert stderr, so this regression is not covered today.\n- `fr-1-eb904524`: Accept\n  This amendment describes the same underlying bug accurately. `project create --from-requirements` is still invoked through the deprecated `project` surface, but it bypasses the warning emitted by `handle_create`, so users get inconsistent deprecation signaling depending on which `project create` form they use. Emitting the notice inside `handle_create_from_requirements` is safe because that function is only reached from this deprecated CLI path; only the exact replacement wording needs care because the command may materialize either a project or a milestone bundle.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

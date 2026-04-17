@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417052928-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T05:46:59.053445985Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the changed CLI implementation and related tests end-to-end, and found one correctness gap in the deprecation notice coverage.\n\n## Amendments\n\n1. finding_summary: `project create --from-requirements` does not emit the new deprecation notice. In `src/cli/project.rs:185-189`, the `Create` branch bypasses `handle_create(...)` and jumps straight to `handle_create_from_requirements(run_id)` when `--from-requirements` is present, and `src/cli/project.rs:267-316` never calls `print_deprecation_notice(...)`. That leaves one of the primary legacy `project create` entry points without the promised stderr warning, which violates the bead scope and acceptance criteria. The existing regression coverage for this path in `tests/cli.rs:6940-7009` only asserts success/stdout behavior, so the gap is currently untested. remediation_hint: emit the notice before branching on `from_requirements` or at the top of `handle_create_from_requirements`, and extend one of the `project_create_from_requirements_*` tests to assert the warning appears on stderr.\n   Rationale: Users invoking the compatibility alias through the requirements-based flow currently receive no migration guidance at all, even though this is still a `project create` CLI entry point that the bead explicitly meant to deprecate consistently.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
