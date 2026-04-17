@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr21-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T02:14:57.386877730Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 21/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-21-a06d8629`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-21-a06d8629`\n\nfinding_summary: `reconcile_failure()` is not actually idempotent for already-recorded failures if the replay arrives with a different `failed_at` or error message. In the `already_recorded` branch it still calls `repair_task_run_with_disposition` with the new `failed_at` ([src/contexts/automation_runtime/failure_reconciliation.rs:376-392]), and the final outcome/reason is recomputed from the new `error_summary` ([src/contexts/automation_runtime/failure_reconciliation.rs:469], [src/contexts/automation_runtime/failure_reconciliation.rs:1233-1247]). `repair_task_run_with_disposition` then feeds that timestamp into `repair_completion`, which can replace the existing `BeadFailed` journal event instead of treating the replay as a no-op ([src/contexts/milestone_record/service.rs:2747-2807], [src/contexts/milestone_record/service.rs:1260-1278]). On an escalated third failure, replaying the same run with richer fallback text or a slightly different reconstructed timestamp will rewrite the operator-facing `NeedsOperator` reason and the durable failure timestamp, violating the bead's explicit idempotency requirement.\nremediation_hint: For `already_recorded` replays, derive the canonical `failed_at` and canonical error summary from the recorded lineage/journal provenance before calling `repair_task_run_with_disposition` / `failure_outcome`, and add a regression test that replays the third failure with different message/timestamp inputs and asserts that both the milestone journal and controller transition journal stay unchanged.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 21
+}
