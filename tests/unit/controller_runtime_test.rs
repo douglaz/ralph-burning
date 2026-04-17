@@ -761,3 +761,195 @@ async fn test_sequential_execution_enforced() -> AppResult<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_tool_failure_records_error_context_in_failure_reconciliation() -> AppResult<()> {
+    let workspace = build_workspace("ms-runtime-tool-failure-journaled", 1)?;
+    let base_dir = workspace.path();
+    let milestone_id = workspace.milestones[0].milestone_id.clone();
+    let bead_id = format!("{}.bead-1", milestone_id.as_str());
+    let plan_hash = workspace.milestones[0]
+        .snapshot
+        .plan_hash
+        .clone()
+        .expect("fixture milestone has plan hash");
+    let project_id = "project-failure-1";
+    let task_id = "task-failure-1";
+
+    for attempt in 1..=2 {
+        let started_at = ts((attempt * 10) as i64);
+        let finished_at = started_at + Duration::seconds(1);
+        let run_id = format!("run-failure-{attempt}");
+        let prior_failure_detail =
+            format!("task_id={task_id}\nattempt={attempt}\nerror=prior simulated br close failure");
+
+        record_bead_start(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone_id,
+            &bead_id,
+            project_id,
+            &run_id,
+            &plan_hash,
+            started_at,
+        )?;
+        record_bead_completion(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            base_dir,
+            &milestone_id,
+            &bead_id,
+            project_id,
+            &run_id,
+            Some(&plan_hash),
+            TaskRunOutcome::Failed,
+            Some(&prior_failure_detail),
+            started_at,
+            finished_at,
+        )?;
+    }
+
+    controller::initialize_controller(
+        &FsMilestoneControllerStore,
+        base_dir,
+        &milestone_id,
+        ts(30),
+    )?;
+
+    let started_at = ts(31);
+    let failed_at = ts(32);
+    let run_id = "run-failure-3";
+    sync_controller_task_running(
+        &FsMilestoneControllerStore,
+        base_dir,
+        &milestone_id,
+        &bead_id,
+        project_id,
+        "task execution started for the tool failure escalation path",
+        started_at,
+    )?;
+    record_bead_start(
+        &FsMilestoneSnapshotStore,
+        &FsMilestoneJournalStore,
+        &FsTaskRunLineageStore,
+        base_dir,
+        &milestone_id,
+        &bead_id,
+        project_id,
+        run_id,
+        &plan_hash,
+        started_at,
+    )?;
+
+    let br_close_error = MockBrAdapter::from_responses([MockBrResponse::exit_failure(
+        17,
+        "simulated br close failure",
+    )])
+    .as_br_adapter()
+    .exec_read(&BrCommand::close(&bead_id, "Completed"))
+    .await
+    .expect_err("mock br close failure should be exercised")
+    .to_string();
+
+    let outcome =
+        ralph_burning::contexts::automation_runtime::failure_reconciliation::reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base_dir,
+            &bead_id,
+            task_id,
+            project_id,
+            milestone_id.as_str(),
+            run_id,
+            Some(&plan_hash),
+            started_at,
+            failed_at,
+            &br_close_error,
+        )
+        .await
+        .expect("failure reconciliation should persist the tool failure");
+
+    match outcome {
+        ralph_burning::contexts::automation_runtime::failure_reconciliation::FailureReconciliationOutcome::EscalatedToOperator {
+            attempt_number,
+            reason,
+        } => {
+            assert_eq!(attempt_number, 3);
+            assert!(reason.contains("simulated br close failure"));
+            assert!(reason.contains(&bead_id));
+        }
+        other => panic!("expected operator escalation on the third failed attempt, got {other:?}"),
+    }
+
+    let controller = latest_controller_state(base_dir, &milestone_id)?;
+    assert_eq!(controller.state, MilestoneControllerState::NeedsOperator);
+    assert_eq!(controller.active_bead_id.as_deref(), Some(bead_id.as_str()));
+    assert_eq!(controller.active_task_id.as_deref(), Some(project_id));
+    assert!(controller
+        .last_transition_reason
+        .as_deref()
+        .is_some_and(|reason| {
+            reason.contains("simulated br close failure") && reason.contains("failed 3 times")
+        }));
+
+    let milestone_journal = read_journal(&FsMilestoneJournalStore, base_dir, &milestone_id)?;
+    let failed_events = milestone_journal
+        .iter()
+        .filter(|event| {
+            event.event_type == MilestoneEventType::BeadFailed
+                && event.bead_id.as_deref() == Some(bead_id.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(failed_events.len(), 3);
+    assert_eq!(
+        milestone_journal
+            .iter()
+            .filter(|event| {
+                event.event_type == MilestoneEventType::BeadCompleted
+                    && event.bead_id.as_deref() == Some(bead_id.as_str())
+            })
+            .count(),
+        0
+    );
+
+    let failure_details: ralph_burning::contexts::milestone_record::model::CompletionJournalDetails =
+        serde_json::from_str(
+            failed_events
+                .last()
+                .and_then(|event| event.details.as_deref())
+                .expect("failed attempt should record completion details"),
+        )
+        .expect("bead failure details should deserialize");
+    assert_eq!(failure_details.project_id, project_id);
+    assert_eq!(failure_details.run_id.as_deref(), Some(run_id));
+    assert_eq!(
+        failure_details.plan_hash.as_deref(),
+        Some(plan_hash.as_str())
+    );
+    assert_eq!(failure_details.task_id.as_deref(), Some(task_id));
+    assert_eq!(failure_details.outcome, "failed");
+    assert!(failure_details
+        .outcome_detail
+        .as_deref()
+        .is_some_and(|detail| {
+            detail.contains("task_id=task-failure-1")
+                && detail.contains("attempt=3")
+                && detail.contains("simulated br close failure")
+        }));
+
+    let transitions = controller_journal(base_dir, &milestone_id)?;
+    assert_eq!(
+        transitions
+            .last()
+            .expect("controller transition journal should capture escalation")
+            .to_state,
+        MilestoneControllerState::NeedsOperator
+    );
+
+    Ok(())
+}

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417041435",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-dab560eb",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The tool-failure scenario is currently self-fulfilling and does not verify the required journaled error handling. `tests/unit/controller_runtime_test.rs:277-310` defines `escalate_br_failure_to_needs_operator`, which catches a mocked `br close` error and then unconditionally writes a `NeedsOperator` transition; the test at `tests/unit/controller_runtime_test.rs:655-701` only asserts that synthetic transition. The real close-failure path in `src/contexts/automation_runtime/success_reconciliation.rs:257-270` and `src/contexts/automation_runtime/success_reconciliation.rs:455-494` returns `BrCloseFailed` before any `NeedsOperator` update, so this test can stay green even if the runtime never records operator intervention. It also never inspects the milestone journal via `read_journal`, leaving the prompt's \"error context is recorded in journal\" requirement uncovered. affected_files: [\"tests/unit/controller_runtime_test.rs\", \"src/contexts/automation_runtime/success_reconciliation.rs\"]. remediation_hint: Exercise the production reconciliation failure path with mocks and assert both the persisted controller state and the milestone journal contents after the failure.",
-        "created_at": "2026-04-17T04:43:28.501624012Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e5cb3469f86ad8ce4e2e2d062ecab24349d51a2563ed34214c7be26b6eaf8ad7"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T04:32:45.560963864Z",
