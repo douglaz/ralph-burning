@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr24-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:30:18.643666120Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 24/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-24-5ef87cac`\n- `fr-24-762198cf`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-24-5ef87cac`\n\nfinding_summary: `run sync-milestone` throws away the authoritative `run_failed.details.message` and always feeds `final_snapshot.status_summary` into `reconcile_failure_sync`, so any failure reconciled through the CLI path records a generic or stale summary instead of the durable failure message from the project journal. The bug is in `src/cli/run.rs:1301-1325`: the code already proves the correct failed attempt by looking up the durable `run_failed` event, but then only keeps its timestamp and ignores its message. This is especially visible for interrupted-handoff repairs, where richer durable messages are created in `src/cli/run.rs:2127-2142` and then discarded during milestone reconciliation.\nseverity: medium\naffected_files:\n- src/cli/run.rs\nremediation_hint: Keep the `JournalEvent` returned by `terminal_event_for_attempt` and prefer its `details[\"message\"]` when building the failure summary, falling back to `status_summary` only when the journal payload does not contain a message.\n\n### `fr-24-762198cf`\n\nfinding_summary: The manual CLI reconciliation path stamps failed attempts with a synthetic `task_id=cli-sync:<project_id>` instead of the real failed daemon task id, so `BeadFailed` events and task-run lineage do not satisfy the promised task-id provenance unless a later daemon replay happens to repair the placeholder. The placeholder is introduced in `src/cli/run.rs:1321-1333`, and the follow-up logic in `src/contexts/automation_runtime/failure_reconciliation.rs:569-580` shows that the code already treats it as a placeholder rather than authoritative data.\nseverity: low\naffected_files:\n- src/cli/run.rs\n- src/contexts/automation_runtime/failure_reconciliation.rs\nremediation_hint: Plumb the real daemon task id into the terminal sync path, or leave `task_id` unset on the CLI path instead of persisting a fake identifier that looks authoritative.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 24
+}

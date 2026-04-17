@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr24-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-2-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:18:44.604097859Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nComprehensive review of the failure reconciliation implementation. All 794 tests pass, cargo clippy -D warnings is clean, cargo fmt --check passes. The implementation correctly follows the success_reconciliation pattern: failures are recorded with BeadFailed journal events, beads are NOT closed on failure (verified by dedicated test), attempt counting works across retries and replacement projects with escalation to NeedsOperator after 3 failures, idempotency is enforced (duplicate calls don't double-count), and structured tracing is present (warn on each failure, error on escalation). The controller state machine changes correctly add Blocked->Running and Blocked->Reconciling transitions, and the Blocked state now preserves active bead/task context. The fs adapter changes properly handle historical failure repair, stale replay protection, and task_id provenance backfill. No critical bugs, safety problems, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 24
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-1-c1-a1-cr24-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-1-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:30:18.629608513Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real data-quality defects in the CLI failure reconciliation path: one drops the durable failure message, and the other persists a known-placeholder task ID into fields documented as authoritative daemon provenance.\n\n## Votes\n\n- `fr-24-5ef87cac`: Accept\n  `sync_terminal_milestone_task` proves the exact failed attempt by locating the durable `run_failed` event, but `terminal_run_event_timestamp` discards that `JournalEvent` and the code later feeds `outcome_detail`/`final_snapshot.status_summary` into `reconcile_failure_sync` instead. That means milestone lineage and `BeadFailed` records can preserve a generic or stale snapshot summary even when the journal contains a more specific durable `details.message`. The interrupted-handoff repair path strengthens the case, because it appends richer `run_failed` messages without updating the snapshot summary, so the current CLI sync path demonstrably loses authoritative failure detail.\n- `fr-24-762198cf`: Accept\n  The stored `task_id` fields are documented as daemon task provenance, but the CLI failure path writes `cli-sync:<project_id>` into them as if it were authoritative. The follow-up logic in `preferred_failure_task_id` explicitly recognizes this as a placeholder and repairs it only if a later daemon replay happens, which confirms the initial write is knowingly non-authoritative. Persisting a synthetic value in lineage and `BeadFailed` events is still a defect even at low severity, because consumers can read incorrect task-to-bead linkage forever when no replay occurs; if the real daemon task ID is unavailable on the CLI path, leaving the field unset is safer than writing a fake one.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 24
+}

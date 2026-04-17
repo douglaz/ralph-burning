@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 24
+      "completion_round": 25
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 23
+    "final_review_restart_count": 24
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 24,
+  "completion_rounds": 25,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-24-5ef87cac",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 24,
+        "body": "finding_summary: `run sync-milestone` throws away the authoritative `run_failed.details.message` and always feeds `final_snapshot.status_summary` into `reconcile_failure_sync`, so any failure reconciled through the CLI path records a generic or stale summary instead of the durable failure message from the project journal. The bug is in `src/cli/run.rs:1301-1325`: the code already proves the correct failed attempt by looking up the durable `run_failed` event, but then only keeps its timestamp and ignores its message. This is especially visible for interrupted-handoff repairs, where richer durable messages are created in `src/cli/run.rs:2127-2142` and then discarded during milestone reconciliation.\nseverity: medium\naffected_files:\n- src/cli/run.rs\nremediation_hint: Keep the `JournalEvent` returned by `terminal_event_for_attempt` and prefer its `details[\"message\"]` when building the failure summary, falling back to `status_summary` only when the journal payload does not contain a message.",
+        "created_at": "2026-04-17T03:30:18.643647165Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d7fd6070f481223fd5ea25106f217f92c30052f0f861b24257319769d59c290e"
+      },
+      {
+        "amendment_id": "fr-24-762198cf",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 24,
+        "body": "finding_summary: The manual CLI reconciliation path stamps failed attempts with a synthetic `task_id=cli-sync:<project_id>` instead of the real failed daemon task id, so `BeadFailed` events and task-run lineage do not satisfy the promised task-id provenance unless a later daemon replay happens to repair the placeholder. The placeholder is introduced in `src/cli/run.rs:1321-1333`, and the follow-up logic in `src/contexts/automation_runtime/failure_reconciliation.rs:569-580` shows that the code already treats it as a placeholder rather than authoritative data.\nseverity: low\naffected_files:\n- src/cli/run.rs\n- src/contexts/automation_runtime/failure_reconciliation.rs\nremediation_hint: Plumb the real daemon task id into the terminal sync path, or leave `task_id` unset on the CLI path instead of persisting a fake identifier that looks authoritative.",
+        "created_at": "2026-04-17T03:30:18.643653867Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "12f5d99a27714621ceed1ff698fb9f3a7ff98a818aa6726ebf3e9f2bce4384d6"
+      }
+    ],
     "processed_count": 46
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 25 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T02:51:00.765931263Z",
+    "resolved_at": "2026-04-17T03:14:37.315385285Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
