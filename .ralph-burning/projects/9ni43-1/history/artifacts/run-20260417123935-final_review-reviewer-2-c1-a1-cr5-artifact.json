@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:52:44.733227432Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the bead materialization implementation for bead ralph-burning-9ni.4.3. The changes extend BrCommand/BrMutationAdapter with parent-child dep support (src/adapters/br_process.rs:421-433, 1394-1428), add a comments field to BeadDetail with array-unwrap deserialization (src/adapters/br_models.rs:238-314), and implement materialize_beads plus a milestone export-beads CLI subcommand with flock-based reservation and owner_token-based crash recovery (src/contexts/milestone_record/service.rs:1458-2222, src/cli/milestone.rs:382-611). Idempotency is enforced via a milestone:<id> scope label combined with normalized title + bead_type + label matching, with explicit ambiguity rejection. Dependency edges are deduplicated via a HashSet of MaterializedDependency. Sync happens only at the end with sync_own_dirty_if_beads_healthy; partial failures leave the adapter dirty so a restart can flush before recreating, and mock-driven tests verify no sync runs on mid-way dep failure. The BrMutationAdapter pending-record ownership is reconciled by recovering the prior owner_token when the same plan_hash is retried, which avoids foreign-record rejection after a crash. Tests cover basic hierarchy creation, idempotent reuse, closed/deferred history, implicit dependency IDs, cross-milestone title disambiguation, comment restoration for reused beads, journal event shape, and replay of own pending syncs before retry. cargo check, lib cargo clippy -- -D warnings, cargo fmt --check, and 139 milestone_record::service unit tests all pass. No correctness, safety, or robustness bugs found that warrant amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 5
+}

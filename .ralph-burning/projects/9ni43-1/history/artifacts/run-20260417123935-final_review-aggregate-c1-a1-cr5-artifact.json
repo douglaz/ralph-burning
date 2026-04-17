@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417123935-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417123935-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:54:38.880207082Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-b0b36c77`\n- `fr-5-2923c4b8`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-b0b36c77`\n\nfinding_summary: `materialize_beads()` assumes `br list --all --json` is a bare `Vec<BeadSummary>` at `src/contexts/milestone_record/service.rs:1526-1530`, and its fallback matcher makes the same assumption at `src/contexts/milestone_record/service.rs:3671-3680`. On the installed `br` CLI, `br list --all --json` returns an object wrapper (`{\"issues\": [...]}`), so the export path fails with a parse error before it can check for existing beads or create anything.\naffected_files: [\"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Add a wrapper deserializer for `br list` responses (or normalize the envelope in the adapter) and update the tests to use the real `{\"issues\": [...]}` payload shape.\n\n### `fr-5-2923c4b8`\n\nfinding_summary: Every export create call includes milestone labels because `materialized_bead_labels()` always prepends `milestone:<id>` (`src/contexts/milestone_record/service.rs:1903-1918`), but `create_bead()` still serializes labels as repeated `--label=...` flags (`src/adapters/br_process.rs:1341-1346`). The installed `br create` command rejects that flag in favor of `--labels`, so the first real create exits immediately and no beads can be materialized.\naffected_files: [\"src/adapters/br_process.rs\", \"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Serialize labels using the CLI's supported `--labels` contract and add an integration-shaped test that validates the actual command line emitted for labeled creates.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

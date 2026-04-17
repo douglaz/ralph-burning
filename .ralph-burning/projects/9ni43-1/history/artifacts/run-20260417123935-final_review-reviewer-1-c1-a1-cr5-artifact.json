@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:52:59.913362209Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 high-severity integration issues: the new export path does not match the real `br` CLI contracts for `list --all --json` and `create` label flags, so `milestone export-beads` will not run successfully outside the mocks. Targeted bead-export tests passed, and `cargo clippy -- -D warnings` plus `cargo fmt --check` passed; a full `cargo test` run still shows an unrelated existing failure in `cli::run::tests::resume_running_failed_project_reenters_failure_reconciliation`.\n\n## Amendments\n\n1. finding_summary: `materialize_beads()` assumes `br list --all --json` is a bare `Vec<BeadSummary>` at `src/contexts/milestone_record/service.rs:1526-1530`, and its fallback matcher makes the same assumption at `src/contexts/milestone_record/service.rs:3671-3680`. On the installed `br` CLI, `br list --all --json` returns an object wrapper (`{\"issues\": [...]}`), so the export path fails with a parse error before it can check for existing beads or create anything.\naffected_files: [\"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Add a wrapper deserializer for `br list` responses (or normalize the envelope in the adapter) and update the tests to use the real `{\"issues\": [...]}` payload shape.\n   Rationale: This blocks the primary `milestone export-beads` workflow in a real workspace even though the mocked unit tests pass.\n2. finding_summary: Every export create call includes milestone labels because `materialized_bead_labels()` always prepends `milestone:<id>` (`src/contexts/milestone_record/service.rs:1903-1918`), but `create_bead()` still serializes labels as repeated `--label=...` flags (`src/adapters/br_process.rs:1341-1346`). The installed `br create` command rejects that flag in favor of `--labels`, so the first real create exits immediately and no beads can be materialized.\naffected_files: [\"src/adapters/br_process.rs\", \"src/contexts/milestone_record/service.rs\"]\nremediation_hint: Serialize labels using the CLI's supported `--labels` contract and add an integration-shaped test that validates the actual command line emitted for labeled creates.\n   Rationale: Even after fixing the list-response parsing, the feature still cannot create the root epic against the real `br` binary because every exported bead carries at least one label.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
