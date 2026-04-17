@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260416164042-final_review-aggregate-c1-a1-cr20-artifact",
+  "payload_id": "run-20260416164042-final_review-aggregate-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T01:49:32.131337779Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 20/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-20-e5031cbe`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-20-e5031cbe`\n\nfinding_summary: `parse_failure_outcome_detail()` is not round-trippable for stored failure metadata. `format_failure_outcome_detail()` writes the raw `error_summary` verbatim, but the parser then splits every line on `;`. If the real error text contains a semicolon, substrings like `attempt=99` or `task_id=...` inside the message are reinterpreted as structured fields, and the message itself is truncated on replay. A second `reconcile_failure()` call for the same run can therefore rewrite the previously recorded `outcome_detail` instead of leaving state unchanged, which breaks the handler's idempotency guarantee.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:579-618\n- src/contexts/automation_runtime/failure_reconciliation.rs:646-667\nremediation_hint: Parse only the fixed header lines (`task_id=`, `attempt=`, `error=`) or store the payload in a non-ambiguous encoding/JSON shape; do not treat semicolons inside the `error=` value as field delimiters.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 20
+}

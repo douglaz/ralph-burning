@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 20
+      "completion_round": 21
     },
     "started_at": "2026-04-16T16:40:42.098700951Z",
     "prompt_hash_at_cycle_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "prompt_hash_at_stage_start": "d15790b131bcc6662d34da84f269e82a0b7606b5051d437e658b08238fdcca42",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 19
+    "final_review_restart_count": 20
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 20,
+  "completion_rounds": 21,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-20-e5031cbe",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 20,
+        "body": "finding_summary: `parse_failure_outcome_detail()` is not round-trippable for stored failure metadata. `format_failure_outcome_detail()` writes the raw `error_summary` verbatim, but the parser then splits every line on `;`. If the real error text contains a semicolon, substrings like `attempt=99` or `task_id=...` inside the message are reinterpreted as structured fields, and the message itself is truncated on replay. A second `reconcile_failure()` call for the same run can therefore rewrite the previously recorded `outcome_detail` instead of leaving state unchanged, which breaks the handler's idempotency guarantee.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs:579-618\n- src/contexts/automation_runtime/failure_reconciliation.rs:646-667\nremediation_hint: Parse only the fixed header lines (`task_id=`, `attempt=`, `error=`) or store the payload in a non-ambiguous encoding/JSON shape; do not treat semicolons inside the `error=` value as field delimiters.",
+        "created_at": "2026-04-17T01:49:32.131330325Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "5ff1e7139d9367c3a83dba5386cfa89a652952fc20f1ab207261f773937edfaf"
+      }
+    ],
     "processed_count": 40
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 21 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T01:13:40.958096621Z",
+    "resolved_at": "2026-04-17T01:37:24.176908899Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
