@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417052928-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T05:43:09.355164212Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded a minimal project-command deprecation layer without changing command behavior: `src/cli/project.rs` now emits stderr notices for the legacy `project create`, `create-from-bead`, `select`, `list`, and `show` entry points, updates Clap help to mark `project` as deprecated and point users toward `task`/`milestone`, and keeps `task` behavior unchanged. Added CLI tests in `tests/cli.rs` to verify notices stay on stderr, legacy project output still matches task aliases where applicable, and help text surfaces the deprecation guidance.\n\n## Steps\n\n1. [Completed] Inspect the existing CLI command structure, current project/task handlers, and available CLI test coverage before changing behavior.\n2. [Completed] Implement a simple stderr deprecation helper and wire it into the legacy `project` CLI entry points that have clear modern replacements, while preserving existing stdout behavior.\n3. [Completed] Update Clap help text for `project` and its aliased subcommands so help output explicitly marks the command family as deprecated.\n4. [Completed] Add and run regression tests covering stderr-only notices, unchanged legacy command behavior, help text updates, and then run the full required validation suite.\n\n## Validation Evidence\n\n- `cargo test --test cli project_select_prints_deprecation_notice_to_stderr_only -- --exact` passed.\n- `cargo test --test cli task_list_shows_same_entries_as_project_list -- --exact` passed.\n- `cargo test --test cli project_help_mentions_deprecation_and_aliases -- --exact` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- `result` was updated as a side effect of `nix build`; keep or discard that symlink change intentionally before committing.\n- The worktree already contained unrelated changes in `.beads/issues.jsonl` and `.ralph-burning/`; they were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

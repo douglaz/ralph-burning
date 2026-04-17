@@ -57,6 +57,7 @@ const PLANNED_ELSEWHERE_MAX_BYTES: usize = 1536;
 const PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES: usize = 240;
 
 #[derive(Debug, Args)]
+#[command(about = "Project commands (deprecated — use 'milestone' and 'task' instead)")]
 pub struct ProjectCommand {
     #[command(subcommand)]
     pub command: ProjectSubcommand,
@@ -64,13 +65,26 @@ pub struct ProjectCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum ProjectSubcommand {
+    #[command(
+        about = "Create a project (alias: prefer `task create` or `milestone create`, depending on context)"
+    )]
     Create(ProjectCreateArgs),
+    #[command(about = "Create a project from a bead (alias: use `task create`)")]
     CreateFromBead(CreateFromBeadArgs),
     Bootstrap(BootstrapArgs),
-    Select { id: String },
+    #[command(about = "Select the active project (alias: use `task select`)")]
+    Select {
+        id: String,
+    },
+    #[command(about = "List projects (alias: use `task list`)")]
     List,
-    Show { id: Option<String> },
-    Delete { id: String },
+    #[command(about = "Show project details (alias: use `task show`)")]
+    Show {
+        id: Option<String>,
+    },
+    Delete {
+        id: String,
+    },
     Amend(AmendCommand),
 }
 
@@ -159,20 +173,15 @@ pub struct BootstrapArgs {
     pub enable_review: bool,
 }
 
+fn print_deprecation_notice(old_command: &str, new_command: &str) {
+    eprintln!(
+        "Note: `ralph-burning project {old_command}` is deprecated. Use `ralph-burning {new_command}` instead."
+    );
+}
+
 pub async fn handle(command: ProjectCommand) -> AppResult<()> {
     match command.command {
-        ProjectSubcommand::Select { id } => {
-            let current_dir = std::env::current_dir()?;
-            let project_id = ProjectId::new(id)?;
-            workspace_governance::set_active_project(&current_dir, &project_id)?;
-            let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
-            workspace_governance::sync_active_milestone_from_project_record(
-                &current_dir,
-                &project_record,
-            )?;
-            println!("Selected project {}", project_id);
-            Ok(())
-        }
+        ProjectSubcommand::Select { id } => handle_select(id).await,
         ProjectSubcommand::Create(args) => {
             if let Some(run_id) = args.from_requirements {
                 handle_create_from_requirements(run_id).await
@@ -190,6 +199,10 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
 }
 
 async fn handle_create(args: ProjectCreateArgs) -> AppResult<()> {
+    print_deprecation_notice(
+        "create",
+        "task create or milestone create (depending on context)",
+    );
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace version
@@ -596,6 +609,7 @@ pub(crate) fn find_existing_bead_project(
 }
 
 async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
+    print_deprecation_notice("create-from-bead", "task create");
     let project_id = execute_create_from_bead(args).await?;
     let current_dir = std::env::current_dir()?;
     let detail = load_project_detail(&current_dir, &project_id)?;
@@ -669,7 +683,19 @@ async fn handle_bootstrap(args: BootstrapArgs) -> AppResult<()> {
     Ok(())
 }
 
+async fn handle_select(id: String) -> AppResult<()> {
+    print_deprecation_notice("select", "task select");
+    let current_dir = std::env::current_dir()?;
+    let project_id = ProjectId::new(id)?;
+    workspace_governance::set_active_project(&current_dir, &project_id)?;
+    let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
+    workspace_governance::sync_active_milestone_from_project_record(&current_dir, &project_record)?;
+    println!("Selected project {}", project_id);
+    Ok(())
+}
+
 async fn handle_list() -> AppResult<()> {
+    print_deprecation_notice("list", "task list");
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace
@@ -704,6 +730,7 @@ async fn handle_list() -> AppResult<()> {
 }
 
 async fn handle_show(id: Option<String>) -> AppResult<()> {
+    print_deprecation_notice("show", "task show");
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace
