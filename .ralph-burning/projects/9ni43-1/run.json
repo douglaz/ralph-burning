@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417123935",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-95596c0d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: Explicit-bead exports never reuse the already-authored bead ID, so bundles with `explicit_id=true` can create a duplicate bead instead of wiring the existing issue into the milestone.\nseverity: high\naffected_files:\n- src/contexts/milestone_record/service.rs\n- src/contexts/milestone_record/bundle.rs\nevidence:\n- src/contexts/milestone_record/bundle.rs:615-620 documents that explicit beads may already exist in `.beads/` under their short IDs.\n- src/contexts/milestone_record/service.rs:1543-1561 only indexes existing candidates that already carry the `milestone:<id>` label.\n- src/contexts/milestone_record/service.rs:1648-1676 uses `proposal.bead_id` only to derive proposal labels/report keys; it never probes that authored ID for reuse.\nimpact:\nA milestone plan that intentionally points at an existing bead will be exported onto a fresh duplicate instead. Dependencies and planning comments then land on the duplicate while the real authored bead stays outside the milestone graph.\nremediation_hint: When `explicit_id` is true, resolve that authored bead first (for example via `br show <bead_id>`) and materialize against its live ID before falling back to title-based matching.",
-        "created_at": "2026-04-17T15:40:42.909911337Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "3c9e522a0c402e166603eabd6bc306c874c8138c7226eec3efd8588eb479161a"
-      },
-      {
-        "amendment_id": "fr-7-8f68ada9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: Re-export is over-constrained by mutable proposal labels, so adding a label to an already-exported bead turns the existing identity-labeled bead into an \"incompatible active match\" and aborts the export.\nseverity: medium\naffected_files:\n- src/contexts/milestone_record/service.rs\nevidence:\n- src/contexts/milestone_record/service.rs:2016-2028 requires every non-identity label from the current proposal to already exist on the summary/detail before a bead is eligible for reuse.\n- src/contexts/milestone_record/service.rs:2127-2143 converts the remaining active bead into a hard error instead of reusing the bead that still carries the same `proposal:<id>` / `workstream:<id>` identity.\nimpact:\nA normal plan edit such as adding or removing a task label after the first export breaks replay/idempotency for that proposal even though the identity label still uniquely identifies the same logical bead.\nremediation_hint: Treat the proposal/workstream identity label as the primary reuse key and tolerate metadata drift there, or reconcile label changes explicitly instead of rejecting the export.",
-        "created_at": "2026-04-17T15:40:42.909919302Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "af160428cddc6a7b2de38adad9e962f866ece618504f0c55b8146e73b15a2d0a"
-      }
-    ],
-    "processed_count": 20
+    "pending": [],
+    "processed_count": 22
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T15:26:40.057669642Z",
