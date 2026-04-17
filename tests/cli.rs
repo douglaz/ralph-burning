@@ -11177,6 +11177,61 @@ fn run_status_json_includes_lineage_fields_for_milestone_linked_project() {
 }
 
 #[test]
+fn run_status_tolerates_corrupt_journal_for_plain_project() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        "{",
+    )
+    .expect("corrupt journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Project: alpha"),
+        "run status should still report snapshot state when journal is corrupt, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Status: not started"),
+        "run status should keep using run.json as the canonical status source, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_status_still_shows_lineage_when_journal_is_corrupt() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-2");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("journal.ndjson"),
+        "{",
+    )
+    .expect("corrupt journal");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Milestone: Alpha Milestone | Bead: Bootstrap bead-backed task creation"),
+        "run status should load lineage from project metadata even when journal parsing fails, got: {stdout}"
+    );
+}
+
+#[test]
 fn run_history_verbose_shows_details_metadata_and_preview() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");

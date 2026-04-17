@@ -32,9 +32,9 @@ use crate::adapters::bv_process::{BvAdapter, BvCommand, BvProcessRunner, NextBea
 use crate::adapters::fs::{
     FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
     FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
-    FsMilestoneSnapshotStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRollbackPointStore,
-    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
-    FsTaskRunLineageStore,
+    FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore, FsProjectStore,
+    FsRollbackPointStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore,
+    FsRuntimeLogWriteStore, FsTaskRunLineageStore,
 };
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::composition::agent_execution_builder;
@@ -2450,38 +2450,42 @@ fn load_run_lineage_summary(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
 ) -> AppResult<RunLineageSummary> {
-    let detail = crate::cli::project::load_project_detail(base_dir, project_id)?;
-    let milestone_id = detail
-        .record
-        .task_source
-        .as_ref()
-        .map(|task_source| task_source.milestone_id.clone());
-    let bead_id = detail
-        .record
-        .task_source
-        .as_ref()
-        .map(|task_source| task_source.bead_id.clone());
+    let record = FsProjectStore.read_project_record(base_dir, project_id)?;
+    let Some(task_source) = record.task_source.as_ref() else {
+        return Ok(RunLineageSummary::default());
+    };
 
-    let milestone_label = detail.task_lineage.as_ref().map(|lineage| {
-        if lineage.milestone_name == "<milestone metadata unavailable>" {
-            lineage.milestone_id.clone()
-        } else {
-            lineage.milestone_name.clone()
-        }
-    });
-    let bead_label = detail.task_lineage.as_ref().map(|lineage| {
-        lineage
-            .bead_title
-            .clone()
-            .unwrap_or_else(|| lineage.bead_id.clone())
-    });
+    let mut summary = RunLineageSummary {
+        milestone_id: Some(task_source.milestone_id.clone()),
+        bead_id: Some(task_source.bead_id.clone()),
+        milestone_label: Some(task_source.milestone_id.clone()),
+        bead_label: Some(task_source.bead_id.clone()),
+    };
 
-    Ok(RunLineageSummary {
-        milestone_label: milestone_label.or_else(|| milestone_id.clone()),
-        bead_label: bead_label.or_else(|| bead_id.clone()),
-        milestone_id,
-        bead_id,
-    })
+    let milestone_id = match MilestoneId::new(task_source.milestone_id.clone()) {
+        Ok(milestone_id) => milestone_id,
+        Err(_) => return Ok(summary),
+    };
+
+    if let Ok(lineage) = milestone_service::read_bead_lineage(
+        &FsMilestoneStore,
+        &FsMilestonePlanStore,
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        task_source.plan_hash.as_deref(),
+    ) {
+        summary.milestone_label = Some(
+            if lineage.milestone_name == "<milestone metadata unavailable>" {
+                lineage.milestone_id.clone()
+            } else {
+                lineage.milestone_name
+            },
+        );
+        summary.bead_label = Some(lineage.bead_title.unwrap_or(lineage.bead_id));
+    }
+
+    Ok(summary)
 }
 
 fn apply_run_status_lineage(status: &mut RunStatusJsonView, lineage: &RunLineageSummary) {
