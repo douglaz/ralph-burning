@@ -551,20 +551,32 @@ impl ScenarioState {
             .map(|issue| (issue.id.as_str(), issue))
             .collect::<HashMap<_, _>>();
 
-        Ok(self
-            .issues
-            .iter()
-            .find(|issue| {
-                issue.status == BeadStatus::Open
-                    && !matches!(issue.bead_type, BeadType::Epic)
-                    && issue.dependencies.iter().all(|dependency| {
-                        dependency.kind != DependencyKind::Blocks
-                            || issue_lookup
-                                .get(dependency.depends_on_id.as_str())
-                                .is_none_or(|depends_on| depends_on.status == BeadStatus::Closed)
-                    })
-            })
-            .cloned())
+        for issue in &self.issues {
+            if issue.status != BeadStatus::Open || matches!(issue.bead_type, BeadType::Epic) {
+                continue;
+            }
+
+            let mut is_ready = true;
+            for dependency in &issue.dependencies {
+                let depends_on = issue_lookup
+                    .get(dependency.depends_on_id.as_str())
+                    .ok_or_else(|| {
+                        missing_dependency_message(&issue.id, &dependency.depends_on_id)
+                    })?;
+                if dependency.kind == DependencyKind::Blocks
+                    && depends_on.status != BeadStatus::Closed
+                {
+                    is_ready = false;
+                    break;
+                }
+            }
+
+            if is_ready {
+                return Ok(Some(issue.clone()));
+            }
+        }
+
+        Ok(None)
     }
 
     fn reload_issues_from_disk(&mut self) -> Result<(), String> {
@@ -743,7 +755,10 @@ fn scenario_br_response(
                     format!("bead not found: {bead_id}"),
                 ));
             };
-            return Some(MockBrResponse::success(br_show_json(&issue, &issues)));
+            return Some(match br_show_json(&issue, &issues) {
+                Ok(stdout) => MockBrResponse::success(stdout),
+                Err(message) => MockBrResponse::exit_failure(1, message),
+            });
         }
     }
 
@@ -948,12 +963,28 @@ fn br_list_json(issues: &[BeadGraphIssue]) -> String {
     .expect("serialize br list fixture")
 }
 
-fn br_show_json(issue: &BeadGraphIssue, issues: &[BeadGraphIssue]) -> String {
+fn br_show_json(issue: &BeadGraphIssue, issues: &[BeadGraphIssue]) -> Result<String, String> {
     let issue_lookup = issues
         .iter()
         .map(|candidate| (candidate.id.as_str(), candidate))
         .collect::<HashMap<_, _>>();
-    json!({
+    let dependencies = issue
+        .dependencies
+        .iter()
+        .map(|dependency| {
+            let linked_issue = issue_lookup
+                .get(dependency.depends_on_id.as_str())
+                .ok_or_else(|| missing_dependency_message(&issue.id, &dependency.depends_on_id))?;
+            Ok(json!({
+                "id": dependency.depends_on_id,
+                "dependency_type": dependency_kind_json(&dependency.kind),
+                "title": linked_issue.title,
+                "status": linked_issue.status,
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    Ok(json!({
         "id": issue.id,
         "title": issue.title,
         "status": issue.status,
@@ -962,17 +993,7 @@ fn br_show_json(issue: &BeadGraphIssue, issues: &[BeadGraphIssue]) -> String {
         "labels": issue.labels,
         "description": issue.description,
         "acceptance_criteria": issue.acceptance_criteria,
-        "dependencies": issue.dependencies.iter().map(|dependency| {
-            let linked_issue = issue_lookup
-                .get(dependency.depends_on_id.as_str())
-                .expect("dependency issue must exist");
-            json!({
-                "id": dependency.depends_on_id,
-                "dependency_type": dependency_kind_json(&dependency.kind),
-                "title": linked_issue.title,
-                "status": linked_issue.status,
-            })
-        }).collect::<Vec<_>>(),
+        "dependencies": dependencies,
         "dependents": issues
             .iter()
             .flat_map(|candidate| {
@@ -995,7 +1016,11 @@ fn br_show_json(issue: &BeadGraphIssue, issues: &[BeadGraphIssue]) -> String {
         "created_at": issue.created_at.to_rfc3339(),
         "updated_at": issue.updated_at.to_rfc3339(),
     })
-    .to_string()
+    .to_string())
+}
+
+fn missing_dependency_message(issue_id: &str, dependency_id: &str) -> String {
+    format!("dangling dependency: {issue_id} depends on missing bead {dependency_id}")
 }
 
 fn next_bead_json(issue: &BeadGraphIssue) -> String {
@@ -1330,6 +1355,47 @@ mod tests {
             .expect("bv robot-next after reopen");
         assert_eq!(next_after_reopen.id, ASSEMBLE_TASK_ID);
 
+        let mut issues_with_dangling_dependency =
+            load_bead_graph_issues(&issues_path).expect("load issues for dangling dependency");
+        issues_with_dangling_dependency.retain(|issue| issue.id != ASSEMBLE_TASK_ID);
+        crate::test_support::fixtures::write_bead_graph_issues(
+            &issues_path,
+            &issues_with_dangling_dependency,
+        )
+        .expect("persist dangling dependency graph");
+
+        let dangling_show = br_read
+            .exec_json::<BeadDetail>(&crate::adapters::br_process::BrCommand::show(
+                PREPARE_TASK_ID,
+            ))
+            .await
+            .expect_err("br show should fail deterministically on a dangling dependency");
+        assert!(matches!(
+            dangling_show,
+            BrError::BrExitError { stderr, .. }
+                if stderr.contains("dangling dependency")
+                    && stderr.contains(PREPARE_TASK_ID)
+                    && stderr.contains(ASSEMBLE_TASK_ID)
+        ));
+
+        let dangling_next = bv
+            .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
+            .await
+            .expect_err("bv robot-next should fail deterministically on a dangling dependency");
+        assert!(matches!(
+            dangling_next,
+            BvError::BvExitError { stderr, .. }
+                if stderr.contains("dangling dependency")
+                    && stderr.contains(PREPARE_TASK_ID)
+                    && stderr.contains(ASSEMBLE_TASK_ID)
+        ));
+
+        crate::test_support::fixtures::write_bead_graph_issues(
+            &issues_path,
+            &externally_rewritten_issues,
+        )
+        .expect("restore graph after dangling dependency");
+
         let close_assemble: BrOutput = br_mutation
             .close_bead(
                 ASSEMBLE_TASK_ID,
@@ -1509,6 +1575,7 @@ mod tests {
                 .map(|call| call.args.clone())
                 .collect::<Vec<_>>(),
             vec![
+                vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
