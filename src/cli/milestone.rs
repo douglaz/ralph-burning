@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::adapters::br_models::{BeadDetail, BeadStatus, ReadyBead};
-use crate::adapters::br_process::BrAdapter;
+use crate::adapters::br_process::{BrAdapter, BrMutationAdapter};
 use crate::adapters::bv_process::BvAdapter;
 use crate::adapters::fs::{
     FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
@@ -57,6 +57,9 @@ pub struct MilestoneCommand {
 pub enum MilestoneSubcommand {
     Create(MilestoneCreateArgs),
     Plan {
+        milestone_id: String,
+    },
+    ExportBeads {
         milestone_id: String,
     },
     Next {
@@ -195,6 +198,9 @@ pub async fn handle(command: MilestoneCommand) -> AppResult<()> {
     match command.command {
         MilestoneSubcommand::Create(args) => handle_create(args).await,
         MilestoneSubcommand::Plan { milestone_id } => handle_plan(milestone_id).await,
+        MilestoneSubcommand::ExportBeads { milestone_id } => {
+            handle_export_beads(milestone_id).await
+        }
         MilestoneSubcommand::Next { milestone_id, json } => handle_next(milestone_id, json).await,
         MilestoneSubcommand::Run { milestone_id, json } => handle_run(milestone_id, json).await,
         MilestoneSubcommand::Show { milestone_id, json } => handle_show(milestone_id, json).await,
@@ -347,6 +353,28 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
     println!(
         "Planned milestone '{}' from requirements run '{}' ({} beads, status: {})",
         detail.id, run_id, detail.bead_count, detail.status
+    );
+    Ok(())
+}
+
+async fn handle_export_beads(milestone_id: String) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    validate_workspace(&current_dir)?;
+
+    let store = FsMilestoneStore;
+    let plan_store = FsMilestonePlanStore;
+    let milestone_id = MilestoneId::new(milestone_id)?;
+    load_existing_milestone(&store, &current_dir, &milestone_id)?;
+    let (bundle, _) =
+        milestone_service::load_plan_bundle(&plan_store, &current_dir, &milestone_id)?;
+    let br_mutation =
+        BrMutationAdapter::with_adapter(BrAdapter::new().with_working_dir(current_dir.clone()));
+
+    let report = milestone_service::materialize_beads(&bundle, &br_mutation).await?;
+    workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
+    println!(
+        "Exported beads for milestone '{}' (root: {}, created: {}, reused: {})",
+        milestone_id, report.root_epic_id, report.created_beads, report.reused_beads
     );
     Ok(())
 }
@@ -2536,6 +2564,18 @@ mod tests {
         assert_eq!(milestone_id, "ms-alpha");
         assert_eq!(bead_id, "bead-1");
         assert!(json);
+    }
+
+    #[test]
+    fn milestone_export_beads_parses_correctly() {
+        let cli = Cli::parse_from(["ralph-burning", "milestone", "export-beads", "ms-alpha"]);
+        let Commands::Milestone(command) = cli.command else {
+            panic!("expected milestone command");
+        };
+        let super::MilestoneSubcommand::ExportBeads { milestone_id } = command.command else {
+            panic!("expected export-beads subcommand");
+        };
+        assert_eq!(milestone_id, "ms-alpha");
     }
 
     #[test]
