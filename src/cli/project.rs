@@ -183,6 +183,10 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
     match command.command {
         ProjectSubcommand::Select { id } => handle_select(id).await,
         ProjectSubcommand::Create(args) => {
+            print_deprecation_notice(
+                "create",
+                "task create or milestone create (depending on context)",
+            );
             if let Some(run_id) = args.from_requirements {
                 handle_create_from_requirements(run_id).await
             } else {
@@ -199,10 +203,6 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
 }
 
 async fn handle_create(args: ProjectCreateArgs) -> AppResult<()> {
-    print_deprecation_notice(
-        "create",
-        "task create or milestone create (depending on context)",
-    );
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace version

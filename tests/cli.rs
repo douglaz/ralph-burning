@@ -6961,12 +6961,18 @@ fn project_create_from_requirements_creates_project_and_selects_it() {
         .expect("project create from requirements");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "create from requirements should succeed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "create from requirements should succeed: {stderr}"
     );
     assert!(stdout.contains("Project: stub-project (active)"));
+    assert!(
+        stderr.contains(
+            "Note: `ralph-burning project create` is deprecated. Use `ralph-burning task create or milestone create (depending on context)` instead."
+        ),
+        "stderr should contain the deprecation notice: {stderr}"
+    );
     assert!(stdout.contains("Flow: standard"));
     assert_eq!(
         fs::read_to_string(active_project_path(temp_dir.path()))
@@ -7006,7 +7012,14 @@ fn project_create_from_requirements_materializes_milestone_bundle_output() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stdout.contains("Created milestone 'ms-planned'"));
+    assert!(
+        stderr.contains(
+            "Note: `ralph-burning project create` is deprecated. Use `ralph-burning task create or milestone create (depending on context)` instead."
+        ),
+        "stderr should contain the deprecation notice: {stderr}"
+    );
 
     let milestone_root = milestone_root(temp_dir.path(), "ms-planned");
     assert!(milestone_root.join("milestone.toml").is_file());

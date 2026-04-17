@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417052928",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-52755d8e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: `project create --from-requirements` does not emit the new deprecation notice. In `src/cli/project.rs:185-189`, the `Create` branch bypasses `handle_create(...)` and jumps straight to `handle_create_from_requirements(run_id)` when `--from-requirements` is present, and `src/cli/project.rs:267-316` never calls `print_deprecation_notice(...)`. That leaves one of the primary legacy `project create` entry points without the promised stderr warning, which violates the bead scope and acceptance criteria. The existing regression coverage for this path in `tests/cli.rs:6940-7009` only asserts success/stdout behavior, so the gap is currently untested. remediation_hint: emit the notice before branching on `from_requirements` or at the top of `handle_create_from_requirements`, and extend one of the `project_create_from_requirements_*` tests to assert the warning appears on stderr.",
-        "created_at": "2026-04-17T05:51:03.927237393Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e844d5b9eed431c0756f53313b3077a7bb1a512eb2d13a49afeca077dccc448e"
-      },
-      {
-        "amendment_id": "fr-1-eb904524",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Coverage gap: `handle_create_from_requirements` in src/cli/project.rs (line 267) is dispatched from `ProjectSubcommand::Create` when `--from-requirements` is set (src/cli/project.rs:185-191), but unlike the sibling `handle_create` (line 201) it does not call `print_deprecation_notice`. Result: `ralph-burning project create --from-requirements <run-id>` produces no deprecation warning even though it's a project-surface entry point the user is supposed to migrate away from. The surrounding `handle_create` path does warn, so a user only sees a deprecation notice for some invocations of `project create`, which is inconsistent.\n\nRemediation: add `print_deprecation_notice(\"create --from-requirements\", \"<recommended replacement>\")` at the top of `handle_create_from_requirements`. If no clear replacement exists today (since `milestone create --from-requirements` does not exist), the spec permits a softer phrasing (e.g., \"This command surface is deprecated and may move to `milestone` in a future release\"). Either approach resolves the inconsistency so every `project create ...` invocation gets the same deprecation signal.",
-        "created_at": "2026-04-17T05:51:03.927248985Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "9a328ed6ac85162e4f1118b8c0a7dfde926d7df5814fe840ad3aa927251b37d9"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 2
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T05:43:09.479939801Z",
