@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 20
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-19-2491a633",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 19,
-        "body": "finding_summary: `reconcile_failure` incorrectly scopes retry history and stale-replay suppression to the current `project_id` instead of the bead. The bead-scoped lineage loaded at `src/contexts/automation_runtime/failure_reconciliation.rs:198-215` is immediately narrowed back down by `failure_attempt_number` (`1057-1111`), `newer_attempt_exists` (`930-963` and `1219-1233`), and the journal helpers `failure_attempt_events` / `attempt_start_events` / `known_failed_attempts` (`1298-1408`). If a bead is retried through a replacement project, that new project starts back at attempt 1 instead of inheriting the bead's previous failures, and a late replay from the old project can still drive the controller back to `Blocked`/`NeedsOperator` because the newer replacement-project attempt is invisible. The lineage layer already allows the same bead to continue under a different project id (`src/adapters/fs.rs:5077-5143`), so this is a reachable safety hole.\nseverity: high\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs\n- src/adapters/fs.rs\nremediation_hint: Count failures and detect newer attempts across all lineage/journal entries for the bead (bead ref + run/start identity), not just entries whose `project_id` matches the current reconciliation call.",
-        "created_at": "2026-04-17T01:30:04.786111803Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d9bd1092c7e4f727fbf127a6bb77f684554bf80a3a154470c606253daaa164af"
-      },
-      {
-        "amendment_id": "fr-19-c49389f2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 19,
-        "body": "repair_historical_failure_state (failure_reconciliation.rs:674-718) unconditionally returns Ok(true) regardless of whether the repair changed anything. This forces repair_recorded_failure_attempt_ordinals to always run when a stale replay is detected, even when the state was already correct. The function signature promises a meaningful bool but always returns true. Consider returning whether repair_task_run_with_disposition actually changed state (if the underlying API supports it), or document that the return value is always true and the caller should not condition on it.",
-        "created_at": "2026-04-17T01:30:04.786115780Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "7c1016686d18db00b3b26beddd469f0e66f8a833bc7952fed2b71c900ea121d3"
-      }
-    ],
-    "processed_count": 38
+    "pending": [],
+    "processed_count": 40
   },
-  "status_summary": "running: final review restart round 20 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T01:13:40.958096621Z",
