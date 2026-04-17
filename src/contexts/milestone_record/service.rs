@@ -1486,6 +1486,7 @@ struct MaterializeBeadInput {
     labels: Vec<String>,
     description: Option<String>,
     role: MaterializedBeadRole,
+    proposal_label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1563,9 +1564,11 @@ pub async fn materialize_beads<R: ProcessRunner>(
             labels: materialized_bead_labels(
                 &[String::from("milestone-root")],
                 &milestone_scope_label,
+                None,
             ),
             description: None,
             role: MaterializedBeadRole::RootEpic,
+            proposal_label: None,
         },
     )
     .await?;
@@ -1583,9 +1586,14 @@ pub async fn materialize_beads<R: ProcessRunner>(
                 title: workstream.name.clone(),
                 bead_type: "epic".to_owned(),
                 priority: "P1".to_owned(),
-                labels: materialized_bead_labels(&Vec::<String>::new(), &milestone_scope_label),
+                labels: materialized_bead_labels(
+                    &Vec::<String>::new(),
+                    &milestone_scope_label,
+                    None,
+                ),
                 description: None,
                 role: MaterializedBeadRole::WorkstreamEpic,
+                proposal_label: None,
             },
         )
         .await?;
@@ -1622,6 +1630,7 @@ pub async fn materialize_beads<R: ProcessRunner>(
             )?;
             next_implicit_bead += 1;
             let bead_type = proposal.bead_type.as_deref().unwrap_or("task");
+            let proposal_label = proposal_export_label(&canonical_proposal_id);
             let mut bead = materialize_bead_entry(
                 bundle,
                 br_mutation,
@@ -1630,9 +1639,14 @@ pub async fn materialize_beads<R: ProcessRunner>(
                     title: proposal.title.clone(),
                     bead_type: bead_type.to_owned(),
                     priority: format!("P{}", proposal.priority.unwrap_or(2)),
-                    labels: materialized_bead_labels(&proposal.labels, &milestone_scope_label),
+                    labels: materialized_bead_labels(
+                        &proposal.labels,
+                        &milestone_scope_label,
+                        Some(proposal_label.as_str()),
+                    ),
                     description: proposal.description.clone(),
                     role: MaterializedBeadRole::Task,
+                    proposal_label: Some(proposal_label),
                 },
             )
             .await?;
@@ -1862,9 +1876,40 @@ fn milestone_export_label(milestone_id: &str) -> String {
     format!("milestone:{milestone_id}")
 }
 
-fn materialized_bead_labels(labels: &[String], milestone_scope_label: &str) -> Vec<String> {
+fn proposal_export_label(proposal_id: &str) -> String {
+    format!("proposal:{proposal_id}")
+}
+
+fn is_proposal_export_label(label: &str) -> bool {
+    label.starts_with("proposal:")
+}
+
+fn proposal_label_matches(candidate_labels: &[String], proposal_label: Option<&String>) -> bool {
+    let Some(proposal_label) = proposal_label else {
+        return true;
+    };
+    if candidate_labels
+        .iter()
+        .any(|existing| existing == proposal_label)
+    {
+        return true;
+    }
+
+    !candidate_labels
+        .iter()
+        .any(|label| is_proposal_export_label(label))
+}
+
+fn materialized_bead_labels(
+    labels: &[String],
+    milestone_scope_label: &str,
+    proposal_label: Option<&str>,
+) -> Vec<String> {
     let mut merged = Vec::with_capacity(labels.len() + 1);
     merged.push(milestone_scope_label.to_owned());
+    if let Some(proposal_label) = proposal_label {
+        merged.push(proposal_label.to_owned());
+    }
     for label in labels {
         if !merged.iter().any(|existing| existing == label) {
             merged.push(label.clone());
@@ -1894,6 +1939,7 @@ fn canonical_export_proposal_id(
 
 fn summary_matches_materialized_bead(summary: &BeadSummary, input: &MaterializeBeadInput) -> bool {
     summary_matches_materialized_bead_except_role(summary, input)
+        && proposal_label_matches(&summary.labels, input.proposal_label.as_ref())
         && materialized_role_matches(&summary.labels, &input.role)
 }
 
@@ -1911,9 +1957,8 @@ fn detail_matches_materialized_bead(detail: &BeadDetail, input: &MaterializeBead
     normalize_bead_match_text(&detail.title) == normalize_bead_match_text(&input.title)
         && bead_type_matches(detail.bead_type.clone(), &input.bead_type)
         && materialized_role_matches(&detail.labels, &input.role)
-        && input
-            .labels
-            .iter()
+        && proposal_label_matches(&detail.labels, input.proposal_label.as_ref())
+        && shared_materialized_labels(&input.labels)
             .all(|label| detail.labels.iter().any(|existing| existing == label))
 }
 
@@ -1934,9 +1979,10 @@ fn materialized_role_matches(labels: &[String], role: &MaterializedBeadRole) -> 
 }
 
 fn shared_materialized_labels(labels: &[String]) -> impl Iterator<Item = &String> {
-    labels
-        .iter()
-        .filter(|label| label.as_str() != "milestone-root")
+    labels.iter().filter(|label| {
+        let label = label.as_str();
+        label != "milestone-root" && !is_proposal_export_label(label)
+    })
 }
 
 async fn find_existing_materialized_bead<R: ProcessRunner>(
@@ -15971,6 +16017,135 @@ mod tests {
                 ]
         }));
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialize_beads_reuses_same_title_explicit_proposals_by_proposal_label(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        setup_workspace(tmp.path());
+        let mut bundle = sample_bundle("ms-alpha", "Alpha");
+        bundle.acceptance_map[0].covered_by =
+            vec!["build-api".to_owned(), "validate-api".to_owned()];
+        bundle.workstreams[0].beads[0].bead_id = Some("build-api".to_owned());
+        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+        bundle.workstreams[0].beads[0].title = "Shared title".to_owned();
+        bundle.workstreams[0]
+            .beads
+            .push(crate::contexts::milestone_record::bundle::BeadProposal {
+                bead_id: Some("validate-api".to_owned()),
+                explicit_id: Some(true),
+                title: "Shared title".to_owned(),
+                description: Some("Validate the exported API surface.".to_owned()),
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: vec!["backend".to_owned()],
+                depends_on: vec!["build-api".to_owned()],
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: None,
+            });
+
+        let acceptance_lookup = bundle
+            .acceptance_map
+            .iter()
+            .map(|criterion| (criterion.id.as_str(), criterion.description.as_str()))
+            .collect::<HashMap<_, _>>();
+        let workstream_comment = bundle.workstreams[0]
+            .description
+            .as_deref()
+            .expect("workstream description")
+            .to_owned();
+        let first_comment = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[0],
+            &acceptance_lookup,
+        )
+        .expect("first planning comment");
+        let second_comment = render_bead_planning_comment(
+            bundle.workstreams[0].name.as_str(),
+            &bundle.workstreams[0].beads[1],
+            &acceptance_lookup,
+        )
+        .expect("second planning comment");
+
+        let list_all = serde_json::json!([
+            bead_summary_value(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"]
+            ),
+            bead_summary_value("ws-core", "Core", "epic", "open", &["milestone:ms-alpha"]),
+            bead_summary_value(
+                "task-build",
+                "Shared title",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend", "proposal:build-api"]
+            ),
+            bead_summary_value(
+                "task-validate",
+                "Shared title",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend", "proposal:validate-api"]
+            )
+        ])
+        .to_string();
+        let mock = MockBrAdapter::from_responses([
+            MockBrResponse::success(list_all),
+            MockBrResponse::success(bead_detail_stdout(
+                "root-epic",
+                "Alpha",
+                "epic",
+                "open",
+                &["milestone:ms-alpha", "milestone-root"],
+                &[],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "ws-core",
+                "Core",
+                "epic",
+                "open",
+                &["milestone:ms-alpha"],
+                &[("root-epic", "parent-child")],
+                &[workstream_comment.as_str()],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "task-build",
+                "Shared title",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend", "proposal:build-api"],
+                &[("ws-core", "parent-child")],
+                &[first_comment.as_str()],
+            )),
+            MockBrResponse::success(bead_detail_with_dependency_kinds_stdout(
+                "task-validate",
+                "Shared title",
+                "task",
+                "open",
+                &["milestone:ms-alpha", "backend", "proposal:validate-api"],
+                &[("ws-core", "parent-child"), ("task-build", "blocks")],
+                &[second_comment.as_str()],
+            )),
+        ]);
+
+        let report = materialize_beads(&bundle, tmp.path(), &mock.as_mutation_adapter()).await?;
+        let calls = mock.calls();
+
+        assert_eq!(report.created_beads, 0);
+        assert_eq!(report.reused_beads, 4);
+        assert_eq!(report.task_bead_ids, vec!["task-build", "task-validate"]);
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|call| call.args.first().map(String::as_str) == Some("create"))
+                .count(),
+            0
+        );
         Ok(())
     }
 
