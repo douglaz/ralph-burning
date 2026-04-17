@@ -1528,19 +1528,12 @@ impl MilestoneCommandControllerRuntime<'_> {
     }
 
     fn planned_bead_membership_refs(&self) -> AppResult<std::collections::HashSet<String>> {
-        let plan_json = FsMilestonePlanStore.read_plan_json(self.base_dir, self.milestone_id)?;
-        let bundle: MilestoneBundle =
-            serde_json::from_str(&plan_json).map_err(|error| AppError::CorruptRecord {
-                file: format!("milestones/{}/plan.json", self.milestone_id),
-                details: error.to_string(),
-            })?;
-
-        crate::contexts::milestone_record::bundle::planned_bead_membership_refs(&bundle)
-            .map(|refs| refs.into_iter().collect())
-            .map_err(|errors| AppError::CorruptRecord {
-                file: format!("milestones/{}/plan.json", self.milestone_id),
-                details: errors.join("; "),
-            })
+        milestone_service::load_runtime_bead_membership_refs(
+            &FsMilestonePlanStore,
+            &FsMilestoneJournalStore,
+            self.base_dir,
+            self.milestone_id,
+        )
     }
 }
 
