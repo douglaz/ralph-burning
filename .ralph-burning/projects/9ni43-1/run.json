@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260417123935",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 11
+      "completion_round": 12
     },
     "started_at": "2026-04-17T12:39:35.365397534Z",
     "prompt_hash_at_cycle_start": "ad31e67b7876543bce248fbf60e6e997647e7974dbe9e215b8646180af6a8cf7",
     "prompt_hash_at_stage_start": "ad31e67b7876543bce248fbf60e6e997647e7974dbe9e215b8646180af6a8cf7",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 10
+    "final_review_restart_count": 11
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 11,
+  "completion_rounds": 12,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-11-7f7e2967",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 11,
+        "body": "finding_summary: Export ignores an authored `explicit_id=true` when the supplied bead id happens to equal the proposal's implicit slot. `materialize_beads()` always derives the explicit lookup candidate through `explicit_export_bead_id()` (`src/contexts/milestone_record/service.rs:1650`, `src/contexts/milestone_record/service.rs:2011-2030`), and that helper drops any id that normalizes to `bead-{implicit_index}`. But the bundle model explicitly allows `explicit_id=true` even for slot-matching ids (`src/contexts/milestone_record/bundle.rs:541-567`). In that supported shape, export will skip the id-based reuse path, fall back to title matching, and can duplicate a bead or attach dependencies/comments to the wrong issue after a rename.\naffected_files: src/contexts/milestone_record/service.rs, src/contexts/milestone_record/bundle.rs\nremediation_hint: Make `explicit_export_bead_id()` honor `proposal.explicit_id == Some(true)` before suppressing slot-matching ids, so explicitly authored `bead-1`/`ms-foo.bead-1` values still drive reuse by id.",
+        "created_at": "2026-04-17T17:08:28.412369008Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "223fc9c97cc40c71526e6689d11e967878d97ab98c40a566b81aedd14f24a30e"
+      },
+      {
+        "amendment_id": "fr-11-411d5b02",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 11,
+        "body": "finding_summary: Runtime bead membership can resurrect a stale export map from history whenever the current plan hash matches an older export, even if a newer `beads_exported` event for a different plan exists. `load_runtime_bead_membership_refs()` extends membership from `latest_exported_bead_id_map()` (`src/contexts/milestone_record/service.rs:4255-4258`), but that helper scans backward until it finds any matching `bundle_hash` (`src/contexts/milestone_record/service.rs:4262-4280`). If the milestone was exported for plan A, later exported for plan B, and then `plan.json` returns to the old A hash without a fresh export, the controller will reuse A's historical actual bead ids as if they were current. That can make `run` treat stale beads as in-scope until the user re-exports.\naffected_files: src/contexts/milestone_record/service.rs\nremediation_hint: Only reuse the exported id map when the newest `beads_exported` event overall matches the current plan hash; if a later export has a different hash, treat the current plan as not yet exported and return an empty map.",
+        "created_at": "2026-04-17T17:08:28.412375310Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "26fde3f3eaa4fe7951e874b3b2e458464e52fe2a4ba7de9c38174bd357437946"
+      }
+    ],
     "processed_count": 29
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 12 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T16:30:22.354322979Z",
+    "resolved_at": "2026-04-17T16:54:36.706684230Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

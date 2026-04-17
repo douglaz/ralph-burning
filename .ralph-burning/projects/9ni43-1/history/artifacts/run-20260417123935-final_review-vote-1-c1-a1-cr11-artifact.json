@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T17:08:28.398729786Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real correctness issues where milestone runtime/export behavior can drift from the authored plan or the latest exported state. Each one can cause the system to reuse the wrong bead identity and operate on stale or incorrect work items.\n\n## Votes\n\n- `fr-11-7f7e2967`: Accept\n  `bundle.rs` explicitly preserves `explicit_id` as authored metadata, including the valid case where the authored id normalizes to the implicit slot, but `explicit_export_bead_id()` drops those ids solely because they look implicit. That means export skips the explicit-id lookup path and falls back to title-based reuse, which is not identity-stable across renames and can duplicate beads or attach dependencies/comments to the wrong issue. The remediation is consistent with the data model: if `proposal.explicit_id == Some(true)`, the authored id should remain authoritative for export reuse.\n- `fr-11-411d5b02`: Accept\n  `latest_exported_bead_id_map()` currently returns the most recent export whose `bundle_hash` matches the current plan, not the actual newest export state overall. When a later `beads_exported` event exists for a different plan, scanning backward to an older matching hash revives historical actual bead ids and `load_runtime_bead_membership_refs()` treats them as current runtime membership. That lets controller/run logic act on stale exported beads after a plan rollback without a fresh export, so requiring the newest export event itself to match the current plan hash is the correct safety boundary.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

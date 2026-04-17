@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T17:06:31.833326085Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify real, verifiable bugs. fr-11-7f7e2967: explicit_export_bead_id() ignores proposal.explicit_id==true when the supplied id matches the implicit slot, even though bundle.rs validation explicitly permits that shape, causing duplicate/misrouted beads on rename. fr-11-411d5b02: latest_exported_bead_id_map() reuses a stale historical export whenever the current plan hash coincidentally matches an older export, ignoring that a newer export for a different plan is the canonical tracker state. Both are genuine defects and should be fixed.\n\n## Votes\n\n- `fr-11-7f7e2967`: Accept\n  Verified: bundle.rs:564-567 allows explicit_id=Some(true) with a bead_id matching the implicit slot (only errors when bead_id.is_none()). Confirmed: explicit_export_bead_id() at service.rs:2011-2032 never consults proposal.explicit_id; it suppresses any normalized id that equals bead-{implicit_index}. Combined, a legitimately authored explicit id like 'bead-1' is dropped from the reuse path, forcing title-only matching that can duplicate beads or attach deps/comments to the wrong issue after a rename. Honoring explicit_id==Some(true) before suppression is correct and localized.\n- `fr-11-411d5b02`: Accept\n  Verified: latest_exported_bead_id_map() at service.rs:4262-4283 walks journal events in reverse and returns the first beads_exported whose bundle_hash matches the current plan hash, without regard to whether a newer beads_exported for a different plan hash exists. Since tracker mutations (renames, retitles, dependency moves) reflect the most recent export, reusing an older export's planned_bead_id_map when a newer export superseded it can point runtime membership at beads that were repurposed. Gating reuse on the newest beads_exported matching the current plan hash (otherwise empty) correctly forces a fresh export before trusting the mapping.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 11
+}
