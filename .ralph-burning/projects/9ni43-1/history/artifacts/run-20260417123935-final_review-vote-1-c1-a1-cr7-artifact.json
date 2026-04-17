@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T15:40:42.895082627Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in the bead export reuse logic. The current implementation reuses beads by milestone-scoped title/type/label matching rather than by the authored explicit bead ID or the stable proposal/workstream identity label alone, so it can both duplicate explicitly referenced beads and break idempotent re-export when mutable labels change.\n\n## Votes\n\n- `fr-7-95596c0d`: Accept\n  `materialize_beads` builds `existing_by_title` only from summaries that already have the `milestone:<id>` label (src/contexts/milestone_record/service.rs:1543-1561), and the later reuse path never looks up `proposal.bead_id` directly. For explicit proposals, that ID is only normalized into proposal/report bookkeeping (`canonical_export_proposal_id`, `canonical_export_planned_bead_id`, `proposal_export_label`) rather than used as the primary reuse key (src/contexts/milestone_record/service.rs:1647-1707). Meanwhile the bundle code explicitly documents that explicit beads may already exist under their authored short IDs in `.beads/` (src/contexts/milestone_record/bundle.rs:615-620). So an already-authored explicit bead that is not yet milestone-labeled is invisible to reuse, a new bead is created, and dependencies/comments are attached to the duplicate instead of the referenced bead.\n- `fr-7-8f68ada9`: Accept\n  The reuse predicate is over-constrained by mutable labels. Both `summary_matches_materialized_bead_except_role` and `detail_matches_materialized_bead` require every non-identity label in the current proposal to already exist on the candidate bead (src/contexts/milestone_record/service.rs:2016-2028). If a plan edit adds or removes a task label after first export, the bead that still carries the correct `proposal:<id>` or `workstream:<id>` identity label becomes ineligible for reuse. `find_existing_materialized_bead` then treats that same active bead as an incompatible match and aborts export instead of reusing it (src/contexts/milestone_record/service.rs:2127-2143). Since the identity label is the stable logical key introduced to disambiguate same-title items, rejecting replay on label drift is a real idempotency and maintainability bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

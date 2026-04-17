@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T15:37:52.164506899Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified both findings against service.rs and bundle.rs. Amendment fr-7-95596c0d is a real duplication bug: explicit_id beads are never probed by their authored ID, and the title-based index only sees beads already carrying milestone:<id>, so referencing a pre-existing bead creates a duplicate. Amendment fr-7-8f68ada9 is a real idempotency bug: shared_materialized_labels requires every non-identity input label to exist on the summary, so adding any new label to a proposal falls through to the 'incompatible active matches' error even though the identity label (proposal:/workstream:) still uniquely identifies the same bead.\n\n## Votes\n\n- `fr-7-95596c0d`: Accept\n  Confirmed: in service.rs:1543-1561 the existing-bead index is built only from beads already carrying milestone_scope_label, and in service.rs:1646-1706 proposal.bead_id is consumed only to derive proposal_label / report keys — never to probe the authored bead via br show. Combined with the bundle.rs:615-620 comment acknowledging that explicit beads may pre-exist under their short ID, this means an explicit_id reference to an unlabeled bead will silently create a duplicate. Dependencies and planning comments then attach to the wrong bead. High severity is appropriate because it corrupts the graph and the remediation (resolve explicit authored ID first) is straightforward.\n- `fr-7-8f68ada9`: Accept\n  Confirmed: summary_matches_materialized_bead_except_role at service.rs:2012-2020 applies an 'input labels ⊆ summary labels' check over shared_materialized_labels, which excludes only milestone-root and identity labels. Any newly added proposal label therefore drops the otherwise-matching bead out of eligible_indices, and the fallback at service.rs:2127-2143 converts the remaining active identity-labeled bead into the 'incompatible active matches' hard error. Because identity labels (proposal:<id> / workstream:<id>) already guarantee uniqueness, this over-constraint breaks replay/idempotency for any routine plan edit. Medium severity is appropriate and the proposed fix (use identity label as primary reuse key, reconcile metadata drift) is the right direction.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 7
+}
