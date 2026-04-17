@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr22-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr22",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T02:21:58.272396641Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched `src/contexts/automation_runtime/failure_reconciliation.rs` so already-recorded failure replays now reuse canonical recorded failure provenance instead of caller-supplied replay inputs. The reconciler now derives the effective failure timestamp from recorded lineage/journal state, preserves the recorded error summary when it is authoritative, and only falls back to the replay error text when the stored detail is a non-authoritative superseded-retry placeholder. I also added a regression that replays an escalated third failure with a different timestamp and richer message and asserts both the milestone journal and controller transition journal remain unchanged.\n\n## Steps\n\n1. [Completed] Inspected the already-recorded replay path in `failure_reconciliation.rs` and confirmed it was still feeding replay-supplied `failed_at` and `error_summary` into repair and outcome derivation.\n2. [Completed] Updated failure reconciliation so already-recorded replays compute `effective_failed_at` and `effective_error_summary` from recorded failure provenance before invoking repair, logging, outcome generation, and controller transitions.\n3. [Completed] Added a regression proving a replayed third failure with a different timestamp and richer text returns the same escalation outcome and leaves both the milestone journal and controller transition journal unchanged.\n4. [Completed] Ran formatting, targeted failure-reconciliation tests, the full Rust test suite, both clippy gates, and launched the required `nix build` verification gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test failure_reconciliation -- --nocapture` passed; all 26 failure-reconciliation tests succeeded, including the new replay-idempotency regression.\n- `cargo test` passed on the full suite.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `nix build` was launched and advanced into `/nix/store/0rgvdibv9nwgclx9cggyq70bapp415yb-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`; it is currently still running inside the musl `cargo test` / `ralph-burning-stable-conformance conformance run` stage, so no final exit status was available in-session.\n\n## Outstanding Risks\n\n- `nix build` was launched on the updated tree and is still running in-session in the musl `cargo test` / `ralph-burning-stable-conformance` stage with no terminal success/failure exit observed yet, so the authoritative Nix gate remains unresolved.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 22
+}

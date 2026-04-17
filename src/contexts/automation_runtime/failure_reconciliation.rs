@@ -231,15 +231,29 @@ where
     );
     let preferred_task_id =
         preferred_failure_task_id(recorded_provenance.task_id.as_deref(), task_id);
+    let effective_error_summary = if already_recorded {
+        canonical_replay_error_summary(
+            recorded_provenance.outcome_detail.as_deref(),
+            &error_summary,
+        )
+    } else {
+        error_summary.clone()
+    };
+    let effective_failed_at = if already_recorded {
+        recorded_provenance.failed_at.unwrap_or(failed_at)
+    } else {
+        failed_at
+    };
     let outcome_detail = normalized_failure_outcome_detail(
         recorded_provenance.outcome_detail.as_deref(),
         preferred_task_id,
         predicted_attempt_number,
-        &error_summary,
+        &effective_error_summary,
     );
     let recorded_task_id =
         extract_task_id_from_outcome_detail(&outcome_detail).unwrap_or(preferred_task_id);
-    let predicted_outcome = failure_outcome(bead_id, predicted_attempt_number, &error_summary);
+    let predicted_outcome =
+        failure_outcome(bead_id, predicted_attempt_number, &effective_error_summary);
 
     if !already_recorded
         && !exact_attempt_exists(&existing_runs, project_id, run_id, started_at)
@@ -286,7 +300,7 @@ where
             bead_id,
             task_id,
             predicted_attempt_number,
-            &error_summary,
+            &effective_error_summary,
             true,
             true,
             repaired_historical_failure,
@@ -301,7 +315,7 @@ where
             project_id,
             run_id,
             started_at,
-            failed_at,
+            effective_failed_at,
             true,
             &existing_attempts,
             &predicted_outcome,
@@ -387,7 +401,7 @@ where
             started_at,
             TaskRunOutcome::Failed,
             Some(outcome_detail.clone()),
-            failed_at,
+            effective_failed_at,
             CompletionMilestoneDisposition::ReconcileFromLineage,
         )
         .map_err(|error| FailureReconciliationError::MilestoneUpdateFailed {
@@ -466,12 +480,12 @@ where
         });
     }
 
-    let outcome = failure_outcome(bead_id, attempt_number, &error_summary);
+    let outcome = failure_outcome(bead_id, attempt_number, &effective_error_summary);
     log_failure_reconciliation(
         bead_id,
         task_id,
         attempt_number,
-        &error_summary,
+        &effective_error_summary,
         already_recorded,
         false,
         false,
@@ -486,7 +500,7 @@ where
         project_id,
         run_id,
         started_at,
-        failed_at,
+        effective_failed_at,
         already_recorded,
         &recorded_attempts,
         &outcome,
@@ -724,6 +738,17 @@ fn canonical_failure_error_summary(detail: Option<&str>) -> String {
         .and_then(|parsed| parsed.error_summary)
         .filter(|summary| !is_superseded_retry_error_summary(summary))
         .unwrap_or_else(|| normalize_error_summary(detail.unwrap_or_default()))
+}
+
+fn canonical_replay_error_summary(
+    recorded_outcome_detail: Option<&str>,
+    fallback_error_summary: &str,
+) -> String {
+    recorded_outcome_detail
+        .map(parse_failure_outcome_detail)
+        .and_then(|parsed| parsed.error_summary)
+        .filter(|summary| !is_superseded_retry_error_summary(summary))
+        .unwrap_or_else(|| normalize_error_summary(fallback_error_summary))
 }
 
 fn extract_task_id_from_outcome_detail(detail: &str) -> Option<&str> {
@@ -2285,6 +2310,130 @@ mod tests {
             )?
             .len();
         assert_eq!(controller_journal_len, controller_journal_after);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reconcile_failure_replay_preserves_recorded_failure_timestamp_and_reason(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        write_beads_export(base)?;
+        let milestone_id = create_test_milestone(base)?;
+        let base_time = Utc::now();
+
+        start_attempt(
+            base,
+            &milestone_id,
+            "task-1",
+            "run-1",
+            base_time + Duration::seconds(1),
+        )?;
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-1",
+            Some("plan-v1"),
+            base_time + Duration::seconds(1),
+            base_time + Duration::seconds(5),
+            "first failure",
+        )
+        .await?;
+
+        start_attempt(
+            base,
+            &milestone_id,
+            "task-1",
+            "run-2",
+            base_time + Duration::seconds(11),
+        )?;
+        reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-2",
+            Some("plan-v1"),
+            base_time + Duration::seconds(11),
+            base_time + Duration::seconds(15),
+            "second failure",
+        )
+        .await?;
+
+        start_attempt(
+            base,
+            &milestone_id,
+            "task-1",
+            "run-3",
+            base_time + Duration::seconds(21),
+        )?;
+        let third = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-1",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-3",
+            Some("plan-v1"),
+            base_time + Duration::seconds(21),
+            base_time + Duration::seconds(25),
+            "third failure",
+        )
+        .await?;
+
+        let milestone_journal_before = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?;
+        let controller_journal_before =
+            milestone_controller::MilestoneControllerPort::read_transition_journal(
+                &FsMilestoneControllerStore,
+                base,
+                &milestone_id,
+            )?;
+
+        let replay = reconcile_failure(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsTaskRunLineageStore,
+            &FsMilestoneControllerStore,
+            base,
+            "bead-failure",
+            "task-replay",
+            "proj-failure",
+            milestone_id.as_str(),
+            "run-3",
+            Some("plan-v1"),
+            base_time + Duration::seconds(21),
+            base_time + Duration::seconds(30),
+            "third failure with richer fallback text",
+        )
+        .await?;
+
+        assert_eq!(replay, third);
+        let milestone_journal_after = read_journal(&FsMilestoneJournalStore, base, &milestone_id)?;
+        let controller_journal_after =
+            milestone_controller::MilestoneControllerPort::read_transition_journal(
+                &FsMilestoneControllerStore,
+                base,
+                &milestone_id,
+            )?;
+        assert_eq!(milestone_journal_after, milestone_journal_before);
+        assert_eq!(controller_journal_after, controller_journal_before);
 
         Ok(())
     }
