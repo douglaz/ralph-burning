@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417123935-final_review-reviewer-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T15:53:35.653128129Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the materialize_beads implementation on feat/9ni43-materialize-beads: src/contexts/milestone_record/service.rs (materialize_beads, materialize_bead_entry, resolve_exported_bead_id, find_existing_materialized_bead, find_explicit_materialized_bead, candidate_bead_ids_from_create_stdout, record_beads_exported_event, load_runtime_bead_membership_refs), src/cli/milestone.rs (ExportBeads subcommand, handle_export_beads, BeadExportAttemptGuard with flock-based cross-process coordination), src/adapters/br_process.rs (dep_add_with_kind for parent-child, single --labels=a,b,c arg), src/adapters/br_models.rs (BeadComment, untagged RawBeadShowResponse), and the extensive materialize_beads test suite (15+ cases covering idempotency by title/explicit ID/closed history, cross-milestone isolation, implicit dependency resolution, comment restoration, pending-sync replay, and mutation-failure safety). Idempotency is sound (milestone-scoped identity labels plus role + metadata-label matching in find_existing_materialized_bead), sync discipline is correct (preflight and post-flight sync_own_dirty_if_beads_healthy wrapping materialize calls), error handling uses AppError::MilestoneOperationFailed consistently, and the attempt guard relies on liveness detection rather than Drop by design to preserve crash-recovery semantics. No correctness, safety, or robustness defects warrant fix-now amendments, and any minor observations (attempt guard has no Drop; milestone rename could orphan an old root epic) are either intentional design choices or out of scope for this additive bead.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 8
+}
