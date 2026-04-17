@@ -795,7 +795,7 @@ async fn primary_stage_artifacts_persist_agent_producer_metadata() {
                     requested_model_id: model_id,
                     ..
                 }
-            ) if backend_family == "claude" && model_id == "claude-opus-4-6"
+            ) if backend_family == "claude" && model_id == "claude-opus-4-7"
         ),
         "docs_plan primary artifact should persist agent producer metadata: {:?}",
         docs_plan_artifact.producer

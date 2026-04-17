@@ -535,7 +535,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn invoke_preserves_adapter_reported_values_before_normalizing_target() {
         let temp_dir = tempdir().expect("create temp dir");
-        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-7");
         let request = request_fixture(temp_dir.path().to_path_buf(), resolved_target.clone());
         let service = AgentExecutionService::new(
             ReportingAdapter::new(
@@ -549,7 +549,7 @@ mod tests {
         let envelope = service.invoke(request).await.expect("invoke succeeds");
 
         assert_eq!(envelope.metadata.backend_used.family, BackendFamily::Claude);
-        assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-6");
+        assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-7");
         assert_eq!(
             envelope
                 .metadata
@@ -572,7 +572,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn invoke_always_populates_adapter_reported_values() {
         let temp_dir = tempdir().expect("create temp dir");
-        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-7");
         let request = request_fixture(temp_dir.path().to_path_buf(), resolved_target.clone());
         let service = AgentExecutionService::new(
             ReportingAdapter::new(
@@ -600,9 +600,9 @@ mod tests {
                 .adapter_reported_model
                 .as_ref()
                 .map(|m| m.model_id.as_str()),
-            Some("claude-opus-4-6")
+            Some("claude-opus-4-7")
         );
         assert_eq!(envelope.metadata.backend_used.family, BackendFamily::Claude);
-        assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-6");
+        assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-7");
     }
 }

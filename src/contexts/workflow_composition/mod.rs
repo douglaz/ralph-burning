@@ -283,7 +283,7 @@ mod tests {
             duration: Duration::from_millis(1),
             token_counts: TokenCounts::default(),
             backend_used: BackendSpec::from_family(BackendFamily::Claude),
-            model_used: ModelSpec::new(BackendFamily::Claude, "claude-opus-4-6"),
+            model_used: ModelSpec::new(BackendFamily::Claude, "claude-opus-4-7"),
             adapter_reported_backend: None,
             adapter_reported_model: None,
             attempt_number: 1,
@@ -295,9 +295,9 @@ mod tests {
             agent_record_producer(&metadata),
             RecordProducer::Agent {
                 requested_backend_family: "claude".to_owned(),
-                requested_model_id: "claude-opus-4-6".to_owned(),
+                requested_model_id: "claude-opus-4-7".to_owned(),
                 actual_backend_family: "claude".to_owned(),
-                actual_model_id: "claude-opus-4-6".to_owned(),
+                actual_model_id: "claude-opus-4-7".to_owned(),
             }
         );
     }
@@ -309,7 +309,7 @@ mod tests {
             duration: Duration::from_millis(1),
             token_counts: TokenCounts::default(),
             backend_used: BackendSpec::from_family(BackendFamily::Claude),
-            model_used: ModelSpec::new(BackendFamily::Claude, "claude-opus-4-6"),
+            model_used: ModelSpec::new(BackendFamily::Claude, "claude-opus-4-7"),
             adapter_reported_backend: Some(BackendSpec::from_family(BackendFamily::OpenRouter)),
             adapter_reported_model: Some(ModelSpec::new(
                 BackendFamily::OpenRouter,
@@ -324,7 +324,7 @@ mod tests {
             agent_record_producer(&metadata),
             RecordProducer::Agent {
                 requested_backend_family: "claude".to_owned(),
-                requested_model_id: "claude-opus-4-6".to_owned(),
+                requested_model_id: "claude-opus-4-7".to_owned(),
                 actual_backend_family: "openrouter".to_owned(),
                 actual_model_id: "openai/gpt-4.1".to_owned(),
             }
@@ -335,9 +335,9 @@ mod tests {
     fn require_agent_record_producer_returns_actual_backend_and_model() {
         let producer = RecordProducer::Agent {
             requested_backend_family: "claude".to_owned(),
-            requested_model_id: "claude-opus-4-6".to_owned(),
+            requested_model_id: "claude-opus-4-7".to_owned(),
             actual_backend_family: "claude".to_owned(),
-            actual_model_id: "claude-opus-4-6".to_owned(),
+            actual_model_id: "claude-opus-4-7".to_owned(),
         };
 
         assert_eq!(
@@ -348,7 +348,7 @@ mod tests {
                 "completion panel invocations must produce agent metadata",
             )
             .expect("agent producer"),
-            ("claude", "claude-opus-4-6")
+            ("claude", "claude-opus-4-7")
         );
     }
 
@@ -356,7 +356,7 @@ mod tests {
     fn require_agent_record_producer_returns_actual_when_different_from_requested() {
         let producer = RecordProducer::Agent {
             requested_backend_family: "claude".to_owned(),
-            requested_model_id: "claude-opus-4-6".to_owned(),
+            requested_model_id: "claude-opus-4-7".to_owned(),
             actual_backend_family: "openrouter".to_owned(),
             actual_model_id: "openai/gpt-4.1".to_owned(),
         };
@@ -377,7 +377,7 @@ mod tests {
     fn require_agent_record_producer_falls_back_to_requested_when_actual_missing() {
         let producer = RecordProducer::Agent {
             requested_backend_family: "claude".to_owned(),
-            requested_model_id: "claude-opus-4-6".to_owned(),
+            requested_model_id: "claude-opus-4-7".to_owned(),
             actual_backend_family: String::new(),
             actual_model_id: String::new(),
         };
@@ -390,7 +390,7 @@ mod tests {
                 "completion panel invocations must produce agent metadata",
             )
             .expect("agent producer"),
-            ("claude", "claude-opus-4-6")
+            ("claude", "claude-opus-4-7")
         );
     }
 
