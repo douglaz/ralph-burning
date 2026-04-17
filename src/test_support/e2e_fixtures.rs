@@ -23,8 +23,8 @@ use crate::shared::domain::FlowPreset;
 use crate::test_support::br::{MockBrAdapter, MockBrResponse};
 use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
 use crate::test_support::fixtures::{
-    BeadGraphDependency, BeadGraphFixtureBuilder, BeadGraphIssue, MilestoneFixture,
-    MilestoneFixtureBuilder, TempWorkspace, TempWorkspaceBuilder,
+    BeadGraphDependency, BeadGraphFixtureBuilder, BeadGraphIssue, MilestoneFixture, TempWorkspace,
+    TempWorkspaceBuilder,
 };
 
 const MILESTONE_ID: &str = "ms-e2e-scenario";
@@ -65,14 +65,6 @@ pub fn build_e2e_milestone_scenario_fixture() -> E2eScenarioFixture {
         });
 
     let mut workspace = TempWorkspaceBuilder::new()
-        .with_milestone(
-            MilestoneFixtureBuilder::new(MILESTONE_ID)
-                .with_name(MILESTONE_NAME)
-                .with_executive_summary(bundle.executive_summary.clone())
-                .with_goals(bundle.goals.clone())
-                .add_bead("Seed milestone bead 2")
-                .add_bead("Seed milestone bead 3"),
-        )
         .with_bead_graph(bead_graph)
         .build()
         .expect("build e2e scenario temp workspace");
@@ -463,7 +455,7 @@ mod tests {
     use crate::adapters::br_models::{BeadDetail, BeadSummary};
     use crate::adapters::br_process::BrCommand;
     use crate::adapters::bv_process::{BvCommand, NextBeadResponse};
-    use crate::contexts::milestone_record::model::MilestoneStatus;
+    use crate::contexts::milestone_record::model::{MilestoneEventType, MilestoneStatus};
 
     #[tokio::test]
     async fn build_e2e_milestone_scenario_fixture_smoke_test() {
@@ -490,6 +482,19 @@ mod tests {
         assert!(milestone.root.join("plan.md").is_file());
         assert!(milestone.root.join("plan.json").is_file());
         assert_eq!(milestone.snapshot.progress.total_beads, 3);
+        assert!(milestone.task_runs.is_empty());
+        assert_eq!(
+            milestone
+                .journal
+                .iter()
+                .filter(|event| event.event_type == MilestoneEventType::PlanDrafted)
+                .count(),
+            1
+        );
+        assert!(milestone
+            .journal
+            .iter()
+            .all(|event| event.event_type != MilestoneEventType::PlanUpdated));
 
         let plan_json =
             fs::read_to_string(milestone.root.join("plan.json")).expect("read plan.json");

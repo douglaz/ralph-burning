@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T19:58:24.073297576Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/test_support/e2e_fixtures.rs` so `build_e2e_milestone_scenario_fixture()` no longer seeds a placeholder milestone before rematerializing the real scenario bundle. The fixture now initializes an empty temp workspace with the staged `.beads` graph, materializes the scenario bundle exactly once into that workspace, and returns milestone state whose journal and task-run history only describe the advertised Ready milestone plan. The smoke test was tightened to assert the fixture has no stale task runs and only a single drafted plan event with no plan-update rematerialization residue.\n\n## Steps\n\n1. [Completed] Inspected the existing E2E fixture builder and milestone fixture helpers to confirm the stale-history bug came from writing a seed milestone before materializing the real scenario bundle.\n2. [Completed] Patched `build_e2e_milestone_scenario_fixture()` to build the workspace without `MilestoneFixtureBuilder`, keep the staged `.beads` graph, and materialize the scenario bundle only once before reloading the persisted milestone fixture.\n3. [Completed] Expanded the smoke test to verify the fixture journal/task-run state reflects a single real plan materialization, then reran the required verification stack.\n\n## Validation Evidence\n\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo fmt --check` passed after formatting the updated fixture test.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 3
+}
