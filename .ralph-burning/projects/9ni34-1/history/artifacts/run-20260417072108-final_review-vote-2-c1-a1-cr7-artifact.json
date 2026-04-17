@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T10:33:39.003642760Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments correctly identify real defects in src/contexts/milestone_record/bundle.rs. fr-7-a108aa36: dependency_graph_analysis_from_nodes early-returns on duplicate/missing-target errors (lines 910-912), so validate_dependency_graph cannot surface cycles alongside missing targets — violating its documented contract. The existing 'reports cycles even with non_graph validation errors' test uses description=None, which never triggers the early-return path, so the case is effectively uncovered. fr-7-48a6bc6e: collect_deferred_items depends on a narrow hardcoded phrase list while the planner prompt does not constrain wording; common paraphrases ('postponed until beta', 'subsequent milestone', 'not in scope for alpha') silently fall through, causing render_plan_md to omit a plan section that the spec requires whenever deferred scope exists. Both are legitimate quality/correctness issues with actionable remediation hints.\n\n## Votes\n\n- `fr-7-a108aa36`: Accept\n  Confirmed at bundle.rs:910-912: dependency_graph_analysis_from_nodes returns errors early before the cycle-detection phase, so validate_dependency_graph cannot surface cycles when the same bundle also has missing targets or duplicate bead IDs. That contradicts the helper's stated contract ('checks for cycles, missing targets, and reports issues'). The supposed regression test at line 2163 only exercises description=None, which never touches the dependency graph and therefore does not protect the invariant. The suggested remediation — collect duplicate/missing diagnostics, then run cycle detection over the resolvable subgraph (removing the expect() on bead_index lookup) — is straightforward and restores the intended behavior.\n- `fr-7-48a6bc6e`: Accept\n  Verified: contains_deferred_note at bundle.rs:1025-1040 matches only a fixed substring set, and collect_deferred_items/render_plan_md (1043-1067, 1547-1553) silently omit the Deferred Items section whenever none of those strings appear. The planner prompt in template_catalog.rs (336, 340, 350) uses 'deferred' but does not constrain paraphrasing, so plausible LLM outputs like 'postponed until beta', 'subsequent milestone', or 'not in scope for alpha' drop information the spec says must appear in plan.md. This is a real fragility in a rendering invariant, and the remediation options — structural modeling or broadened matching — are reasonable paths to make the renderer robust to wording variation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 7
+}

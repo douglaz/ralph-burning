@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417072108-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T10:30:57.238279851Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the milestone-bundle prompt, validation, summary, and rendering changes. Two fix-now issues remain in the new bundle helpers: dependency validation drops cycle diagnostics for mixed-error graphs, and deferred-item rendering is too phrase-specific to reliably satisfy the new plan.md requirement.\n\n## Amendments\n\n1. finding_summary: `validate_dependency_graph()` does not report cycles when the same bundle also has a missing dependency or duplicate bead id. `dependency_graph_analysis_from_nodes()` returns immediately once it sees duplicate/missing-target errors (`src/contexts/milestone_record/bundle.rs:889-912`), so `validate_dependency_graph()` (`src/contexts/milestone_record/bundle.rs:1079-1083`) never reaches cycle detection for mixed-error graphs. A bundle like `A -> B -> A` plus `C -> missing` will only surface the missing target, which falls short of the helper's contract to check cycles and missing targets together.\naffected_files: src/contexts/milestone_record/bundle.rs\nremediation_hint: collect duplicate/missing-target diagnostics first, then run cycle detection over the resolvable portion of the graph and merge both classes of errors into the returned list.\n   Rationale: This is one of the newly added public helpers for the bead. Returning only a partial error set makes graph validation materially less useful and can hide a real sequencing cycle until after an unrelated graph error is fixed.\n2. finding_summary: The new `Deferred Items` section is driven by a small hard-coded phrase list in `contains_deferred_note()` (`src/contexts/milestone_record/bundle.rs:1025-1040`) and is only emitted when `collect_deferred_items()` finds one of those exact substrings (`src/contexts/milestone_record/bundle.rs:1043-1067`, `1379-1383`, `1547-1553`). Because the planner prompt does not constrain the wording of deferred-scope notes, common phrasings like `postponed until beta`, `subsequent milestone`, or `not in scope for alpha` will not be recognized, so `render_plan_md()` can omit the required deferred-work summary even when the workstream/bead description clearly contains deferred scope.\naffected_files: src/contexts/milestone_record/bundle.rs\nremediation_hint: either model deferred work structurally in the bundle, or broaden normalization/matching so the renderer is not dependent on a narrow set of literal phrases.\n   Rationale: This is a user-visible correctness gap in the new rendering behavior: whether deferred work appears in the summary currently depends on incidental wording choices from the planner, not on the presence of deferred scope itself.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T10:33:49.834780702Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real robustness defects in milestone bundle handling: dependency-graph validation currently suppresses some independent diagnostics, and deferred-item rendering relies on brittle literal phrase matching rather than a stable signal.\n\n## Votes\n\n- `fr-7-a108aa36`: Accept\n  `dependency_graph_analysis_from_nodes()` returns as soon as it sees duplicate-id or missing-target errors, so `validate_dependency_graph()` cannot report cycles that exist elsewhere in the same graph. The mixed case is real, not hypothetical: a resolvable cycle is independent of an unrelated missing dependency, and the helper already exists to surface graph issues even when other validation problems are present. Suppressing the cycle forces iterative fix-and-rerun debugging and leaves the graph diagnosis incomplete.\n- `fr-7-48a6bc6e`: Accept\n  The `Deferred Items` section is derived from a narrow hard-coded substring list, while the planning prompt asks for deferred or out-of-scope notes semantically rather than enforcing exact wording. That means legitimate deferred-scope descriptions can remain in the bundle but be silently omitted from the summary section purely because they use different phrasing. This is a real robustness and maintainability issue in the renderer, not just a stylistic preference.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

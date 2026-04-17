@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260417072108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 7
+      "completion_round": 8
     },
     "started_at": "2026-04-17T07:21:08.915370991Z",
     "prompt_hash_at_cycle_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "prompt_hash_at_stage_start": "6ab80a0ddd131c898e4dda9d9061818dc561a9dd69b8aa0c734f0bfc2f1892d5",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 6
+    "final_review_restart_count": 7
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 7,
+  "completion_rounds": 8,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-7-a108aa36",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "finding_summary: `validate_dependency_graph()` does not report cycles when the same bundle also has a missing dependency or duplicate bead id. `dependency_graph_analysis_from_nodes()` returns immediately once it sees duplicate/missing-target errors (`src/contexts/milestone_record/bundle.rs:889-912`), so `validate_dependency_graph()` (`src/contexts/milestone_record/bundle.rs:1079-1083`) never reaches cycle detection for mixed-error graphs. A bundle like `A -> B -> A` plus `C -> missing` will only surface the missing target, which falls short of the helper's contract to check cycles and missing targets together.\naffected_files: src/contexts/milestone_record/bundle.rs\nremediation_hint: collect duplicate/missing-target diagnostics first, then run cycle detection over the resolvable portion of the graph and merge both classes of errors into the returned list.",
+        "created_at": "2026-04-17T10:33:49.848966219Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "de33887ee59b8966503e8095d855c33315334e571d5ac110292a11ed1c50a67e"
+      },
+      {
+        "amendment_id": "fr-7-48a6bc6e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "finding_summary: The new `Deferred Items` section is driven by a small hard-coded phrase list in `contains_deferred_note()` (`src/contexts/milestone_record/bundle.rs:1025-1040`) and is only emitted when `collect_deferred_items()` finds one of those exact substrings (`src/contexts/milestone_record/bundle.rs:1043-1067`, `1379-1383`, `1547-1553`). Because the planner prompt does not constrain the wording of deferred-scope notes, common phrasings like `postponed until beta`, `subsequent milestone`, or `not in scope for alpha` will not be recognized, so `render_plan_md()` can omit the required deferred-work summary even when the workstream/bead description clearly contains deferred scope.\naffected_files: src/contexts/milestone_record/bundle.rs\nremediation_hint: either model deferred work structurally in the bundle, or broaden normalization/matching so the renderer is not dependent on a narrow set of literal phrases.",
+        "created_at": "2026-04-17T10:33:49.848972080Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "50399cc1160094d699571968f407001d3216aba1e06529e5e860a469feebf2ec"
+      }
+    ],
     "processed_count": 13
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T10:02:10.278889286Z",
+    "resolved_at": "2026-04-17T10:22:19.231580595Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
