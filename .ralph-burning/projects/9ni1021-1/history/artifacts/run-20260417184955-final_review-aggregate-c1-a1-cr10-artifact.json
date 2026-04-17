@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:15:43.773464458Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 10/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-10-db4c98e3`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-10-7dee4424`\n\n## Final Accepted Amendments\n\n### `fr-10-db4c98e3`\n\nfinding_summary: `build_e2e_milestone_scenario_fixture()` does not actually hand back usable preconfigured adapters. The returned `mock_br`/`mock_bv` are bare mocks (`src/test_support/e2e_fixtures.rs:52-58,103-109`), but every dispatched response hard-fails unless the caller manually rebinds the adapter to `workspace.path()` (`src/test_support/e2e_fixtures.rs:821-833`). The smoke test had to introduce a private `mutation_adapter()` helper and explicit `.with_working_dir(...)` calls to make the fixture usable (`src/test_support/e2e_fixtures.rs:1043-1049,1181-1238`). That is a real trap because the rest of the repo normally consumes these mocks via `mock.as_br_adapter()` / `mock.as_mutation_adapter()` / `mock.as_bv_adapter()` directly (for example `tests/unit/controller_runtime_test.rs:341-345` and `src/contexts/milestone_record/service.rs:16049-16050`). Any integration test that uses the new fixture the same way will fail with `no working directory configured` instead of exercising the scenario. affected_files: `src/test_support/e2e_fixtures.rs`, `src/test_support/br.rs`, `src/test_support/bv.rs`. remediation_hint: expose pre-bound `BrAdapter`/`BrMutationAdapter`/`BvAdapter` helpers from `E2eScenarioFixture`, or make the scenario mocks default their working directory to the temp workspace root so the existing convenience constructors remain usable.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

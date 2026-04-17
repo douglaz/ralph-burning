@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:14:42.780492222Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify legitimate defects in the new e2e fixture and its smoke test. The first surfaces an ergonomics trap where the standard adapter convenience methods fail unless callers manually rebind the working directory, which conflicts with how the rest of the repo consumes mocks. The second points out that the smoke test's 10-second guard is 10x looser than the bead's documented <1s acceptance target, defeating the regression protection the test was added to provide.\n\n## Votes\n\n- `fr-10-db4c98e3`: Accept\n  Confirmed against the source: scenario_br_response (e2e_fixtures.rs:709) and scenario_bv_response (e2e_fixtures.rs:796) call validate_fixture_working_dir, which returns 'no working directory configured' unless the caller explicitly sets the working_dir. The fixture exposes bare MockBrAdapter/MockBvAdapter, but the rest of the repo consumes these mocks via the convenience helpers as_br_adapter/as_mutation_adapter/as_bv_adapter without setting a working_dir (e.g., controller_runtime_test.rs:344-345). The smoke test even had to introduce a private mutation_adapter helper plus explicit .with_working_dir() calls (lines 1043-1049, 1181-1190) just to make the mocks usable. Any future test that follows the established pattern will fail in a confusing way instead of exercising the scenario. Pre-binding adapters on the fixture (or defaulting the working_dir guard to the workspace root) is the right fix and preserves the safety check while removing the trap.\n- `fr-10-7dee4424`: Accept\n  Verified at e2e_fixtures.rs:1058-1061: the assertion is `elapsed < Duration::from_secs(10)`, which is an order of magnitude looser than the bead's stated '<1 second for fixture creation' acceptance criterion. A multi-second regression would silently pass CI while still violating the documented contract, so the smoke test does not actually protect the requirement it was created to defend. Tightening the bound to match the spec (e.g., Duration::from_secs(1) or a millisecond bound) restores the guarantee; if real CI variance exceeds 1s, the right move is to renegotiate the contract, not silently widen the test.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 10
+}
