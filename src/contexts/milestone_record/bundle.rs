@@ -80,6 +80,15 @@ impl MilestoneBundle {
 
     /// Validate the bundle's internal consistency.
     pub fn validate(&self) -> Result<(), Vec<String>> {
+        self.validate_with_mode(BundleValidationMode::Compatibility)
+    }
+
+    /// Validate the stricter planner-generation contract used for fresh LLM output.
+    pub fn validate_generated(&self) -> Result<(), Vec<String>> {
+        self.validate_with_mode(BundleValidationMode::Generated)
+    }
+
+    fn validate_with_mode(&self, mode: BundleValidationMode) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         let milestone_id = self.identity.id.trim();
 
@@ -143,22 +152,22 @@ impl MilestoneBundle {
                 if bead.title.trim().is_empty() {
                     errors.push(format!("{location}.title must not be empty"));
                 }
-                if bead
+                let has_description = bead
                     .description
                     .as_deref()
                     .map(str::trim)
                     .filter(|description| !description.is_empty())
-                    .is_none()
-                {
+                    .is_some();
+                if mode.requires_generated_metadata() && !has_description {
                     errors.push(format!("{location}.description must not be empty"));
                 }
-                if bead
+                let has_bead_type = bead
                     .bead_type
                     .as_deref()
                     .map(str::trim)
                     .filter(|bead_type| !bead_type.is_empty())
-                    .is_none()
-                {
+                    .is_some();
+                if mode.requires_generated_metadata() && !has_bead_type {
                     errors.push(format!("{location}.bead_type must not be empty"));
                 }
                 match bead.priority {
@@ -166,9 +175,12 @@ impl MilestoneBundle {
                     Some(priority) => errors.push(format!(
                         "{location}.priority must be between 1 and 3, got {priority}"
                     )),
-                    None => errors.push(format!("{location}.priority must not be empty")),
+                    None if mode.requires_generated_metadata() => {
+                        errors.push(format!("{location}.priority must not be empty"))
+                    }
+                    None => {}
                 }
-                if bead.labels.is_empty() {
+                if mode.requires_generated_metadata() && bead.labels.is_empty() {
                     errors.push(format!("{location}.labels must contain at least one label"));
                 }
                 for (k, label) in bead.labels.iter().enumerate() {
@@ -277,7 +289,7 @@ impl MilestoneBundle {
         }
 
         for (i, ac) in self.acceptance_map.iter().enumerate() {
-            if ac.covered_by.is_empty() {
+            if mode.requires_generated_metadata() && ac.covered_by.is_empty() {
                 errors.push(format!(
                     "acceptance_map[{i}].covered_by must contain at least one bead"
                 ));
@@ -324,7 +336,7 @@ impl MilestoneBundle {
                             .cloned()
                             .unwrap_or_default();
 
-                        if declared.is_empty() {
+                        if mode.requires_generated_metadata() && declared.is_empty() {
                             errors.push(format!(
                                 "acceptance_map[{i}].covered_by must contain at least one bead"
                             ));
@@ -381,6 +393,18 @@ impl MilestoneBundle {
     /// Total count of proposed beads.
     pub fn bead_count(&self) -> usize {
         self.workstreams.iter().map(|ws| ws.beads.len()).sum()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BundleValidationMode {
+    Compatibility,
+    Generated,
+}
+
+impl BundleValidationMode {
+    fn requires_generated_metadata(self) -> bool {
+        matches!(self, Self::Generated)
     }
 }
 
@@ -1205,6 +1229,18 @@ fn canonicalize_bundle(bundle: &MilestoneBundle) -> Result<MilestoneBundle, Vec<
         }
     }
 
+    let covered_by_from_beads = derived_acceptance_coverage(&canonical);
+    for criterion in &mut canonical.acceptance_map {
+        if criterion.covered_by.is_empty() {
+            criterion.covered_by = covered_by_from_beads
+                .get(&criterion.id)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+        }
+    }
+
     if errors.is_empty() {
         Ok(canonical)
     } else {
@@ -1731,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_validation_rejects_missing_required_bead_metadata(
+    fn generated_bundle_validation_rejects_missing_required_bead_metadata(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.workstreams[0].beads[0].description = None;
@@ -1739,7 +1775,7 @@ mod tests {
         bundle.workstreams[0].beads[0].priority = Some(4);
         bundle.workstreams[0].beads[0].labels.clear();
 
-        let errors = bundle.validate().unwrap_err();
+        let errors = bundle.validate_generated().unwrap_err();
 
         assert!(errors
             .iter()
@@ -2100,13 +2136,13 @@ mod tests {
     }
 
     #[test]
-    fn bundle_validation_rejects_missing_covered_by_entries(
+    fn generated_bundle_validation_rejects_missing_covered_by_entries(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.acceptance_map[0].covered_by.clear();
         bundle.acceptance_map[1].covered_by.clear();
 
-        let errors = bundle.validate().unwrap_err();
+        let errors = bundle.validate_generated().unwrap_err();
 
         assert!(errors
             .iter()
@@ -2116,6 +2152,37 @@ mod tests {
             .iter()
             .any(|error| error
                 .contains("acceptance_map[1].covered_by must contain at least one bead")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_accepts_legacy_missing_metadata_and_backfills_covered_by(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].description = None;
+        bundle.workstreams[0].beads[0].bead_type = None;
+        bundle.workstreams[0].beads[0].priority = None;
+        bundle.workstreams[0].beads[0].labels.clear();
+        bundle.acceptance_map[0].covered_by.clear();
+        bundle.acceptance_map[1].covered_by.clear();
+
+        bundle.validate().map_err(|errors| errors.join("; "))?;
+
+        let rendered = render_plan_json(&bundle)?;
+        let parsed: MilestoneBundle = serde_json::from_str(&rendered)?;
+
+        assert_eq!(
+            parsed.acceptance_map[0].covered_by,
+            vec!["ms-alpha.bead-1".to_owned(), "ms-alpha.bead-2".to_owned()]
+        );
+        assert_eq!(
+            parsed.acceptance_map[1].covered_by,
+            vec!["ms-alpha.bead-3".to_owned()]
+        );
+        assert_eq!(parsed.workstreams[0].beads[0].description, None);
+        assert_eq!(parsed.workstreams[0].beads[0].bead_type, None);
+        assert_eq!(parsed.workstreams[0].beads[0].priority, None);
+        assert!(parsed.workstreams[0].beads[0].labels.is_empty());
         Ok(())
     }
 

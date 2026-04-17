@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417072108",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-76d8edde",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: `MilestoneBundle::validate()` is now backwards-incompatible with previously accepted milestone payloads. The new hard requirements for bead `description`, `bead_type`, `priority`, `labels`, and non-empty `acceptance_map.covered_by` at `src/contexts/milestone_record/bundle.rs:146`, `src/contexts/milestone_record/bundle.rs:155`, `src/contexts/milestone_record/bundle.rs:164`, `src/contexts/milestone_record/bundle.rs:171`, and `src/contexts/milestone_record/bundle.rs:279`, combined with `canonicalize_bundle()` no longer rebuilding empty `covered_by` entries in `src/contexts/milestone_record/bundle.rs:1155`, mean older planner payloads now deserialize successfully but fail runtime validation. That breaks real workflows because completed requirements runs persist the raw planner bundle at `src/contexts/requirements_drafting/service.rs:1829` and revalidate it during handoff at `src/contexts/requirements_drafting/service.rs:2358`, so an already-completed run can become impossible to hand off or materialize after upgrade.\naffected_files:\n- src/contexts/milestone_record/bundle.rs\n- src/contexts/requirements_drafting/service.rs\nremediation_hint: Keep the stricter prompt guidance, but preserve legacy compatibility by backfilling missing `covered_by` and tolerating absent legacy bead metadata during load/canonicalization, or add an explicit migration path before `validate()` rejects older bundles.",
-        "created_at": "2026-04-17T09:14:51.865220442Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "6c2fe1dae79132d301a67dcf93a34247b3d55e34a7c3cbbbcdb2573f91877980"
-      }
-    ],
-    "processed_count": 7
+    "pending": [],
+    "processed_count": 8
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T08:59:38.383887088Z",

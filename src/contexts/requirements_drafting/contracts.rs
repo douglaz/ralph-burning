@@ -370,7 +370,7 @@ impl RequirementsContract {
                 }
             }
             RequirementsPayload::MilestoneBundle(p) => {
-                if let Err(errors) = p.validate() {
+                if let Err(errors) = p.validate_generated() {
                     return Err(ContractError::DomainValidation {
                         stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("milestone_bundle: {}", errors.join("; ")),

@@ -6571,7 +6571,7 @@ mod tests {
     }
 
     #[test]
-    fn materialize_bundle_rejects_missing_covered_by_entries(
+    fn materialize_bundle_backfills_legacy_missing_covered_by_entries(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -6584,8 +6584,12 @@ mod tests {
 
         let mut bundle = sample_bundle("legacy-covered-by", "Legacy Covered By");
         bundle.acceptance_map[0].covered_by.clear();
+        bundle.workstreams[0].beads[0].description = None;
+        bundle.workstreams[0].beads[0].bead_type = None;
+        bundle.workstreams[0].beads[0].priority = None;
+        bundle.workstreams[0].beads[0].labels.clear();
 
-        let error = materialize_bundle(
+        let record = materialize_bundle(
             &store,
             &snapshot_store,
             &journal_store,
@@ -6594,10 +6598,14 @@ mod tests {
             &bundle,
             now,
         )
-        .expect_err("materialization should reject missing covered_by entries");
+        .expect("legacy bundle should still materialize");
 
-        let rendered = format!("{error:?}");
-        assert!(rendered.contains("covered_by must contain at least one bead"));
+        let plan: MilestoneBundle =
+            serde_json::from_str(&plan_store.read_plan_json(base, &record.id)?)?;
+        assert_eq!(
+            plan.acceptance_map[0].covered_by,
+            vec!["legacy-covered-by.bead-1".to_owned()]
+        );
         Ok(())
     }
 

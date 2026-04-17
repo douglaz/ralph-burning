@@ -1669,6 +1669,62 @@ mod service_integration {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn extract_milestone_bundle_handoff_accepts_legacy_bundle_metadata() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone legacy handoff validation",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should succeed");
+
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+        let store = FsRequirementsStore;
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let payload_id = run
+            .latest_milestone_bundle_id
+            .clone()
+            .expect("payload id should exist");
+        let mut legacy_bundle = run.milestone_bundle.clone().expect("milestone bundle");
+        legacy_bundle.acceptance_map[0].covered_by.clear();
+        legacy_bundle.workstreams[0].beads[0].description = None;
+        legacy_bundle.workstreams[0].beads[0].bead_type = None;
+        legacy_bundle.workstreams[0].beads[0].priority = None;
+        legacy_bundle.workstreams[0].beads[0].labels.clear();
+        run.milestone_bundle = Some(legacy_bundle.clone());
+        store
+            .write_run(temp_dir.path(), &run_id, &run)
+            .expect("write legacy run");
+        store
+            .write_payload(
+                temp_dir.path(),
+                &run_id,
+                &payload_id,
+                &serde_json::to_value(&legacy_bundle).expect("serialize legacy bundle"),
+            )
+            .expect("write legacy payload");
+
+        let handoff =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect("legacy bundle should still hand off");
+        assert_eq!(handoff.bundle.identity.id, "ms-stub");
+        assert!(handoff.bundle.acceptance_map[0].covered_by.is_empty());
+        assert_eq!(handoff.bundle.workstreams[0].beads[0].description, None);
+        assert_eq!(handoff.bundle.workstreams[0].beads[0].bead_type, None);
+        assert_eq!(handoff.bundle.workstreams[0].beads[0].priority, None);
+        assert!(handoff.bundle.workstreams[0].beads[0].labels.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn extract_milestone_bundle_handoff_falls_back_to_payload_when_embedded_bundle_invalid() {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
@@ -3905,6 +3961,49 @@ fn milestone_bundle_contract_validates_and_renders_plan_markdown() {
     assert!(bundle.artifact.contains("# Alpha Milestone"));
     assert!(bundle.artifact.contains("## Acceptance Criteria"));
     assert!(bundle.artifact.contains("Wire milestone bundle output"));
+}
+
+#[test]
+fn milestone_bundle_contract_rejects_legacy_missing_planner_metadata() {
+    use ralph_burning::shared::error::ContractError;
+
+    let raw = json!({
+        "schema_version": MILESTONE_BUNDLE_VERSION,
+        "identity": {
+            "id": "ms-alpha",
+            "name": "Alpha Milestone"
+        },
+        "executive_summary": "Deliver the alpha workflow.",
+        "goals": ["Ship milestone planning"],
+        "acceptance_map": [{
+            "id": "AC-1",
+            "description": "Planner produces a durable milestone bundle."
+        }],
+        "workstreams": [{
+            "name": "Planning",
+            "description": "Define milestone output.",
+            "beads": [{
+                "bead_id": "ms-alpha.bead-1",
+                "title": "Wire milestone bundle output",
+                "depends_on": [],
+                "acceptance_criteria": ["AC-1"]
+            }]
+        }],
+        "default_flow": "quick_dev"
+    });
+
+    let error = RequirementsContract::milestone_bundle()
+        .evaluate(&raw)
+        .expect_err("planner output missing metadata should fail the strict contract");
+
+    let ContractError::DomainValidation { details, .. } = error else {
+        panic!("expected domain validation error");
+    };
+    assert!(details.contains(".description must not be empty"));
+    assert!(details.contains(".bead_type must not be empty"));
+    assert!(details.contains(".priority must not be empty"));
+    assert!(details.contains(".labels must contain at least one label"));
+    assert!(details.contains("covered_by must contain at least one bead"));
 }
 
 #[test]
