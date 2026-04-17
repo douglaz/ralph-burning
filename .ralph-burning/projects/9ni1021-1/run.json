@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 8
+      "completion_round": 9
     },
     "started_at": "2026-04-17T21:08:41.567727685Z",
     "prompt_hash_at_cycle_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "prompt_hash_at_stage_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 7
+    "final_review_restart_count": 8
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 8,
+  "completion_rounds": 9,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-8-1bebf4fa",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "finding_summary: The scenario mocks ignore the adapter working directory, so tests built on this fixture will still pass even if production code forgets to point `br`/`bv` at the temp workspace.\nseverity: medium\naffected_files:\n- src/test_support/e2e_fixtures.rs:419-425\n- src/test_support/e2e_fixtures.rs:575-659\nremediation_hint: Thread `MockBrCall.working_dir` / `MockBvCall.working_dir` into the scenario handlers and fail on a missing or mismatched path, or return adapters that are already bound to `fixture.workspace.path()` so cwd wiring is part of what the fixture validates.",
+        "created_at": "2026-04-17T22:42:36.855947634Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "02e6f4786d42e6bd284a86fd99e2529516d48aa1884a5d99a783a500ae9c4e75"
+      }
+    ],
     "processed_count": 13
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 9 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T22:15:13.697752046Z",
+    "resolved_at": "2026-04-17T22:30:56.991246420Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T22:37:21.435030879Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `master`, excluding `.ralph-burning/` as requested. I found two fix-now issues in the new e2e fixture: the exported bead graph/`bead_ids` do not match the documented scenario, and the mock adapters bypass working-directory validation, which can hide real integration bugs.\n\n## Amendments\n\n1. finding_summary: The public fixture contract no longer matches the scenario it is supposed to build. `build_e2e_milestone_scenario_fixture()` exports six bead IDs/records, because `scenario_bead_graph_issues()` adds a root epic, two workstream epics, and three tasks, and `bead_ids` returns all of them.\nseverity: medium\naffected_files:\n- src/test_support/e2e_fixtures.rs:94-97\n- src/test_support/e2e_fixtures.rs:227-367\n- src/test_support/e2e_fixtures.rs:969-977\nremediation_hint: Keep the exported `.beads` graph and `bead_ids` aligned with the documented scenario, or split auxiliary epic IDs into a separate field so callers do not see a six-node graph when the milestone snapshot only tracks three planned beads.\n   Rationale: The fixture's milestone snapshot reports `total_beads == 3`, but the exported bead inventory contains six nodes. Any scenario test that compares graph counts or iterates `fixture.bead_ids` as the milestone's created beads will observe an inconsistent workspace shape.\n2. finding_summary: The scenario mocks ignore the adapter working directory, so tests built on this fixture will still pass even if production code forgets to point `br`/`bv` at the temp workspace.\nseverity: medium\naffected_files:\n- src/test_support/e2e_fixtures.rs:419-425\n- src/test_support/e2e_fixtures.rs:575-659\nremediation_hint: Thread `MockBrCall.working_dir` / `MockBvCall.working_dir` into the scenario handlers and fail on a missing or mismatched path, or return adapters that are already bound to `fixture.workspace.path()` so cwd wiring is part of what the fixture validates.\n   Rationale: The fixture captures `workspace_root` inside `ScenarioState` and dispatches on `call.args` only. That bypasses one of the main integration concerns for these adapters: ensuring commands are executed in the correct workspace. A bad caller can use the wrong cwd and still get green tests.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}
