@@ -317,6 +317,12 @@ impl MilestoneBundle {
                             ));
                         }
                     }
+
+                    if let Err(mut graph_errors) =
+                        dependency_graph_analysis_from_canonical(&canonical)
+                    {
+                        errors.append(&mut graph_errors);
+                    }
                 }
                 Err(mut canonicalization_errors) => errors.append(&mut canonicalization_errors),
             }
@@ -613,6 +619,371 @@ fn derived_acceptance_coverage(bundle: &MilestoneBundle) -> BTreeMap<String, BTr
     covered_by_from_beads
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkstreamSummary {
+    pub name: String,
+    pub bead_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleSummary {
+    pub total_workstreams: usize,
+    pub total_beads: usize,
+    pub beads_per_workstream: Vec<WorkstreamSummary>,
+    pub dependency_depth: usize,
+    pub covered_acceptance_criteria: usize,
+    pub total_acceptance_criteria: usize,
+    pub acceptance_coverage_percentage: usize,
+}
+
+#[derive(Debug, Clone)]
+struct DependencyNode {
+    bead_id: String,
+    workstream_index: usize,
+    depends_on: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DependencyGraphAnalysis {
+    bead_order: Vec<String>,
+    dependency_depth: usize,
+}
+
+fn inferred_bead_identifier(raw_bead_id: Option<&str>, implicit_index: usize) -> String {
+    raw_bead_id
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| format!("bead-{implicit_index}"))
+}
+
+fn bead_reference_aliases(reference: &str) -> Vec<String> {
+    let trimmed = reference.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut aliases = vec![trimmed.to_owned()];
+    if let Some((_, suffix)) = trimmed.rsplit_once('.') {
+        if !suffix.is_empty() && suffix != trimmed {
+            aliases.push(suffix.to_owned());
+        }
+    }
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
+fn inferred_dependency_nodes(workstreams: &[Workstream]) -> Vec<DependencyNode> {
+    let mut next_implicit_bead = 1usize;
+    let mut nodes = Vec::new();
+
+    for (workstream_index, workstream) in workstreams.iter().enumerate() {
+        for bead in &workstream.beads {
+            let bead_id = inferred_bead_identifier(bead.bead_id.as_deref(), next_implicit_bead);
+            next_implicit_bead += 1;
+            nodes.push(DependencyNode {
+                bead_id,
+                workstream_index,
+                depends_on: bead.depends_on.clone(),
+            });
+        }
+    }
+
+    nodes
+}
+
+fn dependency_graph_analysis_from_canonical(
+    canonical: &MilestoneBundle,
+) -> Result<DependencyGraphAnalysis, Vec<String>> {
+    let mut nodes = Vec::new();
+    for (workstream_index, workstream) in canonical.workstreams.iter().enumerate() {
+        for bead in &workstream.beads {
+            nodes.push(DependencyNode {
+                bead_id: bead
+                    .bead_id
+                    .as_deref()
+                    .expect("canonicalized bundles assign every bead an id")
+                    .to_owned(),
+                workstream_index,
+                depends_on: bead.depends_on.clone(),
+            });
+        }
+    }
+
+    let mut bead_index = BTreeMap::new();
+    for (index, node) in nodes.iter().enumerate() {
+        bead_index.insert(node.bead_id.clone(), index);
+    }
+
+    let mut errors = Vec::new();
+    for node in &nodes {
+        for depends_on in &node.depends_on {
+            if !bead_index.contains_key(depends_on) {
+                errors.push(format!(
+                    "dependency '{}' referenced by '{}' does not exist",
+                    depends_on, node.bead_id
+                ));
+            }
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    fn detect_cycle(
+        node_index: usize,
+        nodes: &[DependencyNode],
+        bead_index: &BTreeMap<String, usize>,
+        states: &mut [u8],
+        stack: &mut Vec<usize>,
+        cycle_reports: &mut BTreeSet<String>,
+    ) {
+        states[node_index] = 1;
+        stack.push(node_index);
+
+        for depends_on in &nodes[node_index].depends_on {
+            let dependency_index = *bead_index
+                .get(depends_on)
+                .expect("missing dependencies handled before cycle detection");
+            match states[dependency_index] {
+                0 => detect_cycle(
+                    dependency_index,
+                    nodes,
+                    bead_index,
+                    states,
+                    stack,
+                    cycle_reports,
+                ),
+                1 => {
+                    if let Some(cycle_start) =
+                        stack.iter().position(|index| *index == dependency_index)
+                    {
+                        let mut cycle = stack[cycle_start..]
+                            .iter()
+                            .map(|index| nodes[*index].bead_id.clone())
+                            .collect::<Vec<_>>();
+                        cycle.push(nodes[dependency_index].bead_id.clone());
+                        cycle_reports
+                            .insert(format!("dependency cycle detected: {}", cycle.join(" -> ")));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        stack.pop();
+        states[node_index] = 2;
+    }
+
+    let mut states = vec![0u8; nodes.len()];
+    let mut stack = Vec::new();
+    let mut cycle_reports = BTreeSet::new();
+    for node_index in 0..nodes.len() {
+        if states[node_index] == 0 {
+            detect_cycle(
+                node_index,
+                &nodes,
+                &bead_index,
+                &mut states,
+                &mut stack,
+                &mut cycle_reports,
+            );
+        }
+    }
+
+    if !cycle_reports.is_empty() {
+        return Err(cycle_reports.into_iter().collect());
+    }
+
+    let mut dependents = vec![Vec::new(); nodes.len()];
+    let mut indegree = vec![0usize; nodes.len()];
+    for (node_index, node) in nodes.iter().enumerate() {
+        indegree[node_index] = node.depends_on.len();
+        for depends_on in &node.depends_on {
+            let dependency_index = *bead_index
+                .get(depends_on)
+                .expect("missing dependencies handled before ordering");
+            dependents[dependency_index].push(node_index);
+        }
+    }
+
+    let mut ready = BTreeSet::new();
+    for (node_index, count) in indegree.iter().enumerate() {
+        if *count == 0 {
+            ready.insert(node_index);
+        }
+    }
+
+    let mut bead_order = Vec::new();
+    let mut depth = vec![1usize; nodes.len()];
+    while let Some(node_index) = ready.pop_first() {
+        bead_order.push(nodes[node_index].bead_id.clone());
+
+        for dependent_index in &dependents[node_index] {
+            depth[*dependent_index] = depth[*dependent_index].max(depth[node_index] + 1);
+            indegree[*dependent_index] -= 1;
+            if indegree[*dependent_index] == 0 {
+                ready.insert(*dependent_index);
+            }
+        }
+    }
+
+    Ok(DependencyGraphAnalysis {
+        bead_order,
+        dependency_depth: depth.into_iter().max().unwrap_or(0),
+    })
+}
+
+fn dependency_graph_analysis(
+    bundle: &MilestoneBundle,
+) -> Result<DependencyGraphAnalysis, Vec<String>> {
+    let canonical = canonicalize_bundle(bundle)?;
+    dependency_graph_analysis_from_canonical(&canonical)
+}
+
+fn contains_deferred_note(text: &str) -> bool {
+    let lowered = text.to_ascii_lowercase();
+    [
+        "defer",
+        "deferred",
+        "not included",
+        "out of scope",
+        "future work",
+        "later phase",
+        "follow-up milestone",
+        "intentionally excluded",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn collect_deferred_items(bundle: &MilestoneBundle, workstream_labels: &[String]) -> Vec<String> {
+    let mut items = Vec::new();
+
+    for (workstream, workstream_label) in bundle.workstreams.iter().zip(workstream_labels.iter()) {
+        if let Some(description) = workstream
+            .description
+            .as_deref()
+            .filter(|description| contains_deferred_note(description))
+        {
+            items.push(format!("Workstream {workstream_label}: {description}"));
+        }
+
+        for bead in &workstream.beads {
+            if let Some(description) = bead
+                .description
+                .as_deref()
+                .filter(|description| contains_deferred_note(description))
+            {
+                let bead_id = bead.bead_id.as_deref().unwrap_or("-");
+                items.push(format!("Bead {bead_id} ({}): {description}", bead.title));
+            }
+        }
+    }
+
+    items
+}
+
+pub fn infer_workstream_order(workstreams: &[Workstream]) -> Vec<usize> {
+    let nodes = inferred_dependency_nodes(workstreams);
+    let mut bead_index = BTreeMap::new();
+    let mut ambiguous_aliases = BTreeSet::new();
+
+    for (index, node) in nodes.iter().enumerate() {
+        for alias in bead_reference_aliases(&node.bead_id) {
+            if bead_index.insert(alias.clone(), index).is_some() {
+                ambiguous_aliases.insert(alias);
+            }
+        }
+    }
+    for alias in ambiguous_aliases {
+        bead_index.remove(&alias);
+    }
+
+    let mut workstream_edges = vec![BTreeSet::new(); workstreams.len()];
+    let mut indegree = vec![0usize; workstreams.len()];
+    for node in &nodes {
+        for depends_on in &node.depends_on {
+            for alias in bead_reference_aliases(depends_on) {
+                if let Some(dependency_index) = bead_index.get(&alias) {
+                    let upstream = nodes[*dependency_index].workstream_index;
+                    let downstream = node.workstream_index;
+                    if upstream != downstream && workstream_edges[upstream].insert(downstream) {
+                        indegree[downstream] += 1;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut ready = BTreeSet::new();
+    for (index, count) in indegree.iter().enumerate() {
+        if *count == 0 {
+            ready.insert(index);
+        }
+    }
+
+    let mut ordered = Vec::new();
+    while let Some(index) = ready.pop_first() {
+        ordered.push(index);
+        for dependent in &workstream_edges[index] {
+            indegree[*dependent] -= 1;
+            if indegree[*dependent] == 0 {
+                ready.insert(*dependent);
+            }
+        }
+    }
+
+    for index in 0..workstreams.len() {
+        if !ordered.contains(&index) {
+            ordered.push(index);
+        }
+    }
+
+    ordered
+}
+
+pub fn validate_dependency_graph(bundle: &MilestoneBundle) -> Result<(), Vec<String>> {
+    dependency_graph_analysis(bundle).map(|_| ())
+}
+
+pub fn summarize_bundle(bundle: &MilestoneBundle) -> BundleSummary {
+    let canonical = canonicalize_bundle(bundle).unwrap_or_else(|_| bundle.clone());
+    let dependency_depth = dependency_graph_analysis(&canonical)
+        .map(|analysis| analysis.dependency_depth)
+        .unwrap_or(0);
+    let covered_acceptance_criteria = canonical
+        .acceptance_map
+        .iter()
+        .filter(|criterion| !criterion.covered_by.is_empty())
+        .count();
+    let total_acceptance_criteria = canonical.acceptance_map.len();
+    let acceptance_coverage_percentage = covered_acceptance_criteria
+        .checked_mul(100)
+        .and_then(|scaled| scaled.checked_div(total_acceptance_criteria))
+        .unwrap_or(0);
+
+    BundleSummary {
+        total_workstreams: canonical.workstreams.len(),
+        total_beads: canonical.bead_count(),
+        beads_per_workstream: canonical
+            .workstreams
+            .iter()
+            .zip(render_workstream_labels(&canonical.workstreams))
+            .map(|(workstream, name)| WorkstreamSummary {
+                name,
+                bead_count: workstream.beads.len(),
+            })
+            .collect(),
+        dependency_depth,
+        covered_acceptance_criteria,
+        total_acceptance_criteria,
+        acceptance_coverage_percentage,
+    }
+}
+
 fn render_workstream_labels(workstreams: &[Workstream]) -> Vec<String> {
     let mut name_counts = BTreeMap::new();
     for workstream in workstreams {
@@ -807,12 +1178,31 @@ fn escape_markdown_table_cell(value: &str) -> String {
 pub(crate) fn render_plan_md_checked(bundle: &MilestoneBundle) -> Result<String, Vec<String>> {
     let canonical = validated_canonical_bundle(bundle)?;
     let workstream_labels = render_workstream_labels(&canonical.workstreams);
+    let summary = summarize_bundle(&canonical);
+    let dependency_graph = dependency_graph_analysis_from_canonical(&canonical)?;
+    let workstream_order = infer_workstream_order(&canonical.workstreams);
+    let deferred_items = collect_deferred_items(&canonical, &workstream_labels);
     let mut out = String::new();
 
     writeln!(out, "# {}", canonical.identity.name).unwrap();
     writeln!(out).unwrap();
     writeln!(out, "- **Milestone ID:** {}", canonical.identity.id).unwrap();
     writeln!(out, "- **Schema Version:** {}", canonical.schema_version).unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Summary").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "- **Workstreams:** {}", summary.total_workstreams).unwrap();
+    writeln!(out, "- **Total beads:** {}", summary.total_beads).unwrap();
+    writeln!(
+        out,
+        "- **Acceptance coverage:** {}/{} ({}%)",
+        summary.covered_acceptance_criteria,
+        summary.total_acceptance_criteria,
+        summary.acceptance_coverage_percentage
+    )
+    .unwrap();
+    writeln!(out, "- **Dependency depth:** {}", summary.dependency_depth).unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "## Executive Summary").unwrap();
@@ -911,6 +1301,35 @@ pub(crate) fn render_plan_md_checked(bundle: &MilestoneBundle) -> Result<String,
         .unwrap();
     }
     writeln!(out).unwrap();
+
+    writeln!(out, "## Dependency Graph").unwrap();
+    writeln!(out).unwrap();
+    let ordered_workstreams = workstream_order
+        .into_iter()
+        .filter_map(|index| workstream_labels.get(index).cloned())
+        .collect::<Vec<_>>();
+    writeln!(
+        out,
+        "- **Workstream order:** {}",
+        ordered_workstreams.join(" -> ")
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "- **Bead order:** {}",
+        dependency_graph.bead_order.join(" -> ")
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    if !deferred_items.is_empty() {
+        writeln!(out, "## Deferred Items").unwrap();
+        writeln!(out).unwrap();
+        for item in deferred_items {
+            writeln!(out, "- {item}").unwrap();
+        }
+        writeln!(out).unwrap();
+    }
 
     writeln!(out, "## Workstreams").unwrap();
     writeln!(out).unwrap();
@@ -1294,6 +1713,104 @@ mod tests {
     }
 
     #[test]
+    fn infer_workstream_order_respects_cross_workstream_dependencies() {
+        let workstreams = vec![
+            Workstream {
+                name: "Testing".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("testing".to_owned()),
+                    explicit_id: None,
+                    title: "Verify release".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(2),
+                    labels: vec!["testing".to_owned()],
+                    depends_on: vec!["api".to_owned()],
+                    acceptance_criteria: vec![],
+                    flow_override: None,
+                }],
+            },
+            Workstream {
+                name: "Data Model".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("data".to_owned()),
+                    explicit_id: None,
+                    title: "Define schema".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["backend".to_owned()],
+                    depends_on: vec![],
+                    acceptance_criteria: vec![],
+                    flow_override: None,
+                }],
+            },
+            Workstream {
+                name: "API".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: Some("api".to_owned()),
+                    explicit_id: None,
+                    title: "Expose endpoints".to_owned(),
+                    description: None,
+                    bead_type: Some("feature".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["api".to_owned()],
+                    depends_on: vec!["data".to_owned()],
+                    acceptance_criteria: vec![],
+                    flow_override: None,
+                }],
+            },
+        ];
+
+        assert_eq!(infer_workstream_order(&workstreams), vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn validate_dependency_graph_rejects_cycles() -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].depends_on = vec!["bead-3".to_owned()];
+
+        let errors = validate_dependency_graph(&bundle).expect_err("cycle should be rejected");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("dependency cycle detected")));
+
+        let validation_errors = bundle
+            .validate()
+            .expect_err("cycle should fail bundle validation");
+        assert!(validation_errors
+            .iter()
+            .any(|error| error.contains("dependency cycle detected")));
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_bundle_reports_counts_and_dependency_depth(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let bundle = sample_bundle();
+
+        let summary = summarize_bundle(&bundle);
+
+        assert_eq!(summary.total_workstreams, 1);
+        assert_eq!(summary.total_beads, 3);
+        assert_eq!(summary.dependency_depth, 3);
+        assert_eq!(summary.covered_acceptance_criteria, 2);
+        assert_eq!(summary.total_acceptance_criteria, 2);
+        assert_eq!(summary.acceptance_coverage_percentage, 100);
+        assert_eq!(
+            summary.beads_per_workstream,
+            vec![WorkstreamSummary {
+                name: "Core Feature".to_owned(),
+                bead_count: 3,
+            }]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn bundle_validation_accepts_legacy_missing_covered_by_and_renders_it(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
@@ -1462,6 +1979,27 @@ mod tests {
         let md1 = render_plan_md(&bundle);
         let md2 = render_plan_md(&bundle);
         assert_eq!(md1, md2, "plan.md must be deterministic");
+        Ok(())
+    }
+
+    #[test]
+    fn render_plan_md_includes_summary_dependency_graph_and_deferred_items(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].description = Some(
+            "Implement the core feature set now; deferred CLI polish to a later phase so the alpha stays backend-first."
+                .to_owned(),
+        );
+
+        let rendered = render_plan_md(&bundle);
+
+        assert!(rendered.contains("## Summary"));
+        assert!(rendered.contains("## Dependency Graph"));
+        assert!(rendered.contains("## Deferred Items"));
+        assert!(rendered.contains("**Acceptance coverage:** 2/2 (100%)"));
+        assert!(rendered
+            .contains("**Bead order:** ms-alpha.bead-1 -> ms-alpha.bead-2 -> ms-alpha.bead-3"));
+        assert!(rendered.contains("deferred CLI polish"));
         Ok(())
     }
 

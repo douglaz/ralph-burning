@@ -331,6 +331,24 @@ Follow-ups: {{follow_ups}}";
 const REQUIREMENTS_MILESTONE_BUNDLE_DEFAULT: &str = "\
 Generate a milestone bundle from the validated planning artifacts:
 
+Produce a single additive planning bundle that preserves the milestone contract exactly as defined by the schema.
+Group the plan into cohesive workstreams by theme or layer, such as data model, API, CLI, automation, or testing.
+For each workstream, include a short description that explains the theme, sequencing intent, and any intentionally deferred scope or follow-up work that is not part of this milestone.
+For each bead proposal:
+- write a concrete title
+- write a scoped description with rationale, implementation boundary, and any explicit deferred work notes
+- choose an appropriate bead_type
+- assign priority using P1 for critical path, P2 for important follow-on work, and P3 for nice-to-have or polish
+- add relevant labels for the subsystem, execution mode, or quality area
+- include depends_on bead IDs only when a real sequencing constraint exists, and explain the dependency rationale in the description
+- map every bead to the acceptance criteria IDs it materially advances
+Acceptance coverage must be bidirectional and exact:
+- every bead's acceptance_criteria entries must correspond to milestone acceptance criteria
+- every acceptance criterion covered_by entry must list the matching bead IDs, with no omissions or extras
+Use dependency hints to reflect actual execution order, not thematic similarity.
+Call out intentionally deferred work in workstream or bead descriptions, including why it is deferred.
+Keep the plan implementation-ready and deterministic enough for downstream rendering and validation.
+
 Synthesis:
 {{synthesis_artifact}}
 

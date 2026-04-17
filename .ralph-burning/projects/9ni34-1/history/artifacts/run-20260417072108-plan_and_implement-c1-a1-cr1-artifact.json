@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T07:41:07.214715417Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nEnhanced MilestoneBundle generation and rendering without restructuring existing models: added dependency-graph validation and topology helpers, bundle summarization, markdown summary/dependency/deferred sections, stronger built-in milestone prompt guidance for workstreams/beads/dependencies/AC mapping/deferred scope, and unit coverage for the new behavior.\n\n## Steps\n\n1. [Completed] Add MilestoneBundle graph-analysis helpers (`infer_workstream_order`, `validate_dependency_graph`, `summarize_bundle`) and wire dependency-cycle validation into bundle semantics.\n2. [Completed] Extend `render_plan_md()` output with a top summary, dependency graph ordering, and deferred-items extraction from workstream/bead descriptions.\n3. [Completed] Strengthen the built-in `requirements_milestone_bundle` prompt so the planner emits cohesive workstreams, richer bead proposals, explicit dependency hints, exact bidirectional AC coverage, and deferred-scope notes.\n4. [Completed] Add unit tests covering workstream ordering, dependency-cycle rejection, bundle summaries, markdown sections, and milestone-bundle prompt guidance.\n5. [Completed] Run repository verification gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test` passed on the final tree: unit, integration, CLI, and doc-test suites completed successfully.\n- `cargo clippy -- -D warnings` passed after fixing a `manual_checked_ops` lint in bundle summary percentage calculation.\n- `nix build` passed on the final tree.\n- New tests passed, including `infer_workstream_order_respects_cross_workstream_dependencies`, `validate_dependency_graph_rejects_cycles`, `summarize_bundle_reports_counts_and_dependency_depth`, `render_plan_md_includes_summary_dependency_graph_and_deferred_items`, and `resolve_and_render_requirements_milestone_bundle_includes_planning_guidance`.\n\n## Outstanding Risks\n\n- The workspace still contains unrelated pre-existing changes under `.beads/` and `.ralph-burning/`, which were intentionally left untouched.\n- `result` was updated by `nix build`; if that symlink is not meant to be tracked in this repo, it may need to be excluded or ignored separately.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}
