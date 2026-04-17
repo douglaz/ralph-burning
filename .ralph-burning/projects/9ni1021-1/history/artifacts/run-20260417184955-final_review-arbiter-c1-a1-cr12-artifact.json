@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-arbiter-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417184955-final_review-arbiter-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:50:54.288705936Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed timing amendment. The branch contains a prompt artifact mentioning `<1 second`, but the repo’s authoritative contract is the bead in `.beads/issues.jsonl`, and that bead explicitly warns against brittle sub-second timing assertions and asks only for a non-flaky slowdown guard. The existing `<10s` smoke-test check aligns with that authoritative requirement.\n\n## Rulings\n\n- `fr-12-afbeb5da`: Reject\n  The deciding evidence is the repository’s stated source of truth: AGENTS.md says to treat `.beads/issues.jsonl` as the authoritative backlog export and to follow the current bead descriptions/comments for testing expectations. In that authoritative bead entry (`.beads/issues.jsonl:19`), the fixture is supposed to stay cheap, but it also explicitly says to \"not rely on brittle sub-second wall-clock assertions in CI,\" to \"prefer functional completeness assertions over hard timing budgets,\" and requires a smoke test \"without relying on a flaky hard real-time budget.\" The code at `src/test_support/e2e_fixtures.rs:1077-1080` uses `elapsed < Duration::from_secs(10)` with a message about avoiding pathological slowdowns, which is consistent with a coarse regression guard rather than enforcing a strict sub-second SLA. Although `.ralph-burning/projects/9ni1021-1/prompt.md` mentions `<1 second`, that prompt artifact conflicts with the authoritative bead contract, so it is not enough to make the current test a valid defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

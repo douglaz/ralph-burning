@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:45:43.162792223Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read the new test-support implementation files end-to-end, and ran the new smoke/mock tests. I found two fix-now issues in the scenario fixture. Targeted tests passed, while `cargo clippy --all-targets -- -D warnings` is currently blocked by an unrelated existing warning in `tests/unit/process_backend_test.rs:2872`.\n\n## Amendments\n\n1. finding_summary: `build_e2e_milestone_scenario_fixture()` is documented as a complete fixture for milestone controller / CLI flows, but its `MockBrAdapter` dispatcher never handles `br ready --json`. The controller selection path calls `BrCommand::ready()` before it trusts a `bv --robot-next` recommendation, so using this fixture in those code paths will fail with `mock br runner exhausted` instead of returning the scenario's ready beads.\naffected_files:\n- src/test_support/e2e_fixtures.rs:50\n- src/test_support/e2e_fixtures.rs:715\n- src/cli/run.rs:440\nremediation_hint: Teach `scenario_br_response()` to answer `ready --json` from the current graph (open, non-epic, unblocked tasks) and add a smoke assertion that the fixture can drive the controller's readiness query path.\n   Rationale: The fixture is meant to back integration-style milestone execution tests, and `br ready` is part of the controller's normal happy path. Leaving it unsupported means the new helper cannot actually be reused for the controller/CLI scenario it claims to model.\n2. finding_summary: The new smoke test does not verify the stated performance requirement. The acceptance target in the bead prompt is fixture creation under 1 second, but the test currently allows anything under 10 seconds, so a 5-9 second regression would still pass.\naffected_files:\n- src/test_support/e2e_fixtures.rs:1077\nremediation_hint: Tighten the assertion to the actual contract (or a close bound that still leaves headroom, e.g. <1s or <2s with a comment explaining the margin).\n   Rationale: Fast fixture creation is one of the explicit acceptance criteria for this bead. The current test only guards against pathological slowdowns and would miss regressions that violate the requirement by an order of magnitude.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

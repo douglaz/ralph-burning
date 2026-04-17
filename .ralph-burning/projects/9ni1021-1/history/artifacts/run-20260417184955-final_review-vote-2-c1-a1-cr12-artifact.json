@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:49:27.352196491Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments reflect real defects verified in the code. fr-12-32f38544: scenario_br_response() dispatcher (src/test_support/e2e_fixtures.rs:715) does not handle 'br ready --json', but the controller selection path (src/cli/run.rs:445) calls BrCommand::ready() first — any controller-flow test using this fixture will panic with 'mock br runner exhausted'. fr-12-afbeb5da: The prompt's acceptance criterion is <1 second, but the smoke test (line 1078) allows up to 10 seconds, so a 5-9x regression would pass silently.\n\n## Votes\n\n- `fr-12-32f38544`: Accept\n  Verified defect. scenario_br_response() at src/test_support/e2e_fixtures.rs:715 handles list/show/create/dep/close/sync but has no arm for 'ready --json'. request_ready_milestone_beads() at src/cli/run.rs:440 calls BrCommand::ready() on the controller selection path. When dispatch returns None with no queued response, src/test_support/br.rs:242 panics ('mock br runner exhausted'). The fixture's docstring (line 50) explicitly advertises it as a 'Complete temp-workspace fixture for milestone controller and CLI tests' — so this gap contradicts the stated purpose and will cause spurious failures for intended consumers. The remediation (handle ready --json from open, non-epic, unblocked tasks plus a smoke assertion) is scoped and reasonable.\n- `fr-12-afbeb5da`: Accept\n  Verified. The bead prompt (prompt.md lines 77 and 97) sets the acceptance contract at '<1 second for fixture creation' and 'Fixture creation is fast (<1 second)'. The smoke test at src/test_support/e2e_fixtures.rs:1077-1080 asserts 'elapsed < Duration::from_secs(10)' — 10x the contract. A 5-9 second regression would pass while silently violating the acceptance criterion, defeating the point of having a performance assertion. Tightening to <1s (or <2s with an explanatory margin comment) is a minimal, targeted fix that makes the test actually verify the documented requirement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 12
+}
