@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260417052928",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 3
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-2-3ecddec9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: The new deprecation notice for `project select` points users at a replacement that is not behaviorally equivalent for bead-backed projects. `project select` still synchronizes the active milestone (`src/cli/project.rs:686-693`), but `task select` only updates the active project pointer (`src/cli/task.rs:96-100`). Milestone commands resolve the active milestone from the saved milestone pointer before falling back to the active project (`src/cli/milestone.rs:543-560`), so following the advertised replacement can leave the workspace on the wrong milestone and send later `milestone next` / `milestone run` / `milestone status` commands to the previously active milestone.\naffected_files: src/cli/project.rs, src/cli/task.rs\nremediation_hint: Make `task select` reuse the same selection helper as `project select`, including `sync_active_milestone_from_project_record`, and add a bead-backed integration test that asserts `task select` updates the active milestone as well as the active project.",
-        "created_at": "2026-04-17T06:14:05.547926089Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "8a3f7b8765cb602b2d24e7182ac6ab60fb7597d032dba4ccec53f7f5ef426410"
-      }
-    ],
-    "processed_count": 2
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 3 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T06:08:17.015405395Z",

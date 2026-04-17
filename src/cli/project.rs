@@ -179,6 +179,12 @@ fn print_deprecation_notice(old_command: &str, new_command: &str) {
     );
 }
 
+pub(crate) fn select_active_project(base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+    workspace_governance::set_active_project(base_dir, project_id)?;
+    let project_record = FsProjectStore.read_project_record(base_dir, project_id)?;
+    workspace_governance::sync_active_milestone_from_project_record(base_dir, &project_record)
+}
+
 pub async fn handle(command: ProjectCommand) -> AppResult<()> {
     match command.command {
         ProjectSubcommand::Select { id } => handle_select(id).await,
@@ -687,9 +693,7 @@ async fn handle_select(id: String) -> AppResult<()> {
     print_deprecation_notice("select", "task select");
     let current_dir = std::env::current_dir()?;
     let project_id = ProjectId::new(id)?;
-    workspace_governance::set_active_project(&current_dir, &project_id)?;
-    let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
-    workspace_governance::sync_active_milestone_from_project_record(&current_dir, &project_record)?;
+    select_active_project(&current_dir, &project_id)?;
     println!("Selected project {}", project_id);
     Ok(())
 }

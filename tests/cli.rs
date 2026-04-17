@@ -17235,6 +17235,37 @@ fn task_select_sets_active_project_with_task_aware_output() {
 }
 
 #[test]
+fn task_select_updates_active_milestone_for_bead_backed_projects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_bead_backed_project_fixture(temp_dir.path(), "bead-beta", "ms-beta", "ms-beta.bead-1");
+    fs::write(active_milestone_path(temp_dir.path()), "ms-alpha").expect("seed active milestone");
+
+    let output = Command::new(binary())
+        .args(["task", "select", "bead-beta"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task select");
+
+    assert!(
+        output.status.success(),
+        "task select should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(active_project_path(temp_dir.path()))
+            .expect("read active project")
+            .trim(),
+        "bead-beta"
+    );
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path()))
+            .expect("read active milestone")
+            .trim(),
+        "ms-beta"
+    );
+}
+
+#[test]
 fn task_select_and_project_select_produce_same_state() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
