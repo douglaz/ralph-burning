@@ -264,7 +264,7 @@ pub struct BeadSummary {
 // ── BeadDetail ──────────────────────────────────────────────────────────────
 
 /// Full detail view of a bead, as returned by `br show <id> --json`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BeadDetail {
     pub id: String,
     pub title: String,
@@ -290,6 +290,82 @@ pub struct BeadDetail {
     pub created_at: Option<String>,
     #[serde(default)]
     pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct RawBeadDetail {
+    id: String,
+    title: String,
+    status: BeadStatus,
+    priority: BeadPriority,
+    #[serde(alias = "issue_type")]
+    bead_type: BeadType,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_acceptance_criteria")]
+    acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    dependencies: Vec<DependencyRef>,
+    #[serde(default)]
+    dependents: Vec<DependencyRef>,
+    #[serde(default)]
+    comments: Vec<BeadComment>,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RawBeadShowResponse {
+    Single(Box<RawBeadDetail>),
+    Many(Vec<RawBeadDetail>),
+}
+
+impl From<RawBeadDetail> for BeadDetail {
+    fn from(value: RawBeadDetail) -> Self {
+        Self {
+            id: value.id,
+            title: value.title,
+            status: value.status,
+            priority: value.priority,
+            bead_type: value.bead_type,
+            labels: value.labels,
+            description: value.description,
+            acceptance_criteria: value.acceptance_criteria,
+            dependencies: value.dependencies,
+            dependents: value.dependents,
+            comments: value.comments,
+            owner: value.owner,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BeadDetail {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match RawBeadShowResponse::deserialize(deserializer)? {
+            RawBeadShowResponse::Single(detail) => Ok((*detail).into()),
+            RawBeadShowResponse::Many(mut details) => match details.len() {
+                1 => Ok(details
+                    .pop()
+                    .expect("len=1 guarantees a detail is present")
+                    .into()),
+                count => Err(de::Error::custom(format!(
+                    "expected one bead detail, got {count}"
+                ))),
+            },
+        }
+    }
 }
 
 // ── ReadyBead ───────────────────────────────────────────────────────────────
@@ -457,6 +533,27 @@ mod tests {
         let p: BeadPriority = serde_json::from_str(r#""3""#)?;
         assert_eq!(p.value(), 3);
         assert_eq!(p.to_string(), "P3");
+        Ok(())
+    }
+
+    #[test]
+    fn bead_detail_deserializes_from_show_array() -> Result<(), Box<dyn std::error::Error>> {
+        let detail: BeadDetail = serde_json::from_str(
+            r#"[{
+                "id":"bead-1",
+                "title":"Test",
+                "status":"open",
+                "priority":1,
+                "bead_type":"task",
+                "labels":["milestone:ms-alpha"]
+            }]"#,
+        )?;
+
+        assert_eq!(detail.id, "bead-1");
+        assert_eq!(detail.title, "Test");
+        assert_eq!(detail.status, BeadStatus::Open);
+        assert_eq!(detail.priority.value(), 1);
+        assert_eq!(detail.bead_type, BeadType::Task);
         Ok(())
     }
 
