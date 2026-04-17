@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T14:31:22.814563910Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted all three amendments. The first is a real ownership/isolation bug in recovered pending-mutation flushes, the second is a concrete idempotency defect for explicit-ID proposals that share a title, and the third correctly identifies silent metadata drift when reused beads are not reconciled against the current bundle.\n\n## Votes\n\n- `fr-4-66faaedf`: Accept\n  `handle_export_beads` assigns a stable adapter id per milestone, pending-mutation records are keyed only by that adapter id, and `sync_own_dirty_if_beads_healthy` only rejects records whose `adapter_id` is different. That means a stale or concurrent export for the same milestone is treated as the current owner, so the preflight flush can publish unsynced local bead state from another attempt before the new bundle is processed. Because the flush clears and publishes the shared pending bead state, this is a real isolation and correctness bug.\n- `fr-4-7a12aec2`: Accept\n  Bundle validation explicitly allows duplicate titles once proposals use explicit ids, but export reuse never consults those canonical proposal ids. `existing_by_title` and `find_existing_materialized_bead` distinguish candidates only by normalized title plus type/labels/role, so two active same-title proposals with distinct explicit ids become indistinguishable on re-export and hit the multiple-active-matches failure. The `proposal_id_map` built during export is only an in-memory dependency map for the current run, not a durable idempotency key.\n- `fr-4-447a5b66`: Accept\n  When an existing bead is found, `materialize_bead_entry` returns immediately with the fetched state, and the remaining export path only repairs missing dependencies and comments. Reuse matching does not compare description or priority, and label matching is subset-based rather than exact, so metadata drift can persist silently on re-export. Even if the intended policy is to avoid overwriting active beads, the lack of any warning or journal signal when the reused bead no longer matches the current plan is still a maintainability defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
