@@ -2784,15 +2784,15 @@ mod tests {
             }],
             workstreams: vec![Workstream {
                 name: "Core".to_owned(),
-                description: None,
+                description: Some("Fixture description.".to_owned()),
                 beads: vec![BeadProposal {
                     bead_id: None,
                     explicit_id: None,
                     title: "Implement feature".to_owned(),
-                    description: None,
+                    description: Some("Fixture description.".to_owned()),
                     bead_type: Some("task".to_owned()),
                     priority: Some(1),
-                    labels: vec![],
+                    labels: vec!["fixture".to_owned()],
                     depends_on: vec![],
                     acceptance_criteria: vec!["AC-1".to_owned()],
                     flow_override: None,

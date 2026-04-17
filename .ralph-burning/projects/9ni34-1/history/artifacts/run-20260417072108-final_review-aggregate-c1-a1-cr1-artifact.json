@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417072108-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417072108-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T07:53:26.320005254Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-81165722`\n- `fr-1-fbafd881`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-1-36e3f366`\n\n## Final Accepted Amendments\n\n### `fr-1-81165722`\n\nfinding_summary: The new prompt tells the model to \"assign priority using P1 ... P2 ... P3\" at `src/contexts/workspace_governance/template_catalog.rs:341`, but the MilestoneBundle contract expects `priority` to be a numeric field (`1=P1, 2=P2, ...`) at `src/contexts/milestone_record/bundle.rs:1144-1146`. That is conflicting guidance for the same field and can drive schema-invalid milestone bundles on backends that do not hard-coerce structured output.\naffected_files: [\"src/contexts/workspace_governance/template_catalog.rs\", \"src/contexts/milestone_record/bundle.rs\"]\nremediation_hint: Reword the prompt to request numeric priority values (`1`, `2`, `3`) while explaining their P1/P2/P3 meaning.\n\n### `fr-1-fbafd881`\n\nfinding_summary: The new `validate_dependency_graph()` helper is not actually safe on malformed bundles. It calls `dependency_graph_analysis()` (`src/contexts/milestone_record/bundle.rs:838-949`), which canonicalizes IDs without running full validation (`src/contexts/milestone_record/bundle.rs:1022-1046`), and `dependency_graph_analysis_from_canonical()` then inserts bead IDs into a `BTreeMap` with silent overwrite semantics (`src/contexts/milestone_record/bundle.rs:714-717`). If two beads normalize to the same ID, the later one wins and the helper can return `Ok(())` or compute the graph against the wrong node instead of reporting the malformed input.\naffected_files: [\"src/contexts/milestone_record/bundle.rs\"]\nremediation_hint: Base `validate_dependency_graph()` on `validated_canonical_bundle()` or explicitly reject duplicate normalized bead IDs before building `bead_index`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

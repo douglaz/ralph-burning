@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417072108-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260417072108-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T09:14:51.865227715Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-76d8edde`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-4-0182f58f`\n\n## Final Accepted Amendments\n\n### `fr-4-76d8edde`\n\nfinding_summary: `MilestoneBundle::validate()` is now backwards-incompatible with previously accepted milestone payloads. The new hard requirements for bead `description`, `bead_type`, `priority`, `labels`, and non-empty `acceptance_map.covered_by` at `src/contexts/milestone_record/bundle.rs:146`, `src/contexts/milestone_record/bundle.rs:155`, `src/contexts/milestone_record/bundle.rs:164`, `src/contexts/milestone_record/bundle.rs:171`, and `src/contexts/milestone_record/bundle.rs:279`, combined with `canonicalize_bundle()` no longer rebuilding empty `covered_by` entries in `src/contexts/milestone_record/bundle.rs:1155`, mean older planner payloads now deserialize successfully but fail runtime validation. That breaks real workflows because completed requirements runs persist the raw planner bundle at `src/contexts/requirements_drafting/service.rs:1829` and revalidate it during handoff at `src/contexts/requirements_drafting/service.rs:2358`, so an already-completed run can become impossible to hand off or materialize after upgrade.\naffected_files:\n- src/contexts/milestone_record/bundle.rs\n- src/contexts/requirements_drafting/service.rs\nremediation_hint: Keep the stricter prompt guidance, but preserve legacy compatibility by backfilling missing `covered_by` and tolerating absent legacy bead metadata during load/canonicalization, or add an explicit migration path before `validate()` rejects older bundles.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

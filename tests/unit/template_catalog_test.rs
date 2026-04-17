@@ -467,6 +467,33 @@ fn resolve_and_render_requirements_validation() {
     assert!(rendered.contains("Gap output"));
 }
 
+#[test]
+fn resolve_and_render_requirements_milestone_bundle_includes_planning_guidance() {
+    let tmp = tempdir().unwrap();
+    let rendered = template_catalog::resolve_and_render(
+        "requirements_milestone_bundle",
+        tmp.path(),
+        None,
+        &[
+            ("synthesis_artifact", "Synthesis output"),
+            ("impl_spec_artifact", "Spec output"),
+            ("gap_artifact", "Gap output"),
+            ("validation_artifact", "Validation output"),
+        ],
+    )
+    .unwrap();
+
+    assert!(rendered.contains("Group the plan into cohesive workstreams"));
+    assert!(
+        rendered.contains("assign a non-empty stable bead_id on every bead as authored identity")
+    );
+    assert!(rendered.contains("assign numeric priority values: 1 for P1 critical path"));
+    assert!(rendered.contains("map every bead to at least one acceptance criteria ID"));
+    assert!(rendered.contains("Acceptance coverage must be bidirectional and exact"));
+    assert!(rendered.contains("Call out intentionally deferred work"));
+    assert!(rendered.contains("Validation output"));
+}
+
 // ── has_override ────────────────────────────────────────────────────────
 
 #[test]

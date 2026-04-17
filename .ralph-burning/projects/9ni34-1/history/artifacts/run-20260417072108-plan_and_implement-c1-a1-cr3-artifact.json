@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T08:28:26.267370067Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAddressed the remaining MilestoneBundle review findings in `src/contexts/milestone_record/bundle.rs` without restructuring existing models: workstream-order inference now detects interleaved cross-workstream dependencies instead of fabricating a total order, markdown rendering surfaces when no single topological workstream order exists, and `summarize_bundle()` now derives acceptance coverage from bead `acceptance_criteria` mappings rather than trusting `acceptance_map.covered_by`. Added regression tests for interleaved workstreams, derived AC coverage, and the new render-path behavior.\n\n## Steps\n\n1. [Completed] Replace the fallback workstream-order logic with an explicit workstream-order analysis that reports blocked/interleaved workstreams instead of appending cyclic nodes in input order.\n2. [Completed] Update `render_plan_md_checked()` to use the richer workstream-order analysis and render a clear 'no single topological workstream order' message when cross-workstream dependencies interleave.\n3. [Completed] Change `summarize_bundle()` to compute acceptance coverage from bead-to-criterion mappings so stale or malformed `acceptance_map.covered_by` entries cannot overstate coverage.\n4. [Completed] Add regression tests covering interleaved workstream ordering, derived acceptance coverage, and markdown rendering for workstream-order ambiguity.\n5. [Completed] Run the full verification gates on the final tree.\n\n## Validation Evidence\n\n- Targeted regressions passed: `cargo test workstream_order`, `cargo test summarize_bundle`, and `cargo test render_plan_md`.\n- `cargo fmt --check` passed after formatting the updated tests.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed on the final tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- The workspace still contains unrelated live orchestration changes under `.ralph-burning/`, which were intentionally left untouched per repo instructions.\n- `result` was updated by `nix build`; if that symlink should remain untracked in this repository, it may need to be ignored or cleaned separately.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr10",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T11:52:28.844410774Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed both pending MilestoneBundle amendments without restructuring existing models: the milestone stage now exposes and parses a generation-only schema that matches the strict `validate_generated()` contract, planner-authored bead IDs are converted into explicit stable identities during milestone-bundle evaluation, and the built-in milestone prompt/test coverage now reflects authored-ID semantics and strict required metadata.\n\n## Steps\n\n1. [Completed] Add strict generation-only MilestoneBundle schema/types that require the planner metadata enforced by `validate_generated()`, and route the milestone contract schema/parsing through that generation shape before converting into the existing runtime `MilestoneBundle` model.\n2. [Completed] Promote planner-authored `bead_id` values to explicit stable identities during milestone-bundle generation conversion, and tighten the built-in milestone prompt text so authored IDs are described as stable identities rather than positional placeholders.\n3. [Completed] Update milestone-bundle and template regressions to cover strict schema requirements, schema-vs-runtime alignment, missing workstream descriptions, and authored stable-ID explicitness, then run the repository verification gates.\n\n## Validation Evidence\n\n- Targeted regressions passed: `cargo test milestone_bundle_contract_`, `cargo test requirements_milestone_bundle`, and `cargo test legacy_slot_matching_bead_ids`.\n- New/updated tests passed, including `milestone_bundle_contract_schema_requires_generated_metadata_fields`, `milestone_bundle_contract_schema_rejects_missing_required_planner_metadata`, `milestone_bundle_contract_marks_planner_authored_bead_ids_explicit`, `milestone_bundle_contract_rejects_missing_workstream_descriptions`, and `resolve_and_render_requirements_milestone_bundle_includes_planning_guidance`.\n- `cargo fmt --check` passed after formatting the updated tests.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed on the final tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- Pre-existing live orchestration state changes under `.ralph-burning/` were left untouched per repo instructions and remain dirty in the worktree.\n- `nix build` updated the tracked `result` symlink; if that artifact should remain untracked here, it still needs to be ignored or cleaned separately.\n- The stricter schema and explicit-ID normalization are enforced on the milestone planner path through `RequirementsContract::milestone_bundle()`; any future caller that bypasses that contract and deserializes `MilestoneBundle` directly will still get the legacy compatibility behavior.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 10
+}

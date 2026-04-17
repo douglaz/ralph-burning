@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T10:22:19.113580637Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining MilestoneBundle gaps without restructuring existing models: generated-mode validation in `src/contexts/milestone_record/bundle.rs` now rejects missing or whitespace-only `workstreams[].description`, deferred-item detection now recognizes the prompt’s required phrases `follow-up work` and `not part of this milestone`, and regression coverage was added in both bundle/unit contract tests so prompt-compliant deferred notes render and strict milestone-bundle evaluation rejects omitted workstream descriptions.\n\n## Steps\n\n1. [Completed] Require non-empty workstream descriptions during generated-output MilestoneBundle validation so strict contract evaluation matches the planner prompt.\n2. [Completed] Expand deferred-note detection to recognize prompt-compliant wording (`follow-up work`, `not part of this milestone`) so `render_plan_md()` reliably emits the Deferred Items section.\n3. [Completed] Add regression coverage for generated validation, markdown deferred rendering, and strict milestone-bundle contract rejection of missing workstream descriptions.\n4. [Completed] Run the repository verification gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed after formatting the new tests.\n- Targeted regressions passed: `cargo test generated_bundle_validation_rejects_missing_workstream_descriptions`, `cargo test render_plan_md_detects_prompt_style_deferred_phrases`, and `cargo test milestone_bundle_contract_rejects_missing_workstream_descriptions`.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed on the final tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- Pre-existing live orchestration state changes under `.ralph-burning/` were left untouched per repo instructions and remain dirty in the worktree.\n- `nix build` updated the tracked `result` symlink; if that artifact should remain untracked here, it still needs to be ignored or cleaned separately.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 7
+}

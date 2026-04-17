@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T10:10:20.940970371Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify real defects. fr-6-fce217d2: generated-mode validation in bundle.rs:141-149 omits any check on workstreams[].description even though the prompt (template_catalog.rs:336) explicitly requires one, so validate_generated() (invoked at contracts.rs:372-378) accepts bundles missing the rationale/deferred context this bead is meant to produce. fr-6-1ec3d6ad: contains_deferred_note() (bundle.rs:1016-1030) recognizes 'follow-up milestone' but not 'follow-up work', and has no match for 'not part of this milestone' — yet those are the precise phrases the prompt tells the planner to use (template_catalog.rs:336,350), so prompt-compliant deferred notes can be silently dropped from the rendered Deferred Items section. Accept both.\n\n## Votes\n\n- `fr-6-fce217d2`: Accept\n  Confirmed: bundle.rs:141-149 only validates workstreams[].name and workstreams[].beads in generated mode, with no check on description. The new prompt at template_catalog.rs:336 explicitly requires each workstream to include a description covering theme, sequencing intent, and deferred scope, and contracts.rs:372-378 routes planner output through validate_generated(). A bundle with description: null on every workstream therefore passes validation and renders (bundle.rs:1550 silently skips missing descriptions), defeating the bead's purpose of generating rationale/deferred context. Requiring non-empty workstream descriptions in generated mode plus a contract test is a sound, minimal fix.\n- `fr-6-1ec3d6ad`: Accept\n  Confirmed: contains_deferred_note() at bundle.rs:1016-1030 matches 'follow-up milestone' (not 'follow-up work') and lacks any match for 'not part of this milestone', yet template_catalog.rs:336,350 explicitly directs the planner to use those exact phrasings when calling out deferred scope. A prompt-compliant bundle using 'follow-up work that is not part of this milestone' and nothing with 'defer'/'deferred' would render no Deferred Items section, so the keyword list is materially out of sync with the prompt. Expanding the detector (or moving deferred scope into structured data) is the right remediation; the structured-data path is preferable long-term but the immediate keyword fix is also acceptable and low-risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 6
+}

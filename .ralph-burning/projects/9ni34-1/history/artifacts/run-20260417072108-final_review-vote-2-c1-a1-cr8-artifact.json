@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T11:12:52.402281861Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the amendment by reading analyze_workstream_order() at bundle.rs:804-862 and the render site at bundle.rs:1553-1587. The claim is accurate: Kahn's reduction marks every indegree>0 node as 'blocked', and render_plan_md_checked() prints the whole set as the 'interleaving' group. Downstream workstreams that merely depend on a cycle member (but are not themselves part of the SCC) will be incorrectly reported as interleaved. Workstream-level cycles are possible in valid bead DAGs (e.g., W1 has bead depending on W2 and W2 has bead depending on W1). Computing SCCs before rendering would correctly limit the interleaving list to actual cycle participants.\n\n## Votes\n\n- `fr-8-9df09ce7`: Accept\n  Confirmed bug: analyze_workstream_order() (bundle.rs:855-859) conflates SCC participants with nodes merely downstream of an SCC — both have nonzero indegree after Kahn. The plan.md renderer at bundle.rs:1568-1577 then prints the entire blocked set as 'interleave across', misrepresenting downstream-of-cycle workstreams as cycle participants. In a legitimate bead DAG where W1<->W2 cycle and W3 depends on W2, plan.md will claim W3 interleaves with W1/W2, which is false. The remediation (compute SCCs, e.g., Tarjan, and only list workstreams in cycles of size >1) is correct. Severity 'medium' is appropriate — misleading report, no crash.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 8
+}

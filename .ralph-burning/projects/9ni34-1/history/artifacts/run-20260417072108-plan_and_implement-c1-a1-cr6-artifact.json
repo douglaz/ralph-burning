@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T10:02:10.141358901Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAddressed the remaining MilestoneBundle regressions without restructuring existing models: compatibility validation once again accepts legacy milestone priorities in the historical `0..=4` range, generated-output validation now requires a non-empty `bead_id` and at least one `acceptance_criteria` entry per bead, the milestone-bundle prompt guidance was tightened to require those fields explicitly, and regression coverage now proves legacy handoff/materialization still work while the strict planner contract rejects incomplete new output.\n\n## Steps\n\n1. [Completed] Relax compatibility-mode priority validation back to the historical legacy range while keeping generated-mode priorities constrained to `1..=3`, and add generated-mode checks that reject missing `bead_id` values and empty bead acceptance mappings.\n2. [Completed] Tighten the built-in `requirements_milestone_bundle` template so the planner is explicitly instructed to emit a non-empty stable `bead_id` for every bead and at least one acceptance-criterion mapping per bead.\n3. [Completed] Extend bundle, contract, handoff, materialization, and template-rendering regressions to cover legacy priority compatibility plus strict rejection of missing `bead_id` and empty `acceptance_criteria` in new planner output.\n4. [Completed] Run repository verification gates on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed on the final tree.\n- Targeted regressions passed: `cargo test generated_bundle_validation_rejects_legacy_priority_values`, `cargo test generated_bundle_validation_rejects_missing_bead_ids_and_acceptance_mappings`, `cargo test materialize_bundle_backfills_legacy_missing_covered_by_entries`, `cargo test --features test-stub extract_milestone_bundle_handoff_accepts_legacy_bundle_metadata`, `cargo test milestone_bundle_contract_rejects_legacy_missing_planner_metadata`, and `cargo test resolve_and_render_requirements_milestone_bundle_includes_planning_guidance`.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed on the final tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- Pre-existing live orchestration state changes under `.ralph-burning/` were left untouched per repo instructions and remain dirty in the worktree.\n- `nix build` updated the tracked `result` symlink; if that artifact should remain untracked here, it still needs to be ignored or cleaned separately.\n- `MilestoneBundle::validate()` remains compatibility-oriented while strict fresh-planner enforcement lives in `validate_generated()`, so future strict call sites must keep using the generated-validation path explicitly.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 6
+}

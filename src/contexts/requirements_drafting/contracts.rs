@@ -11,7 +11,7 @@
 
 use schemars::schema::RootSchema;
 
-use crate::contexts::milestone_record::bundle::MilestoneBundle;
+use crate::contexts::milestone_record::bundle::{GeneratedMilestoneBundle, MilestoneBundle};
 use crate::shared::domain::FlowPreset;
 use crate::shared::error::ContractError;
 
@@ -136,7 +136,9 @@ impl RequirementsContract {
                 schemars::schema_for!(RequirementsReviewPayload)
             }
             RequirementsStageId::ProjectSeed => schemars::schema_for!(ProjectSeedPayload),
-            RequirementsStageId::MilestoneBundle => schemars::schema_for!(MilestoneBundle),
+            RequirementsStageId::MilestoneBundle => {
+                schemars::schema_for!(GeneratedMilestoneBundle)
+            }
             RequirementsStageId::Ideation => schemars::schema_for!(IdeationPayload),
             RequirementsStageId::Research => schemars::schema_for!(ResearchPayload),
             RequirementsStageId::Synthesis => schemars::schema_for!(SynthesisPayload),
@@ -204,13 +206,14 @@ impl RequirementsContract {
                 Ok(RequirementsPayload::Seed(p))
             }
             RequirementsStageId::MilestoneBundle => {
-                let p: MilestoneBundle = serde_json::from_value(raw.clone()).map_err(|e| {
-                    ContractError::SchemaValidation {
-                        stage_id: stage_str.to_owned(),
-                        details: format!("milestone_bundle: {e}"),
-                    }
-                })?;
-                Ok(RequirementsPayload::MilestoneBundle(p))
+                let p: GeneratedMilestoneBundle =
+                    serde_json::from_value(raw.clone()).map_err(|e| {
+                        ContractError::SchemaValidation {
+                            stage_id: stage_str.to_owned(),
+                            details: format!("milestone_bundle: {e}"),
+                        }
+                    })?;
+                Ok(RequirementsPayload::MilestoneBundle(p.into()))
             }
             RequirementsStageId::Ideation => {
                 let p: IdeationPayload = serde_json::from_value(raw.clone()).map_err(|e| {
@@ -370,7 +373,7 @@ impl RequirementsContract {
                 }
             }
             RequirementsPayload::MilestoneBundle(p) => {
-                if let Err(errors) = p.validate() {
+                if let Err(errors) = p.validate_generated() {
                     return Err(ContractError::DomainValidation {
                         stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("milestone_bundle: {}", errors.join("; ")),

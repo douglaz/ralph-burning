@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T08:14:49.899446171Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness issues in bundle reporting. The first can emit a dependency-derived workstream sequence that is not actually consistent with the bead DAG, and the second can overreport acceptance coverage when callers use `summarize_bundle` on a malformed bundle without full validation.\n\n## Votes\n\n- `fr-2-30e12a4c`: Accept\n  `infer_workstream_order` computes a topological order on the projected workstream graph, but when a valid bead DAG induces a cycle between workstreams, the topo walk leaves every cyclic node with nonzero indegree and the function appends those workstreams in original input order. `render_plan_md_checked()` then presents that fabricated sequence as `Workstream order`, so the rendered order can directly contradict real dependency constraints instead of signaling that no single workstream-level topological order exists.\n- `fr-2-223ab223`: Accept\n  The code path is real: `canonicalize_bundle()` only backfills `covered_by` when it is empty, while `summarize_bundle()` treats any non-empty `covered_by` entry as covered without validating that those bead IDs exist or match `bead.acceptance_criteria`. That means `summarize_bundle()` can report inflated coverage, including 100%, for invalid bundles with stale or unknown references. The authoritative markdown render validates first, so the blast radius is limited, but the public summary function is still materially misleading on malformed input.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

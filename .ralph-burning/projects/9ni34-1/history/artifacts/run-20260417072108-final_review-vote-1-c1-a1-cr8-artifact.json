@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T11:12:30.293014470Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The reported issue is a real correctness defect in the workstream-order reporting: the current blocked-set calculation conflates actual interleaving participants with downstream workstreams that merely remain unreachable after Kahn reduction.\n\n## Votes\n\n- `fr-8-9df09ce7`: Accept\n  `analyze_workstream_order()` currently labels every workstream with residual indegree after topological peeling as `blocked`, and `render_plan_md_checked()` renders that whole set as the interleaving group. In a workstream graph with a cycle between A and B plus an outgoing edge from B to C, Kahn's algorithm leaves C with non-zero indegree even though C is not part of the interleaving cycle. That means `plan.md` can falsely claim C is part of the cross-workstream interleave set. This is a real reporting bug, not a theoretical concern, and the suggested fix of identifying actual SCC/cycle participants is technically sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

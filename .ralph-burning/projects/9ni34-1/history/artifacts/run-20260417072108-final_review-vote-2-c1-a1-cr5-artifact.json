@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T09:46:59.005830935Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAll three amendments identify verifiable defects in the recently strengthened validation code. Priority range enforcement leaks into compatibility mode (fr-5-3f97fb75); bead_id remains optional in generated mode and gets silently substituted with positional IDs (fr-5-7a78f94b); and bead->AC mapping is not required for generated beads despite the stated bidirectional-mapping goal (fr-5-2d658b25).\n\n## Votes\n\n- `fr-5-3f97fb75`: Accept\n  Confirmed at bundle.rs:173-181: the `Some(priority)` out-of-range arm fires regardless of `BundleValidationMode`, only the `None` arm checks `requires_generated_metadata()`. Both handoff paths (requirements_drafting/service.rs:2360, 2381) and materialization (milestone_record/service.rs via `progress_shape_signature` -> `validated_canonical_bundle` -> `validate`) call the compatibility variant. Prior to this change there was no priority validation at all, so any persisted legacy bundle with priority 0 or >3 will now fail to re-validate. Gating the range check on Generated mode preserves the intended additive-compatibility contract.\n- `fr-5-7a78f94b`: Accept\n  Confirmed at bundle.rs:217-227: when `bead.bead_id` is None the code unconditionally synthesizes `bead-{n}` from ordering, with no guard on `mode.requires_generated_metadata()`. `contracts.rs:372-378` routes MilestoneBundle payloads through `validate_generated()`, so the strict contract silently accepts bundles that lack durable identifiers and ties dependency/coverage references to workstream ordering. Requiring non-empty `bead_id` in generated mode (plus a regression test proving `null` is rejected) is the correct fix for a contract that is supposed to guarantee stable IDs.\n- `fr-5-2d658b25`: Accept\n  Confirmed at bundle.rs:268-287: the loop only validates elements when they exist; nothing in generated mode requires `bead.acceptance_criteria` to be non-empty. The later canonical reconciliation (bundle.rs:328-369) enforces AC->bead coverage but not bead->AC coverage, so a bead with an empty AC list passes strict validation and contributes to no milestone outcome. Given that bidirectional bead<->AC mapping is the stated invariant of this change, rejecting empty `bead.acceptance_criteria` in generated mode with an accompanying regression test is the correct enforcement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 5
+}

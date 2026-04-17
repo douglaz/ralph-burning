@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417072108-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T08:13:45.268719089Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify legitimate defects in src/contexts/milestone_record/bundle.rs that cause misleading outputs. The workstream ordering silently hides cycles at the workstream level, and the acceptance coverage summary trusts potentially stale covered_by references.\n\n## Votes\n\n- `fr-2-30e12a4c`: Accept\n  Confirmed at lines 888-945: after Kahn's topo walk, remaining workstreams with nonzero indegree are blindly appended in input order at 939-942. render_plan_md_checked publishes this as the authoritative 'Workstream order' at 1308-1316. The cited counterexample (B1->A1->A2->B2 producing edges B->A and A->B) is valid and demonstrates that the output can silently contradict the real sequencing constraints. The function should signal cycle detection rather than fabricate a total ordering.\n- `fr-2-223ab223`: Accept\n  Confirmed at lines 953-967 and 1064-1083: summarize_bundle counts every non-empty covered_by as covered, while canonicalize_bundle only backfills empty covered_by lists and does not reject or filter stale/unknown references. Additionally, summarize_bundle uses canonicalize_bundle().unwrap_or_else(|_| bundle.clone()) at line 954, so even canonicalization errors fall back to the raw bundle. A malformed bundle can therefore report inflated acceptance coverage. Deriving coverage from bead acceptance_criteria or requiring full validation would fix this.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}
