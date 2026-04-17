@@ -946,7 +946,8 @@ pub fn infer_workstream_order(workstreams: &[Workstream]) -> Vec<usize> {
 }
 
 pub fn validate_dependency_graph(bundle: &MilestoneBundle) -> Result<(), Vec<String>> {
-    dependency_graph_analysis(bundle).map(|_| ())
+    let canonical = validated_canonical_bundle(bundle)?;
+    dependency_graph_analysis_from_canonical(&canonical).map(|_| ())
 }
 
 pub fn summarize_bundle(bundle: &MilestoneBundle) -> BundleSummary {
@@ -1784,6 +1785,22 @@ mod tests {
         assert!(validation_errors
             .iter()
             .any(|error| error.contains("dependency cycle detected")));
+        Ok(())
+    }
+
+    #[test]
+    fn validate_dependency_graph_rejects_duplicate_normalized_bead_ids(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-1".to_owned());
+        bundle.workstreams[0].beads[1].bead_id = Some("bead-1".to_owned());
+
+        let errors = validate_dependency_graph(&bundle)
+            .expect_err("duplicate canonical bead ids should be rejected");
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("duplicate bead identifier")));
         Ok(())
     }
 

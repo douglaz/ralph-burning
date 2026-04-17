@@ -484,6 +484,7 @@ fn resolve_and_render_requirements_milestone_bundle_includes_planning_guidance()
     .unwrap();
 
     assert!(rendered.contains("Group the plan into cohesive workstreams"));
+    assert!(rendered.contains("assign numeric priority values: 1 for P1 critical path"));
     assert!(rendered.contains("Acceptance coverage must be bidirectional and exact"));
     assert!(rendered.contains("Call out intentionally deferred work"));
     assert!(rendered.contains("Validation output"));

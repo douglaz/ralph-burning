@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417072108-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417072108-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T08:05:44.720200904Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nResolved both pending MilestoneBundle amendments without restructuring existing models: the milestone prompt now requests numeric priority values that align with the contract (`1`=`P1`, `2`=`P2`, `3`=`P3`), and `validate_dependency_graph()` now validates against a fully validated canonical bundle so duplicate normalized bead IDs are rejected instead of being silently overwritten. Added regression coverage for the prompt guidance and duplicate-ID dependency validation.\n\n## Steps\n\n1. [Completed] Reword the MilestoneBundle prompt template so bead priorities are requested as numeric values with explicit P1/P2/P3 meaning.\n2. [Completed] Harden `validate_dependency_graph()` to run on a fully validated canonical bundle and add a regression test for duplicate normalized bead IDs.\n3. [Completed] Update prompt guidance tests and rerun repository verification gates for the amended change set.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- Targeted regressions passed: `cargo test validate_dependency_graph_rejects_duplicate_normalized_bead_ids` and `cargo test resolve_and_render_requirements_milestone_bundle_includes_planning_guidance`.\n- `cargo test` passed on rerun for the full tree. A prior run hit a transient failure in `controller_runtime_test::test_happy_path_idle_through_reconcile_to_completed`; rerunning that exact test and then the full suite succeeded.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- The workspace still contains unrelated live orchestration changes under `.ralph-burning/`, which were left untouched per repo instructions.\n- `result` was updated by `nix build`; if that symlink should remain untracked, it may need to be ignored separately.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}

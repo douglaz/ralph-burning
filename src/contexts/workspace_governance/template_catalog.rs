@@ -338,7 +338,7 @@ For each bead proposal:
 - write a concrete title
 - write a scoped description with rationale, implementation boundary, and any explicit deferred work notes
 - choose an appropriate bead_type
-- assign priority using P1 for critical path, P2 for important follow-on work, and P3 for nice-to-have or polish
+- assign numeric priority values: 1 for P1 critical path, 2 for P2 important follow-on work, and 3 for P3 nice-to-have or polish
 - add relevant labels for the subsystem, execution mode, or quality area
 - include depends_on bead IDs only when a real sequencing constraint exists, and explain the dependency rationale in the description
 - map every bead to the acceptance criteria IDs it materially advances
