@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T19:45:09.278309017Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1 amendment. The reported issue is a real fixture-correctness defect: the helper seeds a different milestone through `MilestoneFixtureBuilder::write_into()` and then rematerializes the scenario bundle over the same ID, so persisted journal/history reflects two plans rather than only the advertised scenario.\n\n## Votes\n\n- `fr-2-adcef5e2`: Accept\n  `build_e2e_milestone_scenario_fixture()` first calls `TempWorkspaceBuilder::with_milestone(...)`, and `MilestoneFixtureBuilder::write_into()` persists a real milestone record, plan, snapshot, and journal. The later `materialize_bundle(...)` path reuses that existing milestone ID rather than rebuilding from a blank workspace, and `persist_plan_locked()` appends plan/journal updates instead of clearing prior history. That means the final fixture's `bundle` and plan files describe the scenario bundle, while the journal still contains the placeholder milestone's creation and initial plan lifecycle. For any e2e coverage that inspects milestone history or transition semantics, the fixture is internally inconsistent, so the amendment identifies a real correctness and maintainability problem.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

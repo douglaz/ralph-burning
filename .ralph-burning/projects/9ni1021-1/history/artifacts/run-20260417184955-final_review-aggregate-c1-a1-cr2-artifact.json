@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T19:45:09.292911675Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-adcef5e2`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-adcef5e2`\n\nfinding_summary: `build_e2e_milestone_scenario_fixture()` first materializes a placeholder milestone and then rematerializes the real scenario bundle on top of it. `src/test_support/e2e_fixtures.rs:67` creates the seed milestone with `MilestoneFixtureBuilder::new(...).add_bead(...)`, `src/test_support/e2e_fixtures.rs:80` writes a different bundle with new bead IDs, and `src/test_support/e2e_fixtures.rs:91` returns the journal/task-run state reloaded from disk. Because `MilestoneFixtureBuilder::write_into()` already persists a full plan and journal (`src/test_support/fixtures.rs:585`, `src/test_support/fixtures.rs:615`, `src/test_support/fixtures.rs:698`), the returned fixture carries stale history for the seed `ms-e2e-scenario.bead-*` plan before the advertised scenario plan. That makes the fixture semantically wrong for later e2e coverage that inspects milestone history or lifecycle transitions.\naffected_files:\n- src/test_support/e2e_fixtures.rs\n- src/test_support/fixtures.rs\nremediation_hint: Build the workspace without pre-seeding a milestone, or add a builder path that initializes the workspace and materializes the scenario bundle exactly once so the journal and persisted history only describe the real scenario.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

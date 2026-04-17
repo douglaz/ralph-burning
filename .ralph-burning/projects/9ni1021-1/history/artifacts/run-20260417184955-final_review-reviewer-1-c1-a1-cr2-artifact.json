@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T19:41:45.223976443Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master`, read `src/test_support/e2e_fixtures.rs` and the supporting fixture/milestone helper code end-to-end, and ran `cargo test` plus `cargo fmt --check`. I found one in-scope correctness issue in the new fixture builder. `cargo clippy --all-targets -- -D warnings` currently fails on a pre-existing unrelated lint in `tests/unit/process_backend_test.rs:2872`; `nix build` was not completed during this review.\n\n## Amendments\n\n1. finding_summary: `build_e2e_milestone_scenario_fixture()` first materializes a placeholder milestone and then rematerializes the real scenario bundle on top of it. `src/test_support/e2e_fixtures.rs:67` creates the seed milestone with `MilestoneFixtureBuilder::new(...).add_bead(...)`, `src/test_support/e2e_fixtures.rs:80` writes a different bundle with new bead IDs, and `src/test_support/e2e_fixtures.rs:91` returns the journal/task-run state reloaded from disk. Because `MilestoneFixtureBuilder::write_into()` already persists a full plan and journal (`src/test_support/fixtures.rs:585`, `src/test_support/fixtures.rs:615`, `src/test_support/fixtures.rs:698`), the returned fixture carries stale history for the seed `ms-e2e-scenario.bead-*` plan before the advertised scenario plan. That makes the fixture semantically wrong for later e2e coverage that inspects milestone history or lifecycle transitions.\naffected_files:\n- src/test_support/e2e_fixtures.rs\n- src/test_support/fixtures.rs\nremediation_hint: Build the workspace without pre-seeding a milestone, or add a builder path that initializes the workspace and materializes the scenario bundle exactly once so the journal and persisted history only describe the real scenario.\n   Rationale: The helper is supposed to return a clean, already-planned scenario workspace. Returning a milestone whose journal begins with an unrelated placeholder plan will make downstream integration assertions brittle and can hide real regressions in milestone lifecycle handling.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
