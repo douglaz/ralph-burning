@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr25-artifact",
+  "payload_id": "run-20260416164042-final_review-reviewer-1-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:47:34.922553822Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the failure-reconciliation implementation and the follow-up CLI sync changes. I found two fix-now issues: a controller-state race that can overwrite a live retry, and a CLI sync fallback that drops failure task provenance when task lookup cannot resolve a daemon task id.\n\n## Amendments\n\n1. finding_summary: `reconcile_failure` can overwrite a live retrying controller state because it snapshots attempt history before transitioning and never re-reads lineage when deciding whether a newer retry exists. If a retry starts after the snapshot at `src/contexts/automation_runtime/failure_reconciliation.rs:205-211` or `:455-459` but before the controller mutation, `newer_attempt_exists(...)` at `:1340-1348` still returns false and the stale history is used to drive `Blocked`/`NeedsOperator` transitions at `:309-323`, `:373-387`, and `:494-507`, finishing with `sync_controller_state(...)` at `:1403-1410`. That can clobber a legitimate `Running` retry and wedge the milestone behind an incorrect blocked/operator-required controller state.\naffected_files:\n- src/contexts/automation_runtime/failure_reconciliation.rs\nremediation_hint: Re-read current lineage immediately before mutating the controller, or make `transition_controller_after_failure` load fresh attempt history itself and bail out if a newer attempt appeared after the earlier snapshot.\n   Rationale: This is a real race between failure replay/reconciliation and retry start. The current tests only cover retries that already existed before reconciliation began, so they do not protect this interleaving.\n2. finding_summary: CLI terminal sync now passes an empty string when it cannot resolve a daemon task ID (`src/cli/run.rs:1323-1336`). Failure reconciliation serializes that into `task_id=` (`src/contexts/automation_runtime/failure_reconciliation.rs:593-599`) and then treats it as missing provenance when parsing/backfilling (`:754-757`). In that case the persisted `BeadFailed` journal/lineage entry loses `task_id` entirely instead of preserving the old `cli-sync:{project_id}` placeholder or failing closed. That violates the requirement to record `task_id` on failed attempts and weakens later replay/audit behavior.\naffected_files:\n- src/cli/run.rs\n- src/contexts/automation_runtime/failure_reconciliation.rs\nremediation_hint: Keep a non-empty fallback identifier such as `cli-sync:{project_id}`, or return an error when authoritative task provenance cannot be resolved instead of recording a blank task id.\n   Rationale: This only shows up when task lookup is ambiguous or task metadata has already been cleaned up, but when it does the failure event becomes permanently less informative and less repairable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 25
+}

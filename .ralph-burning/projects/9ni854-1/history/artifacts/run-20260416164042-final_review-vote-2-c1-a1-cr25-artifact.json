@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-final_review-vote-2-c1-a1-cr25-artifact",
+  "payload_id": "run-20260416164042-final_review-vote-2-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T03:49:14.094638124Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all three amendments against the failure reconciliation code. Two identify concrete defects (stale snapshot race in controller transitions, empty task_id silently dropped from provenance). The third is an awareness note about an intentional semantic change, not a defect.\n\n## Votes\n\n- `fr-25-b8696617`: Accept\n  Valid TOCTOU race. The attempt history snapshot at lines 205-211 feeds into `transition_controller_after_failure` via `&existing_attempts` at lines 309-323 and 373-387 (the stale-replay paths). Inside that function, `newer_attempt_exists` at line 1340 checks against this stale snapshot. A retry that starts and persists its state after the snapshot but before `sync_controller_state` at line 1403 will not be detected, causing the controller to be overwritten with Blocked/NeedsOperator. Notably, the non-stale path at lines 494-507 already reloads (`recorded_attempts` at 455-459), proving the pattern of re-reading is established. The remediation of re-reading lineage before mutating the controller is low-risk and consistent with existing code.\n- `fr-25-1c24e07a`: Accept\n  Valid data integrity defect. `authoritative_failed_sync_task_id` can return None, and the caller at run.rs:1335 substitutes an empty string via `.unwrap_or(\"\")`. This empty string is serialized as `task_id=` by `format_failure_outcome_detail` (line 598), then `extract_task_id_from_outcome_detail` at line 757 filters it out with `(!task_id.is_empty()).then_some(task_id)`, silently converting it to None. The result is a persisted BeadFailed entry with no task_id, violating provenance tracking requirements. The remediation of using a non-empty fallback like `cli-sync:{project_id}` or failing closed is appropriate — the old placeholder convention already existed for this purpose.\n- `fr-25-b9eb4a72`: Reject\n  This is an awareness note about an intentional semantic change, not a concrete defect. The grouping logic in `group_accepts_entry` was deliberately changed to separate entries with the same run_id but different started_at when either is terminal — this is the correct behavior for retry semantics where the same run_id is reused across attempts. The amendment itself concedes 'risk is low given the test updates' and frames it as 'worth noting for awareness.' The tests were updated to validate the new semantics. The speculative concern about external NDJSON consumers does not identify an actual bug or safety issue in the codebase.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 25
+}

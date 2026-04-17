@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417041435-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417041435-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T04:35:42.816121283Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nReviewed all changes: 1 new test file (tests/unit/controller_runtime_test.rs, 763 lines) and 1 module declaration added to tests/unit.rs. All 5 test scenarios (happy path, blocked path, restart/resume, tool failure, sequential execution invariant) are correctly implemented. API usage verified against source: all function signatures, struct fields, enum variants, and trait implementations match. Mock adapter construction, fixture builders, and log capture usage all follow established patterns. Tests are deterministic with no shared state or timing dependencies. All 5 tests pass, clippy is clean with -D warnings, and no existing tests are modified. No bugs, safety issues, or correctness gaps found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 1
+}

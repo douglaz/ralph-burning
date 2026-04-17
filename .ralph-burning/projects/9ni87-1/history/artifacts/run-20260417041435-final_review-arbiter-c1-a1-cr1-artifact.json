@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417041435-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260417041435-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T04:43:28.488272919Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The helper in `controller_runtime_test.rs` is simplified, but the amendment treats a unit-test design choice as a production coverage gap even though the real `run.rs` selection and terminal-sync entry points already have direct tests elsewhere, and the restart test does not rely on the helper at all.\n\n## Rulings\n\n- `fr-1-18438e01`: Reject\n  `tests/unit/controller_runtime_test.rs:178-275` does duplicate a simplified slice of selection logic, but this amendment overstates both scope and impact. The new file is unit-scoped around controller persistence/resume behavior, and it still exercises real production APIs for the controller and milestone stores: `initialize_controller`, `sync_controller_task_running`, `record_bead_start`, `record_bead_completion`, `transition_controller`, `resume_controller`, and `checkpoint_controller_stop` (`tests/unit/controller_runtime_test.rs:313-617`). The restart scenario in particular does not use the helper at all (`tests/unit/controller_runtime_test.rs:559-617`), so the claim that the happy-path/blocked/restart coverage is asserting only test helper behavior is not accurate. More importantly, the production entry points the amendment says are missing already have direct tests in `src/cli/run.rs`: selection cases through `select_next_milestone_bead` at `src/cli/run.rs:5037-5445` cover planned-bead filtering and blocked-reason handling, and terminal reconciliation/continued selection is exercised by `sync_terminal_milestone_task_and_continue_selection_*` at `src/cli/run.rs:5619-5805`. That leaves a maintainability concern about duplicated helper logic, but not a material missing-test defect that warrants acceptance.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417041435-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417041435-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T04:53:54.691666433Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6-max\n\n## Summary\n\nClean implementation. All 6 tests pass (happy path, blocked path, restart/resume, tool failure, sequential enforcement, plus a bonus failure-reconciliation integration test). Only test files were added/modified — no production code changes. All 800 existing tests still pass, clippy is clean (-D warnings), fmt check passes. The tests are deterministic (mock adapters, temp workspaces, no timing dependencies), cover the 5 specified scenarios, and verify state transitions, journal events, snapshot progress, and structured log fields. No correctness bugs, safety issues, or significant maintainability risks found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-6-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-6-max"
+  },
+  "completion_round": 2
+}
