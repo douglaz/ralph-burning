@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260417123935",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 10
+      "completion_round": 11
     },
     "started_at": "2026-04-17T12:39:35.365397534Z",
     "prompt_hash_at_cycle_start": "ad31e67b7876543bce248fbf60e6e997647e7974dbe9e215b8646180af6a8cf7",
     "prompt_hash_at_stage_start": "ad31e67b7876543bce248fbf60e6e997647e7974dbe9e215b8646180af6a8cf7",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 9
+    "final_review_restart_count": 10
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 10,
+  "completion_rounds": 11,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-10-9602adf0",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 10,
+        "body": "finding_summary: `materialize_beads()` cannot reliably distinguish a workstream epic from a task bead when both are non-root epics. `identity_label_matches()` treats any legacy bead that is missing exporter identity labels as a match, and `materialized_role_matches()` collapses `WorkstreamEpic` and `Task` into the same bucket. On a rerun against an older or label-drifted export, a proposal with `bead_type: \"epic\"` and the same title as its workstream can therefore reuse the workstream epic as the task bead; the later parent-child link then targets the same bead and corrupts the hierarchy. This comes from the reuse path in `find_existing_materialized_bead()` relying on those predicates. affected_files: `src/contexts/milestone_record/service.rs:1936-1950`, `src/contexts/milestone_record/service.rs:2034-2070`, `src/contexts/milestone_record/service.rs:2117-2159`. remediation_hint: make role matching distinguish workstream epics from task beads even for legacy unlabeled beads, or fail closed instead of allowing unlabeled non-root epics to satisfy task reuse.",
+        "created_at": "2026-04-17T16:46:50.542304602Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "377c2e26c8b6754850fcbc226d7227f6acc9524417f4f9621f2a08e71cac0dfd"
+      },
+      {
+        "amendment_id": "fr-10-3edcd35c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 10,
+        "body": "finding_summary: explicit bead-id reuse accepts any canonical/short-id hit before title matching, without validating that the existing bead still matches the proposal’s type or role. In `find_explicit_materialized_bead()`, any `br show` result for the explicit id is accepted if `explicit_materialized_bead_matches()` returns true; that helper only checks the id and milestone/identity labels, not whether the bead still looks like the proposal being exported. A stale or mistyped `bead_id` in the bundle can therefore hijack an unrelated existing bead and attach the current workstream dependency/comments to it. affected_files: `src/contexts/milestone_record/service.rs:2259-2321`. remediation_hint: after resolving an explicit bead by id, still require at least bead-type/role compatibility (and ideally some title or provenance sanity check), while preserving the ability to tolerate title drift for genuinely reused authored beads.",
+        "created_at": "2026-04-17T16:46:50.542310533Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "b8e753d6bee6b8936f2b0e395431990010744149777ec716f5aab29612d36382"
+      }
+    ],
     "processed_count": 27
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 11 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T16:08:09.695045727Z",
+    "resolved_at": "2026-04-17T16:30:22.354322979Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417123935-final_review-vote-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417123935-final_review-vote-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T16:46:50.523329435Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified both amendments against src/contexts/milestone_record/service.rs. Amendment fr-10-9602adf0 correctly identifies that identity_label_matches (lines 1936-1950) falls back to true for legacy beads lacking materialized identity labels, and materialized_role_matches (lines 2065-2071) does not distinguish WorkstreamEpic from Task. These predicates make role/identity disambiguation fragile for legacy or label-drifted beads and allow role drift that can corrupt parent-child hierarchy on rerun. Amendment fr-10-3edcd35c correctly identifies that explicit_materialized_bead_matches (lines 2294-2322) accepts canonical/normalized id hits with only milestone-scope verification, omitting bead-type/role compatibility; a stale or wrong bead_id can hijack an unrelated existing bead. Both are concrete correctness defects in the materialize_beads reuse path with clear remediation.\n\n## Votes\n\n- `fr-10-9602adf0`: Accept\n  Code inspection confirms identity_label_matches treats any legacy bead without materialized identity labels as a match (lines 1947-1949) and materialized_role_matches collapses WorkstreamEpic and Task into !has_root_label (line 2069). Together these predicates make the reuse path in find_existing_materialized_bead unable to reliably distinguish a workstream epic from a task bead when both are non-root epics with the same title, which permits cross-role reuse of legacy beads and can introduce hierarchy corruption (e.g., accumulated or mis-targeted parent-child links). The remediation hint — distinguish workstream epics from task beads even for legacy unlabeled beads, or fail closed — is sound and proportionate.\n- `fr-10-3edcd35c`: Accept\n  explicit_materialized_bead_matches (lines 2294-2322) accepts a match on canonical id equality (line 2317) or normalized id plus milestone-scope (line 2321) without checking bead_type or role, and find_explicit_materialized_bead accepts the first such hit before falling through to title-based matching. A stale or mistyped bead_id in the bundle can therefore hijack an unrelated existing bead (including a workstream epic) and cause the current workstream dependency/comments to be attached to it. The suggested remediation — require at least bead-type/role compatibility after resolving by id, while still tolerating title drift — correctly preserves legitimate reuse semantics while closing the hijack vector.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 10
+}
