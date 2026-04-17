@@ -142,6 +142,15 @@ impl MilestoneBundle {
             if ws.name.trim().is_empty() {
                 errors.push(format!("workstreams[{i}].name must not be empty"));
             }
+            let has_description = ws
+                .description
+                .as_deref()
+                .map(str::trim)
+                .filter(|description| !description.is_empty())
+                .is_some();
+            if mode.requires_generated_metadata() && !has_description {
+                errors.push(format!("workstreams[{i}].description must not be empty"));
+            }
             if ws.beads.is_empty() {
                 errors.push(format!(
                     "workstreams[{i}].beads must contain at least one bead"
@@ -1019,9 +1028,11 @@ fn contains_deferred_note(text: &str) -> bool {
         "defer",
         "deferred",
         "not included",
+        "not part of this milestone",
         "out of scope",
         "future work",
         "later phase",
+        "follow-up work",
         "follow-up milestone",
         "intentionally excluded",
     ]
@@ -1846,6 +1857,20 @@ mod tests {
     }
 
     #[test]
+    fn generated_bundle_validation_rejects_missing_workstream_descriptions(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].description = None;
+
+        let errors = bundle.validate_generated().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("workstreams[0].description must not be empty")));
+        Ok(())
+    }
+
+    #[test]
     fn bundle_validation_rejects_duplicate_bead_identifiers(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
@@ -2427,6 +2452,23 @@ mod tests {
         assert!(rendered
             .contains("**Bead order:** ms-alpha.bead-1 -> ms-alpha.bead-2 -> ms-alpha.bead-3"));
         assert!(rendered.contains("deferred CLI polish"));
+        Ok(())
+    }
+
+    #[test]
+    fn render_plan_md_detects_prompt_style_deferred_phrases(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].description = Some(
+            "Deliver the core backend now; follow-up work on CLI polish is not part of this milestone because the interface is still changing."
+                .to_owned(),
+        );
+
+        let rendered = render_plan_md(&bundle);
+
+        assert!(rendered.contains("## Deferred Items"));
+        assert!(rendered.contains("follow-up work on CLI polish"));
+        assert!(rendered.contains("not part of this milestone"));
         Ok(())
     }
 

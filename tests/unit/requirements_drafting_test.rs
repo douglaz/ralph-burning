@@ -4008,6 +4008,51 @@ fn milestone_bundle_contract_rejects_legacy_missing_planner_metadata() {
 }
 
 #[test]
+fn milestone_bundle_contract_rejects_missing_workstream_descriptions() {
+    use ralph_burning::shared::error::ContractError;
+
+    let raw = json!({
+        "schema_version": MILESTONE_BUNDLE_VERSION,
+        "identity": {
+            "id": "ms-alpha",
+            "name": "Alpha Milestone"
+        },
+        "executive_summary": "Deliver the alpha workflow.",
+        "goals": ["Ship milestone planning"],
+        "acceptance_map": [{
+            "id": "AC-1",
+            "description": "Planner produces a durable milestone bundle.",
+            "covered_by": ["ms-alpha.bead-1"]
+        }],
+        "workstreams": [{
+            "name": "Planning",
+            "beads": [{
+                "bead_id": "ms-alpha.bead-1",
+                "title": "Wire milestone bundle output",
+                "description": "Carry bundle through requirements pipeline.",
+                "bead_type": "task",
+                "priority": 1,
+                "labels": ["phase1"],
+                "depends_on": [],
+                "acceptance_criteria": ["AC-1"]
+            }]
+        }],
+        "default_flow": "quick_dev"
+    });
+
+    let error = RequirementsContract::milestone_bundle()
+        .evaluate(&raw)
+        .expect_err(
+            "planner output missing workstream descriptions should fail the strict contract",
+        );
+
+    let ContractError::DomainValidation { details, .. } = error else {
+        panic!("expected domain validation error");
+    };
+    assert!(details.contains("workstreams[0].description must not be empty"));
+}
+
+#[test]
 fn parity_slice1_versioned_seed_includes_version_and_source() {
     use ralph_burning::contexts::requirements_drafting::model::{
         ProjectSeedPayload, SeedSourceMetadata, PROJECT_SEED_VERSION,
