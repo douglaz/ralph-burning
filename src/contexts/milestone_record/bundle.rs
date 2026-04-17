@@ -1504,6 +1504,110 @@ pub struct BeadProposal {
     pub flow_override: Option<FlowPreset>,
 }
 
+/// Strict milestone-bundle shape used for fresh planner generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct GeneratedMilestoneBundle {
+    pub schema_version: u32,
+    pub identity: MilestoneIdentity,
+    pub executive_summary: String,
+    pub goals: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub non_goals: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
+    pub acceptance_map: Vec<GeneratedAcceptanceCriterion>,
+    pub workstreams: Vec<GeneratedWorkstream>,
+    pub default_flow: FlowPreset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agents_guidance: Option<String>,
+}
+
+/// Strict acceptance-criterion shape used for fresh planner generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct GeneratedAcceptanceCriterion {
+    pub id: String,
+    pub description: String,
+    pub covered_by: Vec<String>,
+}
+
+/// Strict workstream shape used for fresh planner generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct GeneratedWorkstream {
+    pub name: String,
+    pub description: String,
+    pub beads: Vec<GeneratedBeadProposal>,
+}
+
+/// Strict bead-proposal shape used for fresh planner generation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub(crate) struct GeneratedBeadProposal {
+    pub bead_id: String,
+    pub title: String,
+    pub description: String,
+    pub bead_type: String,
+    pub priority: u32,
+    pub labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow_override: Option<FlowPreset>,
+}
+
+impl From<GeneratedMilestoneBundle> for MilestoneBundle {
+    fn from(value: GeneratedMilestoneBundle) -> Self {
+        Self {
+            schema_version: value.schema_version,
+            identity: value.identity,
+            executive_summary: value.executive_summary,
+            goals: value.goals,
+            non_goals: value.non_goals,
+            constraints: value.constraints,
+            acceptance_map: value.acceptance_map.into_iter().map(Into::into).collect(),
+            workstreams: value.workstreams.into_iter().map(Into::into).collect(),
+            default_flow: value.default_flow,
+            agents_guidance: value.agents_guidance,
+        }
+    }
+}
+
+impl From<GeneratedAcceptanceCriterion> for AcceptanceCriterion {
+    fn from(value: GeneratedAcceptanceCriterion) -> Self {
+        Self {
+            id: value.id,
+            description: value.description,
+            covered_by: value.covered_by,
+        }
+    }
+}
+
+impl From<GeneratedWorkstream> for Workstream {
+    fn from(value: GeneratedWorkstream) -> Self {
+        Self {
+            name: value.name,
+            description: Some(value.description),
+            beads: value.beads.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<GeneratedBeadProposal> for BeadProposal {
+    fn from(value: GeneratedBeadProposal) -> Self {
+        Self {
+            bead_id: Some(value.bead_id),
+            explicit_id: Some(true),
+            title: value.title,
+            description: Some(value.description),
+            bead_type: Some(value.bead_type),
+            priority: Some(value.priority),
+            labels: value.labels,
+            depends_on: value.depends_on,
+            acceptance_criteria: value.acceptance_criteria,
+            flow_override: value.flow_override,
+        }
+    }
+}
+
 // ── Renderers ───────────────────────────────────────────────────────────────
 
 fn invalid_plan_render_error(errors: Vec<String>) -> serde_json::Error {
@@ -3038,7 +3142,7 @@ mod tests {
     }
 
     #[test]
-    fn slot_matching_bead_ids_without_explicit_flag_stay_implicit(
+    fn legacy_slot_matching_bead_ids_without_explicit_flag_stay_implicit(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let bundle = MilestoneBundle {
             schema_version: MILESTONE_BUNDLE_VERSION,

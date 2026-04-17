@@ -335,7 +335,7 @@ Produce a single additive planning bundle that preserves the milestone contract 
 Group the plan into cohesive workstreams by theme or layer, such as data model, API, CLI, automation, or testing.
 For each workstream, include a short description that explains the theme, sequencing intent, and any intentionally deferred scope or follow-up work that is not part of this milestone.
 For each bead proposal:
-- assign a non-empty stable bead_id on every bead and reuse that exact ID anywhere the bead is referenced in depends_on or acceptance_map.covered_by
+- assign a non-empty stable bead_id on every bead as authored identity, not a slot placeholder derived from workstream order, and reuse that exact ID anywhere the bead is referenced in depends_on or acceptance_map.covered_by
 - write a concrete title
 - write a scoped description with rationale, implementation boundary, and any explicit deferred work notes
 - choose an appropriate bead_type

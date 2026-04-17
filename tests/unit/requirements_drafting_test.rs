@@ -3964,7 +3964,44 @@ fn milestone_bundle_contract_validates_and_renders_plan_markdown() {
 }
 
 #[test]
-fn milestone_bundle_contract_rejects_legacy_missing_planner_metadata() {
+fn milestone_bundle_contract_schema_requires_generated_metadata_fields() {
+    let schema_value = serde_json::to_value(RequirementsContract::milestone_bundle().json_schema())
+        .expect("schema serializes");
+    let definitions = schema_value["definitions"]
+        .as_object()
+        .expect("definitions object");
+
+    let workstream_required = definitions["GeneratedWorkstream"]["required"]
+        .as_array()
+        .expect("workstream required fields");
+    assert!(workstream_required.contains(&json!("description")));
+
+    let bead_required = definitions["GeneratedBeadProposal"]["required"]
+        .as_array()
+        .expect("bead required fields");
+    for field in [
+        "bead_id",
+        "description",
+        "bead_type",
+        "priority",
+        "labels",
+        "acceptance_criteria",
+    ] {
+        assert!(
+            bead_required.contains(&json!(field)),
+            "generated bead schema should require {field}"
+        );
+    }
+
+    let acceptance_required = definitions["GeneratedAcceptanceCriterion"]["required"]
+        .as_array()
+        .expect("acceptance criterion required fields");
+    assert!(acceptance_required.contains(&json!("covered_by")));
+}
+
+#[test]
+fn milestone_bundle_contract_schema_rejects_missing_required_planner_metadata() {
+    use jsonschema::JSONSchema;
     use ralph_burning::shared::error::ContractError;
 
     let raw = json!({
@@ -3991,20 +4028,23 @@ fn milestone_bundle_contract_rejects_legacy_missing_planner_metadata() {
         "default_flow": "quick_dev"
     });
 
-    let error = RequirementsContract::milestone_bundle()
-        .evaluate(&raw)
-        .expect_err("planner output missing metadata should fail the strict contract");
+    let contract = RequirementsContract::milestone_bundle();
+    let schema_value = serde_json::to_value(contract.json_schema()).expect("schema serializes");
+    let compiled = JSONSchema::compile(&schema_value).expect("schema compiles");
 
-    let ContractError::DomainValidation { details, .. } = error else {
-        panic!("expected domain validation error");
+    assert!(
+        !compiled.is_valid(&raw),
+        "generated milestone schema should reject missing strict planner fields"
+    );
+
+    let error = contract
+        .evaluate(&raw)
+        .expect_err("planner output missing metadata should fail during schema validation");
+
+    let ContractError::SchemaValidation { details, .. } = error else {
+        panic!("expected schema validation error");
     };
-    assert!(details.contains(".description must not be empty"));
-    assert!(details.contains(".bead_type must not be empty"));
-    assert!(details.contains(".bead_id must not be empty"));
-    assert!(details.contains(".priority must not be empty"));
-    assert!(details.contains(".labels must contain at least one label"));
-    assert!(details.contains(".acceptance_criteria must contain at least one item"));
-    assert!(details.contains("covered_by must contain at least one bead"));
+    assert!(details.contains("missing field `covered_by`"));
 }
 
 #[test]
@@ -4046,10 +4086,54 @@ fn milestone_bundle_contract_rejects_missing_workstream_descriptions() {
             "planner output missing workstream descriptions should fail the strict contract",
         );
 
-    let ContractError::DomainValidation { details, .. } = error else {
-        panic!("expected domain validation error");
+    let ContractError::SchemaValidation { details, .. } = error else {
+        panic!("expected schema validation error");
     };
-    assert!(details.contains("workstreams[0].description must not be empty"));
+    assert!(details.contains("missing field `description`"));
+}
+
+#[test]
+fn milestone_bundle_contract_marks_planner_authored_bead_ids_explicit() {
+    use ralph_burning::contexts::requirements_drafting::contracts::RequirementsPayload;
+
+    let raw = json!({
+        "schema_version": MILESTONE_BUNDLE_VERSION,
+        "identity": {
+            "id": "ms-alpha",
+            "name": "Alpha Milestone"
+        },
+        "executive_summary": "Deliver the alpha workflow.",
+        "goals": ["Ship milestone planning"],
+        "acceptance_map": [{
+            "id": "AC-1",
+            "description": "Planner produces a durable milestone bundle.",
+            "covered_by": ["ms-alpha.bead-1"]
+        }],
+        "workstreams": [{
+            "name": "Planning",
+            "description": "Define milestone output.",
+            "beads": [{
+                "bead_id": "ms-alpha.bead-1",
+                "title": "Wire milestone bundle output",
+                "description": "Carry bundle through requirements pipeline.",
+                "bead_type": "task",
+                "priority": 1,
+                "labels": ["phase1"],
+                "depends_on": [],
+                "acceptance_criteria": ["AC-1"]
+            }]
+        }],
+        "default_flow": "quick_dev"
+    });
+
+    let bundle = RequirementsContract::milestone_bundle()
+        .evaluate(&raw)
+        .expect("generated milestone bundle should validate");
+
+    let RequirementsPayload::MilestoneBundle(bundle) = bundle.payload else {
+        panic!("expected milestone payload");
+    };
+    assert_eq!(bundle.workstreams[0].beads[0].explicit_id, Some(true));
 }
 
 #[test]

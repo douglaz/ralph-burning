@@ -484,7 +484,9 @@ fn resolve_and_render_requirements_milestone_bundle_includes_planning_guidance()
     .unwrap();
 
     assert!(rendered.contains("Group the plan into cohesive workstreams"));
-    assert!(rendered.contains("assign a non-empty stable bead_id on every bead"));
+    assert!(
+        rendered.contains("assign a non-empty stable bead_id on every bead as authored identity")
+    );
     assert!(rendered.contains("assign numeric priority values: 1 for P1 critical path"));
     assert!(rendered.contains("map every bead to at least one acceptance criteria ID"));
     assert!(rendered.contains("Acceptance coverage must be bidirectional and exact"));
