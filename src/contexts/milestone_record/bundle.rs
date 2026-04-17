@@ -143,6 +143,39 @@ impl MilestoneBundle {
                 if bead.title.trim().is_empty() {
                     errors.push(format!("{location}.title must not be empty"));
                 }
+                if bead
+                    .description
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|description| !description.is_empty())
+                    .is_none()
+                {
+                    errors.push(format!("{location}.description must not be empty"));
+                }
+                if bead
+                    .bead_type
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|bead_type| !bead_type.is_empty())
+                    .is_none()
+                {
+                    errors.push(format!("{location}.bead_type must not be empty"));
+                }
+                match bead.priority {
+                    Some(1..=3) => {}
+                    Some(priority) => errors.push(format!(
+                        "{location}.priority must be between 1 and 3, got {priority}"
+                    )),
+                    None => errors.push(format!("{location}.priority must not be empty")),
+                }
+                if bead.labels.is_empty() {
+                    errors.push(format!("{location}.labels must contain at least one label"));
+                }
+                for (k, label) in bead.labels.iter().enumerate() {
+                    if label.trim().is_empty() {
+                        errors.push(format!("{location}.labels[{k}] must not be empty"));
+                    }
+                }
 
                 let implicit_bead_id = format!("bead-{next_implicit_bead}");
                 next_implicit_bead += 1;
@@ -244,6 +277,11 @@ impl MilestoneBundle {
         }
 
         for (i, ac) in self.acceptance_map.iter().enumerate() {
+            if ac.covered_by.is_empty() {
+                errors.push(format!(
+                    "acceptance_map[{i}].covered_by must contain at least one bead"
+                ));
+            }
             for (j, covered_by) in ac.covered_by.iter().enumerate() {
                 match normalize_bead_reference(milestone_id, covered_by) {
                     Ok(reference) => {
@@ -641,6 +679,7 @@ struct DependencyNode {
     bead_id: String,
     workstream_index: usize,
     depends_on: Vec<String>,
+    location: String,
 }
 
 #[derive(Debug, Clone)]
@@ -685,13 +724,14 @@ fn inferred_dependency_nodes(workstreams: &[Workstream]) -> Vec<DependencyNode> 
     let mut nodes = Vec::new();
 
     for (workstream_index, workstream) in workstreams.iter().enumerate() {
-        for bead in &workstream.beads {
+        for (bead_index, bead) in workstream.beads.iter().enumerate() {
             let bead_id = inferred_bead_identifier(bead.bead_id.as_deref(), next_implicit_bead);
             next_implicit_bead += 1;
             nodes.push(DependencyNode {
                 bead_id,
                 workstream_index,
                 depends_on: bead.depends_on.clone(),
+                location: format!("workstreams[{workstream_index}].beads[{bead_index}]"),
             });
         }
     }
@@ -764,7 +804,7 @@ fn dependency_graph_analysis_from_canonical(
 ) -> Result<DependencyGraphAnalysis, Vec<String>> {
     let mut nodes = Vec::new();
     for (workstream_index, workstream) in canonical.workstreams.iter().enumerate() {
-        for bead in &workstream.beads {
+        for (bead_index, bead) in workstream.beads.iter().enumerate() {
             nodes.push(DependencyNode {
                 bead_id: bead
                     .bead_id
@@ -773,17 +813,29 @@ fn dependency_graph_analysis_from_canonical(
                     .to_owned(),
                 workstream_index,
                 depends_on: bead.depends_on.clone(),
+                location: format!("workstreams[{workstream_index}].beads[{bead_index}]"),
             });
         }
     }
 
+    dependency_graph_analysis_from_nodes(&nodes)
+}
+
+fn dependency_graph_analysis_from_nodes(
+    nodes: &[DependencyNode],
+) -> Result<DependencyGraphAnalysis, Vec<String>> {
     let mut bead_index = BTreeMap::new();
+    let mut errors = Vec::new();
     for (index, node) in nodes.iter().enumerate() {
-        bead_index.insert(node.bead_id.clone(), index);
+        if let Some(previous_index) = bead_index.insert(node.bead_id.clone(), index) {
+            errors.push(format!(
+                "{} resolves to duplicate bead identifier '{}' already used by {}",
+                node.location, node.bead_id, nodes[previous_index].location
+            ));
+        }
     }
 
-    let mut errors = Vec::new();
-    for node in &nodes {
+    for node in nodes {
         for depends_on in &node.depends_on {
             if !bead_index.contains_key(depends_on) {
                 errors.push(format!(
@@ -849,7 +901,7 @@ fn dependency_graph_analysis_from_canonical(
         if states[node_index] == 0 {
             detect_cycle(
                 node_index,
-                &nodes,
+                nodes,
                 &bead_index,
                 &mut states,
                 &mut stack,
@@ -961,8 +1013,17 @@ pub fn infer_workstream_order(workstreams: &[Workstream]) -> Vec<usize> {
 }
 
 pub fn validate_dependency_graph(bundle: &MilestoneBundle) -> Result<(), Vec<String>> {
-    let canonical = validated_canonical_bundle(bundle)?;
-    dependency_graph_analysis_from_canonical(&canonical).map(|_| ())
+    let (nodes, mut errors) = canonicalize_dependency_nodes(bundle);
+    if let Err(mut graph_errors) = dependency_graph_analysis_from_nodes(&nodes) {
+        errors.append(&mut graph_errors);
+    }
+    errors.sort();
+    errors.dedup();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 pub fn summarize_bundle(bundle: &MilestoneBundle) -> BundleSummary {
@@ -1043,6 +1104,54 @@ fn validated_canonical_bundle(bundle: &MilestoneBundle) -> Result<MilestoneBundl
     canonicalize_bundle(bundle)
 }
 
+fn canonicalize_dependency_nodes(bundle: &MilestoneBundle) -> (Vec<DependencyNode>, Vec<String>) {
+    let milestone_id = bundle.identity.id.trim();
+    let mut nodes = Vec::new();
+    let mut errors = Vec::new();
+    let mut next_implicit_bead = 1usize;
+
+    for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
+        for (bead_index, bead) in workstream.beads.iter().enumerate() {
+            let location = format!("workstreams[{workstream_index}].beads[{bead_index}]");
+            let implicit_bead_id = format!("{milestone_id}.bead-{next_implicit_bead}");
+            next_implicit_bead += 1;
+
+            let bead_id = match bead
+                .bead_id
+                .as_deref()
+                .map(|raw| canonicalize_bead_reference(milestone_id, raw))
+                .transpose()
+            {
+                Ok(Some(canonical_id)) => canonical_id,
+                Ok(None) => implicit_bead_id,
+                Err(reason) => {
+                    errors.push(format!("{location}.bead_id {reason}"));
+                    implicit_bead_id
+                }
+            };
+
+            let mut depends_on = Vec::new();
+            for (dependency_index, dependency) in bead.depends_on.iter().enumerate() {
+                match canonicalize_bead_reference(milestone_id, dependency) {
+                    Ok(canonical_ref) => depends_on.push(canonical_ref),
+                    Err(reason) => errors.push(format!(
+                        "{location}.depends_on[{dependency_index}] {reason}"
+                    )),
+                }
+            }
+
+            nodes.push(DependencyNode {
+                bead_id,
+                workstream_index,
+                depends_on,
+                location,
+            });
+        }
+    }
+
+    (nodes, errors)
+}
+
 fn canonicalize_bundle(bundle: &MilestoneBundle) -> Result<MilestoneBundle, Vec<String>> {
     let milestone_id = bundle.identity.id.trim();
     let mut canonical = bundle.clone();
@@ -1093,16 +1202,6 @@ fn canonicalize_bundle(bundle: &MilestoneBundle) -> Result<MilestoneBundle, Vec<
                     "acceptance_map[{criterion_index}].covered_by[{covered_index}] {reason}"
                 )),
             }
-        }
-    }
-
-    let derived_coverage = derived_acceptance_coverage(&canonical);
-    for criterion in &mut canonical.acceptance_map {
-        if criterion.covered_by.is_empty() {
-            criterion.covered_by = derived_coverage
-                .get(&criterion.id)
-                .map(|beads| beads.iter().cloned().collect())
-                .unwrap_or_default();
         }
     }
 
@@ -1538,7 +1637,9 @@ mod tests {
                         bead_id: None,
                         explicit_id: None,
                         title: "Write integration tests".to_owned(),
-                        description: None,
+                        description: Some(
+                            "Verify the end-to-end flow with integration coverage".to_owned(),
+                        ),
                         bead_type: Some("task".to_owned()),
                         priority: Some(2),
                         labels: vec!["testing".to_owned()],
@@ -1626,6 +1727,32 @@ mod tests {
         bundle.workstreams[0].beads[0].title = "".to_owned();
         let errors = bundle.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("title")));
+        Ok(())
+    }
+
+    #[test]
+    fn bundle_validation_rejects_missing_required_bead_metadata(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].description = None;
+        bundle.workstreams[0].beads[0].bead_type = None;
+        bundle.workstreams[0].beads[0].priority = Some(4);
+        bundle.workstreams[0].beads[0].labels.clear();
+
+        let errors = bundle.validate().unwrap_err();
+
+        assert!(errors
+            .iter()
+            .any(|e| e.contains(".description must not be empty")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains(".bead_type must not be empty")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains(".priority must be between 1 and 3")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains(".labels must contain at least one label")));
         Ok(())
     }
 
@@ -1919,6 +2046,23 @@ mod tests {
     }
 
     #[test]
+    fn validate_dependency_graph_reports_cycles_even_with_non_graph_validation_errors(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].depends_on = vec!["bead-3".to_owned()];
+        bundle.workstreams[0].beads[1].description = None;
+
+        let errors = validate_dependency_graph(&bundle).expect_err(
+            "graph validation should still surface cycles when metadata validation fails",
+        );
+
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("dependency cycle detected")));
+        Ok(())
+    }
+
+    #[test]
     fn summarize_bundle_reports_counts_and_dependency_depth(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let bundle = sample_bundle();
@@ -1956,24 +2100,22 @@ mod tests {
     }
 
     #[test]
-    fn bundle_validation_accepts_legacy_missing_covered_by_and_renders_it(
+    fn bundle_validation_rejects_missing_covered_by_entries(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.acceptance_map[0].covered_by.clear();
         bundle.acceptance_map[1].covered_by.clear();
 
-        bundle.validate().map_err(|errors| errors.join("; "))?;
+        let errors = bundle.validate().unwrap_err();
 
-        let rendered = render_plan_json(&bundle)?;
-        let parsed: MilestoneBundle = serde_json::from_str(&rendered)?;
-        assert_eq!(
-            parsed.acceptance_map[0].covered_by,
-            vec!["ms-alpha.bead-1".to_owned(), "ms-alpha.bead-2".to_owned()]
-        );
-        assert_eq!(
-            parsed.acceptance_map[1].covered_by,
-            vec!["ms-alpha.bead-3".to_owned()]
-        );
+        assert!(errors
+            .iter()
+            .any(|error| error
+                .contains("acceptance_map[0].covered_by must contain at least one bead")));
+        assert!(errors
+            .iter()
+            .any(|error| error
+                .contains("acceptance_map[1].covered_by must contain at least one bead")));
         Ok(())
     }
 
@@ -1982,7 +2124,7 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut bundle = sample_bundle();
         bundle.acceptance_map[0].id = " AC-1 ".to_owned();
-        bundle.acceptance_map[0].covered_by.clear();
+        bundle.acceptance_map[0].covered_by = vec!["bead-1".to_owned(), "bead-2".to_owned()];
         bundle.workstreams[0].beads[0].acceptance_criteria = vec![" AC-1 ".to_owned()];
         bundle.workstreams[0].beads[1].acceptance_criteria = vec!["AC-1".to_owned()];
 
@@ -2393,10 +2535,12 @@ mod tests {
                 bead_id: Some("bead-4".to_owned()),
                 explicit_id: None,
                 title: "Ship polish".to_owned(),
-                description: None,
+                description: Some(
+                    "Polish the shipped milestone after the core work lands.".to_owned(),
+                ),
                 bead_type: Some("task".to_owned()),
                 priority: Some(2),
-                labels: vec![],
+                labels: vec!["polish".to_owned()],
                 depends_on: vec!["bead-3".to_owned()],
                 acceptance_criteria: vec!["AC-2".to_owned()],
                 flow_override: None,

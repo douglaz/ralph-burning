@@ -4275,15 +4275,15 @@ mod tests {
             }],
             workstreams: vec![Workstream {
                 name: "Core".to_owned(),
-                description: None,
+                description: Some("Fixture description.".to_owned()),
                 beads: vec![BeadProposal {
                     bead_id: None,
                     explicit_id: None,
                     title: "Implement feature".to_owned(),
-                    description: None,
+                    description: Some("Deliver the scoped milestone behavior.".to_owned()),
                     bead_type: Some("task".to_owned()),
                     priority: Some(1),
-                    labels: vec![],
+                    labels: vec!["backend".to_owned()],
                     depends_on: vec![],
                     acceptance_criteria: vec!["AC-1".to_owned()],
                     flow_override: None,
@@ -4324,10 +4324,10 @@ mod tests {
             bead_id: None,
             explicit_id: None,
             title: "Follow-up feature".to_owned(),
-            description: None,
+            description: Some("Fixture description.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec![],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -4373,10 +4373,10 @@ mod tests {
             bead_id: None,
             explicit_id: None,
             title: "Replacement bead".to_owned(),
-            description: None,
+            description: Some("Fixture description.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec![],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -5449,10 +5449,10 @@ mod tests {
             bead_id: None,
             explicit_id: None,
             title: "Handle retry flow".to_owned(),
-            description: None,
+            description: Some("Fixture description.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec![],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -5461,10 +5461,10 @@ mod tests {
             bead_id: None,
             explicit_id: None,
             title: "Document skip path".to_owned(),
-            description: None,
+            description: Some("Fixture description.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec![],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -5893,10 +5893,10 @@ mod tests {
             bead_id: None,
             explicit_id: None,
             title: "Handle retry flow".to_owned(),
-            description: None,
+            description: Some("Fixture description.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec![],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -6025,10 +6025,10 @@ mod tests {
             bead_id: None,
             explicit_id: None,
             title: "Handle retry flow".to_owned(),
-            description: None,
+            description: Some("Fixture description.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec![],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -6136,10 +6136,10 @@ mod tests {
             bead_id: None,
             explicit_id: None,
             title: "Replacement bead".to_owned(),
-            description: None,
+            description: Some("Fixture description.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec![],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -6538,10 +6538,10 @@ mod tests {
                 bead_id: None,
                 explicit_id: None,
                 title: "Implicit duplicate".to_owned(),
-                description: None,
+                description: Some("Fixture description.".to_owned()),
                 bead_type: Some("task".to_owned()),
                 priority: Some(1),
-                labels: vec![],
+                labels: vec!["fixture".to_owned()],
                 depends_on: vec![],
                 acceptance_criteria: vec!["AC-1".to_owned()],
                 flow_override: None,
@@ -6571,7 +6571,7 @@ mod tests {
     }
 
     #[test]
-    fn materialize_bundle_accepts_legacy_missing_covered_by_and_backfills_plan_json(
+    fn materialize_bundle_rejects_missing_covered_by_entries(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -6585,7 +6585,7 @@ mod tests {
         let mut bundle = sample_bundle("legacy-covered-by", "Legacy Covered By");
         bundle.acceptance_map[0].covered_by.clear();
 
-        let record = materialize_bundle(
+        let error = materialize_bundle(
             &store,
             &snapshot_store,
             &journal_store,
@@ -6593,14 +6593,11 @@ mod tests {
             base,
             &bundle,
             now,
-        )?;
+        )
+        .expect_err("materialization should reject missing covered_by entries");
 
-        let persisted_bundle: MilestoneBundle =
-            serde_json::from_str(&plan_store.read_plan_json(base, &record.id)?)?;
-        assert_eq!(
-            persisted_bundle.acceptance_map[0].covered_by,
-            vec!["legacy-covered-by.bead-1".to_owned()]
-        );
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("covered_by must contain at least one bead"));
         Ok(())
     }
 
@@ -7521,7 +7518,7 @@ mod tests {
             description: Some("Reopens the terminal milestone.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec!["bead-1".to_owned()],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
@@ -7612,7 +7609,7 @@ mod tests {
             description: Some("Forces a new execution plan.".to_owned()),
             bead_type: Some("task".to_owned()),
             priority: Some(1),
-            labels: vec![],
+            labels: vec!["fixture".to_owned()],
             depends_on: vec!["bead-1".to_owned()],
             acceptance_criteria: vec!["AC-1".to_owned()],
             flow_override: None,
