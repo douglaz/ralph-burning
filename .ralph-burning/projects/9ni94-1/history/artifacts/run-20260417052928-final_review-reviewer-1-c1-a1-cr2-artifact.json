@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417052928-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417052928-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T06:13:04.936686583Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the CLI compatibility-alias changes and the new tests. I found one fix-now issue: the new `project select` deprecation guidance is unsafe because `task select` does not preserve active-milestone state for bead-backed projects, so the suggested replacement can redirect later milestone commands to the wrong milestone.\n\n## Amendments\n\n1. finding_summary: The new deprecation notice for `project select` points users at a replacement that is not behaviorally equivalent for bead-backed projects. `project select` still synchronizes the active milestone (`src/cli/project.rs:686-693`), but `task select` only updates the active project pointer (`src/cli/task.rs:96-100`). Milestone commands resolve the active milestone from the saved milestone pointer before falling back to the active project (`src/cli/milestone.rs:543-560`), so following the advertised replacement can leave the workspace on the wrong milestone and send later `milestone next` / `milestone run` / `milestone status` commands to the previously active milestone.\naffected_files: src/cli/project.rs, src/cli/task.rs\nremediation_hint: Make `task select` reuse the same selection helper as `project select`, including `sync_active_milestone_from_project_record`, and add a bead-backed integration test that asserts `task select` updates the active milestone as well as the active project.\n   Rationale: This bead’s deprecation messaging now tells operators to migrate from `project select` to `task select`, but that replacement currently changes workspace state differently. The result is a real workflow hazard, not a cosmetic mismatch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

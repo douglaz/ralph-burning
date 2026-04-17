@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417052928-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417052928-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T06:14:05.547934795Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-3ecddec9`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-3ecddec9`\n\nfinding_summary: The new deprecation notice for `project select` points users at a replacement that is not behaviorally equivalent for bead-backed projects. `project select` still synchronizes the active milestone (`src/cli/project.rs:686-693`), but `task select` only updates the active project pointer (`src/cli/task.rs:96-100`). Milestone commands resolve the active milestone from the saved milestone pointer before falling back to the active project (`src/cli/milestone.rs:543-560`), so following the advertised replacement can leave the workspace on the wrong milestone and send later `milestone next` / `milestone run` / `milestone status` commands to the previously active milestone.\naffected_files: src/cli/project.rs, src/cli/task.rs\nremediation_hint: Make `task select` reuse the same selection helper as `project select`, including `sync_active_milestone_from_project_record`, and add a bead-backed integration test that asserts `task select` updates the active milestone as well as the active project.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}
