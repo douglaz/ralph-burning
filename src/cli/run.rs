@@ -1280,6 +1280,22 @@ fn sync_terminal_milestone_task_with_options(
             (run_id, entry.started_at, entry.started_at)
         }
     };
+    let failed_run_event = match final_snapshot.status {
+        RunStatus::Failed => Some(terminal_event_for_attempt(
+            run_id,
+            attempt_started_at,
+            RunStatus::Failed,
+            &journal_events,
+        )
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: format!("projects/{}/journal.ndjson", project_id),
+            details: format!(
+                "run snapshot is failed but missing durable run_failed event for current attempt run_id={run_id} started_at={}",
+                attempt_started_at.to_rfc3339(),
+            ),
+        })?),
+        _ => None,
+    };
     let finished_at = match final_snapshot.status {
         RunStatus::Completed => {
             let Some(timestamp) = terminal_run_event_timestamp(
@@ -1297,30 +1313,17 @@ fn sync_terminal_milestone_task_with_options(
             };
             timestamp
         }
-        RunStatus::Failed => {
-            let Some(timestamp) = terminal_run_event_timestamp(
-                &journal_events,
-                run_id,
-                attempt_started_at,
-                RunStatus::Failed,
-            ) else {
-                return Err(AppError::CorruptRecord {
-                    file: format!("projects/{}/journal.ndjson", project_id),
-                    details: format!(
-                        "run snapshot is failed but missing durable run_failed event for current attempt run_id={run_id} started_at={}",
-                        attempt_started_at.to_rfc3339(),
-                    ),
-                });
-            };
-            timestamp
-        }
+        RunStatus::Failed => failed_run_event
+            .map(|event| event.timestamp)
+            .expect("failed run event must exist"),
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
     };
 
     if final_snapshot.status == RunStatus::Failed {
-        let cli_failure_task_id = format!("cli-sync:{project_id}");
-        let error_summary = outcome_detail
-            .as_deref()
+        let failure_task_id = authoritative_failed_sync_task_id(base_dir, project_id, run_id)?;
+        let error_summary = failed_run_event
+            .and_then(journal_event_message)
+            .or(outcome_detail.as_deref())
             .unwrap_or(final_snapshot.status_summary.as_str());
         reconcile_failure_sync(
             &FsMilestoneSnapshotStore,
@@ -1329,7 +1332,7 @@ fn sync_terminal_milestone_task_with_options(
             &FsMilestoneControllerStore,
             base_dir,
             &task_source.bead_id,
-            cli_failure_task_id.as_str(),
+            failure_task_id.as_deref().unwrap_or(""),
             project_id.as_str(),
             milestone_id.as_str(),
             run_id,
@@ -1528,6 +1531,65 @@ fn terminal_run_event_timestamp(
 ) -> Option<chrono::DateTime<chrono::Utc>> {
     terminal_event_for_attempt(run_id, started_at, status, journal_events)
         .map(|event| event.timestamp)
+}
+
+fn journal_event_message(event: &JournalEvent) -> Option<&str> {
+    event
+        .details
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+}
+
+fn authoritative_failed_sync_task_id(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    run_id: &str,
+) -> AppResult<Option<String>> {
+    let tasks = <FsDaemonStore as DaemonStorePort>::list_tasks(&FsDaemonStore, base_dir)?;
+    if let Some(task) = tasks.iter().rev().find(|task| {
+        task.project_id == project_id.as_str() && task.workflow_run_id.as_deref() == Some(run_id)
+    }) {
+        return Ok(Some(task.task_id.clone()));
+    }
+
+    let worktree_leases =
+        <FsDaemonStore as DaemonStorePort>::list_lease_records(&FsDaemonStore, base_dir)?
+            .into_iter()
+            .filter_map(|record| match record {
+                LeaseRecord::Worktree(lease) if lease.project_id == project_id.as_str() => {
+                    Some(lease)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+    if let Some(lease) = worktree_leases.iter().rev().find(|lease| {
+        lease
+            .cleanup_handoff
+            .as_ref()
+            .and_then(|handoff| handoff.run_id.as_deref())
+            == Some(run_id)
+    }) {
+        return Ok(Some(lease.task_id.clone()));
+    }
+
+    let project_tasks = tasks
+        .into_iter()
+        .filter(|task| task.project_id == project_id.as_str())
+        .collect::<Vec<_>>();
+    if project_tasks.len() == 1 {
+        return Ok(project_tasks.into_iter().next().map(|task| task.task_id));
+    }
+
+    if worktree_leases.len() == 1 {
+        return Ok(worktree_leases
+            .into_iter()
+            .next()
+            .map(|lease| lease.task_id));
+    }
+
+    Ok(None)
 }
 
 fn decorate_sync_error(error: AppError, resume: bool) -> AppError {
@@ -5989,9 +6051,43 @@ mod tests {
             max_completion_rounds: Some(20),
             rollback_point_meta: Default::default(),
             amendment_queue: Default::default(),
-            status_summary: "failed after review".to_owned(),
+            status_summary: "stale failed snapshot summary".to_owned(),
             last_stage_resolution_snapshot: None,
         };
+        <FsDaemonStore as DaemonStorePort>::create_task(
+            &FsDaemonStore,
+            base_dir,
+            &DaemonTask {
+                task_id: "task-daemon".to_owned(),
+                issue_ref: "repo#42".to_owned(),
+                project_id: project_id.to_string(),
+                project_name: Some("Alpha: Bead".to_owned()),
+                prompt: Some("prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::DocsChange),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: None,
+                failure_class: Some("stage_failure".to_owned()),
+                failure_message: Some("failed after review".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                workflow_run_id: Some("run-1".to_owned()),
+                repo_slug: None,
+                issue_number: None,
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            },
+        )
+        .expect("write daemon task");
 
         prepare_milestone_controller_for_execution(
             base_dir,
@@ -6032,14 +6128,15 @@ mod tests {
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
         assert_eq!(task_runs[0].plan_hash.as_deref(), Some("plan-v1"));
-        assert_eq!(task_runs[0].task_id.as_deref(), Some("cli-sync:bead-run"));
+        assert_eq!(task_runs[0].task_id.as_deref(), Some("task-daemon"));
         assert!(task_runs[0].finished_at.is_some());
         assert!(task_runs[0]
             .outcome_detail
             .as_deref()
             .is_some_and(|detail| {
-                detail.contains("task_id=cli-sync:bead-run")
+                detail.contains("task_id=task-daemon")
                     && detail.contains("error=failed after review")
+                    && !detail.contains("stale failed snapshot summary")
             }));
 
         let snapshot = load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone.id)
@@ -8003,9 +8100,11 @@ mod tests {
             .expect("read task-runs after repaired sync");
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
-        assert!(task_runs[0].outcome_detail.as_deref().is_some_and(
-            |detail| detail.contains("error=failed (interrupted by termination signal)")
-        ));
+        assert!(task_runs[0].outcome_detail.as_deref().is_some_and(|detail| {
+            detail.contains(
+                "error=termination signal interrupted the orchestrator before graceful shutdown completed"
+            ) && !detail.contains("error=failed (interrupted by termination signal)")
+        }));
     }
 
     #[test]
@@ -8139,11 +8238,14 @@ mod tests {
             .expect("read task-runs after repaired sync");
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Failed);
-        assert!(
-            task_runs[0].outcome_detail.as_deref().is_some_and(
-                |detail| detail.contains("error=failed (interrupted by daemon shutdown)")
-            )
-        );
+        assert_eq!(task_runs[0].task_id.as_deref(), Some("task-daemon-handoff"));
+        assert!(task_runs[0].outcome_detail.as_deref().is_some_and(|detail| {
+            detail.contains("task_id=task-daemon-handoff")
+                && detail.contains(
+                    "error=daemon shutdown interrupted the orchestrator before graceful shutdown completed"
+                )
+                && !detail.contains("error=failed (interrupted by daemon shutdown)")
+        }));
     }
 
     #[test]
