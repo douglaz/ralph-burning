@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260416164042",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 24
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-23-3267d69f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 23,
-        "body": "finding_summary: `MilestoneControllerResumePort::task_status()` in both CLI runtime adapters still collapses `RunStatus::Failed` into `ControllerTaskStatus::Pending` (`src/cli/milestone.rs:1265-1282`, `src/cli/run.rs:992-1007`), but the new resume state machine now depends on a distinct `Failed` status to enter failure reconciliation from `running`/`reconciling`/`blocked` (`src/contexts/milestone_record/controller.rs:1172-1227`). Because `execute_resume()` accepts failed snapshots as resumable work (`src/cli/run.rs:3618-3633`), a crash between project failure and milestone sync can be resumed as a fresh retry without ever recording the failed attempt, which undercounts retries and can bypass `NeedsOperator` escalation. affected_files: src/cli/milestone.rs, src/cli/run.rs, src/contexts/milestone_record/controller.rs. remediation_hint: Return `ControllerTaskStatus::Failed` for failed run snapshots in both runtime adapters and add a regression test that a failed running project resumes into the failure-reconciliation path instead of `claimed`.",
-        "created_at": "2026-04-17T03:04:56.717920489Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "046a9cadfd48a8d7b01b57816e7b7eec1c93f4b380da2a9a01dcd5d08eb664ca"
-      },
-      {
-        "amendment_id": "fr-23-f22cfd57",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 23,
-        "body": "finding_summary: `resolve_controller_for_next()` now preserves `Blocked` controllers that carry retry context (`src/cli/milestone.rs:648-659`), but `inspect_next_milestone_action()` still treats every `Blocked` state as \"no ready beads\" and drops the bead payload (`src/cli/milestone.rs:563-609`). After a retryable failure, `milestone next` reports a generic blocked milestone instead of surfacing the failed bead that should be resumed, so operators and any tooling that relies on `next` lose visibility into the actionable retry work. affected_files: src/cli/milestone.rs. remediation_hint: Mirror the `blocked_retry_context` handling from `execute_milestone_run()` in `inspect_next_milestone_action()` and return the active bead as the next actionable item when `Blocked` includes bead/task ids.",
-        "created_at": "2026-04-17T03:04:56.717925288Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "b908b2e5f83fc18d35cc1d02aff3782a32b906164eef74a0e9aeaffef9c8ba6e"
-      }
-    ],
-    "processed_count": 44
+    "pending": [],
+    "processed_count": 46
   },
-  "status_summary": "running: final review restart round 24 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-17T02:51:00.765931263Z",

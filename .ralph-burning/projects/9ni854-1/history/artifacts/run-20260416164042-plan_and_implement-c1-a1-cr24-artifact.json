@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260416164042-plan_and_implement-c1-a1-cr24-artifact",
+  "payload_id": "run-20260416164042-plan_and_implement-c1-a1-cr24",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T03:14:37.189927956Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated both CLI milestone-resume adapters so failed run snapshots map to `ControllerTaskStatus::Failed` instead of `Pending`, which lets `resume_controller()` re-enter failure reconciliation instead of reopening failed work as a fresh claim. I also taught `milestone next` to treat `Blocked` controllers with active bead/task context as retryable actionable work, surfacing the bead again with retry-specific messaging and readiness, and added regressions covering the adapter status mapping, failed-running resume behavior, and blocked-retry `next` output.\n\n## Steps\n\n1. [Completed] Inspected the pending amendments in `src/cli/milestone.rs`, `src/cli/run.rs`, and the resume-state-machine expectations in `src/contexts/milestone_record/controller.rs` to confirm the two remaining gaps were the failed-snapshot status mapping and blocked-retry `milestone next` visibility.\n2. [Completed] Patched `MilestoneCommandControllerRuntime::task_status()` and `ProjectMilestoneControllerRuntime::task_status()` so `RunStatus::Failed` now maps to `ControllerTaskStatus::Failed`, and updated `inspect_next_milestone_action()` to reuse blocked retry context instead of reporting those controllers as generic blocked milestones.\n3. [Completed] Added regressions in `src/cli/milestone.rs` and `src/cli/run.rs` covering failed task-status reporting, blocked-retry `milestone next` bead visibility, and resuming a running milestone-backed project into reconciliation after the project snapshot has already failed.\n4. [Completed] Ran formatting, focused regression tests, the full Rust test suite, both clippy gates, and launched the required `nix build` verification gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test runtime_reports_failed_task_status -- --nocapture` passed; both new adapter-status regressions succeeded.\n- `cargo test resume_running_failed_project_reenters_failure_reconciliation -- --nocapture` passed.\n- `cargo test inspect_next_milestone_action_surfaces_blocked_retry_bead -- --nocapture` passed.\n- `cargo test` passed on the full suite.\n- `cargo clippy -- -D warnings` passed.\n- `cargo clippy --features test-stub -- -D warnings` passed.\n- `nix build` was launched and reached `/nix/store/xz2kqcnjrl9mrq4f5kadp28hxpixs141-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, but no final exit status was observed in-session.\n\n## Outstanding Risks\n\n- `nix build` was started on the updated tree and reached the active musl derivation build stage, but no terminal success/failure exit was observed in-session, so the authoritative Nix gate remains unresolved.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 24
+}

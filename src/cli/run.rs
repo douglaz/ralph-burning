@@ -1002,9 +1002,8 @@ impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
         Ok(match snapshot.status {
             RunStatus::Running => ControllerTaskStatus::Running,
             RunStatus::Completed => ControllerTaskStatus::Succeeded,
-            RunStatus::NotStarted | RunStatus::Paused | RunStatus::Failed => {
-                ControllerTaskStatus::Pending
-            }
+            RunStatus::Failed => ControllerTaskStatus::Failed,
+            RunStatus::NotStarted | RunStatus::Paused => ControllerTaskStatus::Pending,
         })
     }
 
@@ -4277,7 +4276,7 @@ mod tests {
         sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
         ProjectMilestoneControllerRuntime, RunSignalCleanupContext, RunSignalCleanupOrigin,
     };
-    use chrono::Utc;
+    use chrono::{TimeZone, Utc};
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -4285,8 +4284,8 @@ mod tests {
     use crate::adapters::fs::{
         FileSystem, FsDaemonStore, FsJournalStore, FsMilestoneControllerStore,
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsTaskRunLineageStore,
-        RunBackendProcessRecord, RunPidOwner,
+        FsProjectStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+        FsTaskRunLineageStore, RunBackendProcessRecord, RunPidOwner,
     };
     use crate::contexts::agent_execution::model::CancellationToken;
     use crate::contexts::automation_runtime::model::{
@@ -4312,7 +4311,8 @@ mod tests {
         TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::{
-        JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
+        self as project_service, CreateProjectInput, JournalStorePort, RunSnapshotPort,
+        RunSnapshotWritePort,
     };
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
@@ -4795,6 +4795,180 @@ mod tests {
             .last_transition_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("ready beads")));
+    }
+
+    #[test]
+    fn project_milestone_controller_runtime_reports_failed_task_status() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 17, 12, 30, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let project_id = ProjectId::new("bead-failed").expect("project id");
+
+        project_service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Bead Failed".to_owned(),
+                flow: FlowPreset::DocsChange,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "Investigate failure".to_owned(),
+                prompt_hash: "prompt-hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: milestone.id.to_string(),
+                    bead_id: "ms-alpha.bead-2".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: Some("plan-v1".to_owned()),
+                    plan_version: Some(2),
+                }),
+            },
+        )
+        .expect("create project");
+
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base_dir,
+                &project_id,
+                &RunSnapshot {
+                    active_run: None,
+                    interrupted_run: None,
+                    status: RunStatus::Failed,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 0,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "failed before milestone sync".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write failed snapshot");
+
+        let runtime = ProjectMilestoneControllerRuntime {
+            base_dir,
+            milestone_id: &milestone.id,
+        };
+
+        assert_eq!(
+            runtime
+                .task_status(project_id.as_str())
+                .expect("query task status"),
+            milestone_controller::ControllerTaskStatus::Failed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resume_running_failed_project_reenters_failure_reconciliation() {
+        let _path_lock = lock_path_mutex();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 17, 13, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        install_fake_br_show_script(
+            base_dir,
+            r#"{"id":"ms-alpha.bead-2","title":"Retry bead","status":"open","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}"#,
+        );
+        let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+        let project_record = project_service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Alpha: Bead".to_owned(),
+                flow: FlowPreset::DocsChange,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "Implement bead".to_owned(),
+                prompt_hash: "prompt-hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: milestone.id.to_string(),
+                    bead_id: "ms-alpha.bead-2".to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: Some("plan-v1".to_owned()),
+                    plan_version: Some(2),
+                }),
+            },
+        )
+        .expect("create project");
+
+        prepare_milestone_controller_for_execution(
+            base_dir,
+            &project_id,
+            &project_record,
+            MilestoneControllerExecutionOrigin::Start,
+        )
+        .expect("prepare controller");
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::Running,
+                "task execution started",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task(project_id.as_str()),
+            now + chrono::Duration::seconds(1),
+        )
+        .expect("seed running controller");
+
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base_dir,
+                &project_id,
+                &RunSnapshot {
+                    active_run: None,
+                    interrupted_run: None,
+                    status: RunStatus::Failed,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 0,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "project failed before milestone sync".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write failed snapshot");
+
+        let runtime = ProjectMilestoneControllerRuntime {
+            base_dir,
+            milestone_id: &milestone.id,
+        };
+        let resumed = milestone_controller::resume_controller(
+            &FsMilestoneControllerStore,
+            &runtime,
+            base_dir,
+            &milestone.id,
+            now + chrono::Duration::seconds(2),
+        )
+        .expect("resume controller");
+
+        assert_eq!(
+            resumed.state,
+            milestone_controller::MilestoneControllerState::Reconciling
+        );
+        assert_eq!(resumed.active_bead_id.as_deref(), Some("ms-alpha.bead-2"));
+        assert_eq!(resumed.active_task_id.as_deref(), Some(project_id.as_str()));
+        assert!(resumed
+            .last_transition_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("already reached a terminal state")));
     }
 
     #[tokio::test]

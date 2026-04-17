@@ -566,33 +566,25 @@ async fn inspect_next_milestone_action(
 ) -> AppResult<MilestoneNextView> {
     let controller = resolve_controller_for_next(base_dir, milestone_id).await?;
     let milestone_id_text = milestone_id.to_string();
+    let blocked_retry_context = controller_has_retry_context(&controller);
 
     match controller.state {
         MilestoneControllerState::Claimed
         | MilestoneControllerState::Running
-        | MilestoneControllerState::Reconciling => {
-            let bead_id = controller.active_bead_id.as_deref().ok_or_else(|| {
-                AppError::MilestoneOperationFailed {
-                    milestone_id: milestone_id_text.clone(),
-                    action: "next".to_owned(),
-                    details: format!(
-                        "controller state '{}' is missing an active bead identifier",
-                        controller_state_label(controller.state)
-                    ),
-                }
-            })?;
-            let bead = load_bead_view(base_dir, milestone_id, bead_id, controller.state, "next")?;
-            Ok(MilestoneNextView {
-                milestone_id: milestone_id_text,
-                status: MilestoneCommandStatus::Success,
-                message: format!(
-                    "next bead is '{}' ({})",
-                    bead.id,
-                    controller_state_readiness(controller.state)
-                ),
-                bead: Some(bead),
-            })
-        }
+        | MilestoneControllerState::Reconciling => next_view_for_active_bead(
+            base_dir,
+            milestone_id,
+            &milestone_id_text,
+            &controller,
+            "next",
+        ),
+        MilestoneControllerState::Blocked if blocked_retry_context => next_view_for_active_bead(
+            base_dir,
+            milestone_id,
+            &milestone_id_text,
+            &controller,
+            "next",
+        ),
         MilestoneControllerState::Completed => Ok(MilestoneNextView {
             milestone_id: milestone_id_text,
             status: MilestoneCommandStatus::Completed,
@@ -628,6 +620,45 @@ async fn inspect_next_milestone_action(
     }
 }
 
+fn next_view_for_active_bead(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    milestone_id_text: &str,
+    controller: &milestone_controller::MilestoneControllerRecord,
+    action: &str,
+) -> AppResult<MilestoneNextView> {
+    let bead_id =
+        controller
+            .active_bead_id
+            .as_deref()
+            .ok_or_else(|| AppError::MilestoneOperationFailed {
+                milestone_id: milestone_id_text.to_owned(),
+                action: action.to_owned(),
+                details: format!(
+                    "controller state '{}' is missing an active bead identifier",
+                    controller_state_label(controller.state)
+                ),
+            })?;
+    let bead = load_bead_view(base_dir, milestone_id, bead_id, controller.state, action)?;
+    Ok(MilestoneNextView {
+        milestone_id: milestone_id_text.to_owned(),
+        status: MilestoneCommandStatus::Success,
+        message: if controller.state == MilestoneControllerState::Blocked {
+            format!(
+                "next bead is '{}' (retryable after failed attempt)",
+                bead.id
+            )
+        } else {
+            format!(
+                "next bead is '{}' ({})",
+                bead.id,
+                controller_state_readiness(controller.state)
+            )
+        },
+        bead: Some(bead),
+    })
+}
+
 async fn resolve_controller_for_next(
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
@@ -645,9 +676,7 @@ async fn resolve_controller_for_next(
         now,
     )?;
 
-    let blocked_retry_context = controller.state == MilestoneControllerState::Blocked
-        && controller.active_bead_id.is_some()
-        && controller.active_task_id.is_some();
+    let blocked_retry_context = controller_has_retry_context(&controller);
     if matches!(
         controller.state,
         MilestoneControllerState::Idle | MilestoneControllerState::Selecting
@@ -667,9 +696,7 @@ async fn execute_milestone_run(
 ) -> AppResult<MilestoneRunView> {
     for _step in 0..MAX_MILESTONE_RUN_STEPS {
         let controller = resolve_controller_for_next(base_dir, milestone_id).await?;
-        let blocked_retry_context = controller.state == MilestoneControllerState::Blocked
-            && controller.active_bead_id.is_some()
-            && controller.active_task_id.is_some();
+        let blocked_retry_context = controller_has_retry_context(&controller);
         match controller.state {
             MilestoneControllerState::Completed => {
                 return Ok(MilestoneRunView {
@@ -1077,12 +1104,20 @@ fn controller_state_readiness(state: MilestoneControllerState) -> &'static str {
         MilestoneControllerState::Claimed => "ready",
         MilestoneControllerState::Running => "running",
         MilestoneControllerState::Reconciling => "reconciling",
+        MilestoneControllerState::Blocked => "retryable",
         MilestoneControllerState::Idle
         | MilestoneControllerState::Selecting
-        | MilestoneControllerState::Blocked
         | MilestoneControllerState::NeedsOperator
         | MilestoneControllerState::Completed => "unknown",
     }
+}
+
+fn controller_has_retry_context(
+    controller: &milestone_controller::MilestoneControllerRecord,
+) -> bool {
+    controller.state == MilestoneControllerState::Blocked
+        && controller.active_bead_id.is_some()
+        && controller.active_task_id.is_some()
 }
 
 fn load_bead_view(
@@ -1277,9 +1312,8 @@ impl MilestoneControllerResumePort for MilestoneCommandControllerRuntime<'_> {
         Ok(match snapshot.status {
             RunStatus::Running => ControllerTaskStatus::Running,
             RunStatus::Completed => ControllerTaskStatus::Succeeded,
-            RunStatus::NotStarted | RunStatus::Paused | RunStatus::Failed => {
-                ControllerTaskStatus::Pending
-            }
+            RunStatus::Failed => ControllerTaskStatus::Failed,
+            RunStatus::NotStarted | RunStatus::Paused => ControllerTaskStatus::Pending,
         })
     }
 
@@ -2141,33 +2175,75 @@ fn map_create_error(milestone_id: &str, error: AppError) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_planning_idea, derive_milestone_id, load_bead_execution_history,
-        load_milestone_task_list, reserve_pending_requirements_run, retarget_bundle,
-        PendingRequirementsRunReservation, PENDING_REQUIREMENTS_START_PREFIX,
+        default_planning_idea, derive_milestone_id, inspect_next_milestone_action,
+        load_bead_execution_history, load_milestone_task_list, reserve_pending_requirements_run,
+        retarget_bundle, MilestoneCommandControllerRuntime, PendingRequirementsRunReservation,
+        PENDING_REQUIREMENTS_START_PREFIX,
     };
     use chrono::{TimeZone, Utc};
     use clap::Parser;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
 
     use crate::adapters::fs::{
-        FsJournalStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore,
-        FsTaskRunLineageStore,
+        FsJournalStore, FsMilestoneControllerStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+        FsProjectStore, FsRunSnapshotWriteStore, FsTaskRunLineageStore,
     };
     use crate::cli::{Cli, Commands};
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+    };
+    use crate::contexts::milestone_record::controller::{
+        self as milestone_controller, ControllerTransitionRequest, MilestoneControllerResumePort,
+        MilestoneControllerState,
     };
     use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
     use crate::contexts::milestone_record::service::{
         self as milestone_service, CreateMilestoneInput, TaskRunLineagePort,
     };
     use crate::contexts::project_run_record::model::{
-        ProjectStatusSummary, TaskOrigin, TaskSource,
+        ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::{
-        self as project_service, CreateProjectInput,
+        self as project_service, CreateProjectInput, RunSnapshotWritePort,
     };
     use crate::shared::domain::FlowPreset;
+    #[cfg(unix)]
+    use crate::test_support::env::{lock_path_mutex, PathGuard};
+
+    fn create_controller_test_milestone(
+        base_dir: &std::path::Path,
+        milestone_id: &MilestoneId,
+        now: chrono::DateTime<Utc>,
+    ) {
+        milestone_service::create_milestone(
+            &FsMilestoneStore,
+            base_dir,
+            CreateMilestoneInput {
+                id: milestone_id.to_string(),
+                name: "Alpha".to_owned(),
+                description: "Controller milestone".to_owned(),
+            },
+            now,
+        )
+        .expect("create controller milestone");
+    }
+
+    #[cfg(unix)]
+    fn install_fake_br_show_script(base_dir: &std::path::Path, show_json: &str) {
+        let fake_bin = base_dir.join("fake-bin");
+        std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+
+        let escaped_show_json = show_json.replace('\'', "'\"'\"'");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"show\" ] && [ \"$3\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_show_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
+        );
+        let br_path = fake_bin.join("br");
+        std::fs::write(&br_path, script).expect("write fake br");
+        std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake br");
+    }
 
     #[test]
     fn derive_milestone_id_prefixes_and_slugifies_name() {
@@ -2286,6 +2362,154 @@ mod tests {
         let message = second.to_string();
         assert!(message.contains("milestone 'ms-alpha' planning failed"));
         assert!(message.contains("already starting in another process"));
+    }
+
+    #[test]
+    fn milestone_controller_runtime_reports_failed_task_status() {
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 17, 12, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let project_id =
+            crate::shared::domain::ProjectId::new("bead-failed".to_owned()).expect("project id");
+
+        project_service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Bead Failed".to_owned(),
+                flow: FlowPreset::Minimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "Investigate failure".to_owned(),
+                prompt_hash: "prompt-hash".to_owned(),
+                created_at: now,
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base_dir,
+                &project_id,
+                &RunSnapshot {
+                    active_run: None,
+                    interrupted_run: None,
+                    status: RunStatus::Failed,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 0,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "failed before milestone sync".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write failed snapshot");
+
+        let runtime = MilestoneCommandControllerRuntime {
+            base_dir,
+            milestone_id: &milestone_id,
+        };
+
+        assert_eq!(
+            runtime
+                .task_status(project_id.as_str())
+                .expect("query task status"),
+            milestone_controller::ControllerTaskStatus::Failed
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inspect_next_milestone_action_surfaces_blocked_retry_bead() {
+        let _path_lock = lock_path_mutex();
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 17, 13, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let project_id =
+            crate::shared::domain::ProjectId::new("bead-run".to_owned()).expect("project id");
+        create_controller_test_milestone(base_dir, &milestone_id, now);
+        install_fake_br_show_script(
+            base_dir,
+            r#"{"id":"ms-alpha.bead-2","title":"Retry bead","status":"open","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}"#,
+        );
+        let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+        project_service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Retry bead".to_owned(),
+                flow: FlowPreset::Minimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "Retry bead".to_owned(),
+                prompt_hash: "prompt-hash".to_owned(),
+                created_at: now,
+                task_source: None,
+            },
+        )
+        .expect("create retry project");
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base_dir,
+                &project_id,
+                &RunSnapshot {
+                    active_run: None,
+                    interrupted_run: None,
+                    status: RunStatus::Failed,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 0,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "failed attempt 1/3".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write failed retry snapshot");
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Blocked,
+                "retry remains available after failed attempt 1/3",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task(project_id.as_str()),
+            now,
+        )
+        .expect("seed blocked retry controller");
+
+        let outcome = inspect_next_milestone_action(base_dir, &milestone_id)
+            .await
+            .expect("inspect next should succeed");
+
+        assert!(matches!(
+            outcome.status,
+            super::MilestoneCommandStatus::Success
+        ));
+        assert_eq!(
+            outcome.bead.as_ref().map(|bead| bead.id.as_str()),
+            Some("ms-alpha.bead-2")
+        );
+        assert_eq!(
+            outcome.bead.as_ref().map(|bead| bead.readiness.as_str()),
+            Some("retryable")
+        );
+        assert!(outcome.message.contains("retryable after failed attempt"));
     }
 
     #[test]
