@@ -972,6 +972,27 @@ fn atomic_write_prevents_partial_state() {
         &milestone.milestone_id,
     )
     .expect("recover partially written snapshot+journal pair");
+    let repaired_journal_lines = raw_lines(&journal_path);
+
+    assert!(
+        !pending_path.exists(),
+        "load_snapshot should finalize the pending state sidecar before any journal read"
+    );
+    assert_eq!(
+        repaired_journal_lines.len(),
+        next_journal.len(),
+        "load_snapshot should repair the on-disk journal before any subsequent reads"
+    );
+    assert_eq!(
+        serde_json::from_str::<MilestoneJournalEvent>(
+            repaired_journal_lines
+                .last()
+                .expect("repaired journal should contain the transition event"),
+        )
+        .expect("parse repaired journal event"),
+        transition,
+        "load_snapshot should durably publish the transition event instead of leaving the old journal visible"
+    );
     let recovered_journal = read_journal(
         &FsMilestoneJournalStore,
         workspace.path(),
@@ -987,10 +1008,6 @@ fn atomic_write_prevents_partial_state() {
     assert!(
         recovered_journal.iter().any(|event| event == &transition),
         "recovery should publish the intended journal event as well"
-    );
-    assert!(
-        !pending_path.exists(),
-        "recovery should remove the pending state sidecar after repairing the commit"
     );
 }
 

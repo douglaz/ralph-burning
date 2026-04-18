@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418130610",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-a2d2da06",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: `tests/unit/milestone_store_integration_test.rs:906-994` does not actually verify the promised \"no partial state\" guarantee. The test only asserts the final repaired snapshot/journal after it calls `read_journal()`, so it would still pass if `load_snapshot()` exposed the torn `status.json` first and the later journal read performed the repair. affected_files: [\"tests/unit/milestone_store_integration_test.rs:906-994\"] remediation_hint: Assert immediately after `load_snapshot()` that the pending sidecar is already gone, or otherwise verify that the first plain snapshot read masks or repairs the torn cross-file commit before any subsequent journal read.",
-        "created_at": "2026-04-18T13:40:36.851284765Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "5e8b6024a95c300f4d6b019b2d5d7210e77e6910d86c3cd9f33d4d1950efe13b"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T13:27:49.139289032Z",
