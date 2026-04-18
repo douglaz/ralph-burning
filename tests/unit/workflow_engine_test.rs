@@ -2281,6 +2281,84 @@ async fn iterative_minimal_resume_uses_persisted_target_for_in_progress_loop() {
 }
 
 #[tokio::test]
+async fn iterative_minimal_resume_seed_preserves_iteration_summary_in_snapshot() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-summary",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 5);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt the iterative stage after one completed iteration"
+        );
+    }
+
+    let resume_snapshot_writes = RecordingSnapshotWriteStore::new();
+    let resume_result = engine::resume_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &resume_snapshot_writes,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let resume_seed = resume_snapshot_writes
+        .writes()
+        .into_iter()
+        .next()
+        .expect("resume should persist a running snapshot before invoking the next iteration");
+    let active_run = resume_seed
+        .active_run
+        .expect("resume seed snapshot should include active run metadata");
+    let iterative_state = active_run
+        .iterative_implementer_state
+        .expect("resume seed snapshot should preserve iterative loop state");
+
+    assert_eq!(active_run.stage_cursor.stage, StageId::PlanAndImplement);
+    assert_eq!(iterative_state.completed_iterations, 1);
+    assert_eq!(
+        resume_seed.status_summary,
+        "running: Plan and Implement (iteration 1/10)"
+    );
+}
+
+#[tokio::test]
 async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -2485,6 +2563,72 @@ async fn iterative_minimal_retries_preserve_loop_budget_and_stability_state() {
     assert_eq!(loop_exits.len(), 1);
     assert_eq!(loop_exits[0].details["total_iterations"], 3);
     assert_eq!(loop_exits[0].details["attempt"], 2);
+}
+
+#[tokio::test]
+async fn iterative_minimal_retry_stage_reentry_preserves_iteration_summary_in_snapshot() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid =
+        create_project_with_flow(base_dir, "iter-retry-summary", FlowPreset::IterativeMinimal);
+
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "3",
+    )
+    .unwrap();
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "2",
+    )
+    .unwrap();
+    let adapter = IterativeRetryCarryAdapter::new();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let snapshot_writes = RecordingSnapshotWriteStore::new();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &snapshot_writes,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let retry_reentry_snapshot = snapshot_writes
+        .writes()
+        .into_iter()
+        .find(|snapshot| {
+            snapshot.status == RunStatus::Running
+                && snapshot.active_run.as_ref().is_some_and(|active_run| {
+                    active_run.stage_cursor.stage == StageId::PlanAndImplement
+                        && active_run.stage_cursor.attempt == 2
+                        && active_run
+                            .iterative_implementer_state
+                            .as_ref()
+                            .is_some_and(|state| state.completed_iterations == 2)
+                })
+        })
+        .expect("retry re-entry snapshot should preserve the prior iterative loop state");
+
+    assert_eq!(
+        retry_reentry_snapshot.status_summary,
+        "running: Plan and Implement (iteration 2/3)"
+    );
 }
 
 #[tokio::test]

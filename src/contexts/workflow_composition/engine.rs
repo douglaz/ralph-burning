@@ -2399,7 +2399,14 @@ where
     snapshot.completion_rounds = snapshot
         .completion_rounds
         .max(resume_state.cursor.completion_round);
-    snapshot.status_summary = format!("running: {}", resume_state.cursor.stage.display_name());
+    snapshot.status_summary = stage_running_summary_for_active_run(
+        resume_state.cursor.stage,
+        snapshot.active_run.as_ref(),
+        effective_config
+            .run_policy()
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+    );
     snapshot.max_completion_rounds = Some(
         std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
             .ok()
@@ -5722,9 +5729,9 @@ where
             project_prompt_hash(project_root, prompt_reference)?,
             Some(resolution),
         )?);
-        snapshot.status_summary = stage_running_summary(
+        snapshot.status_summary = stage_running_summary_for_active_run(
             stage_id,
-            None,
+            snapshot.active_run.as_ref(),
             effective_config
                 .run_policy()
                 .iterative_minimal
@@ -6145,6 +6152,33 @@ fn stage_running_summary(stage_id: StageId, iteration: Option<u32>, max_rounds: 
         ),
         _ => format!("running: {}", stage_id.display_name()),
     }
+}
+
+fn iterative_iteration_summary_state(
+    stage_id: StageId,
+    active_run: Option<&ActiveRun>,
+) -> Option<&IterativeImplementerState> {
+    active_run.and_then(|active_run| {
+        (stage_id == StageId::PlanAndImplement
+            && active_run.stage_cursor.stage == StageId::PlanAndImplement)
+            .then_some(active_run.iterative_implementer_state.as_ref())
+            .flatten()
+    })
+}
+
+fn stage_running_summary_for_active_run(
+    stage_id: StageId,
+    active_run: Option<&ActiveRun>,
+    default_max_rounds: u32,
+) -> String {
+    let iterative_state = iterative_iteration_summary_state(stage_id, active_run);
+    let iteration = iterative_state
+        .and_then(|state| (state.completed_iterations > 0).then_some(state.completed_iterations));
+    let max_rounds = iterative_state
+        .and_then(|state| state.loop_policy.as_ref())
+        .map(|policy| policy.max_consecutive_implementer_rounds)
+        .unwrap_or(default_max_rounds);
+    stage_running_summary(stage_id, iteration, max_rounds)
 }
 
 fn iterative_iteration_outcome(bundle: &ValidatedBundle) -> String {
@@ -10157,8 +10191,8 @@ mod tests {
     };
     use crate::contexts::project_run_record::journal;
     use crate::contexts::project_run_record::model::{
-        ActiveRun, IterativeImplementerState, JournalEventType, ProjectRecord,
-        ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
+        ActiveRun, IterativeImplementerLoopPolicy, IterativeImplementerState, JournalEventType,
+        ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::{
         create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
@@ -10181,10 +10215,11 @@ mod tests {
         iterative_loop_exit_reason, mark_running_run_interrupted, milestone_lineage_plan_hash,
         partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
         resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
-        role_for_stage, sync_milestone_bead_start, validate_iterative_minimal_loop_settings,
-        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
-        IterativeInvocationSidecar, IterativeLoopExitReason, QueuedAmendment,
-        RunningAttemptIdentity, StagePlan, TerminalIterativeResumeResult,
+        role_for_stage, stage_running_summary_for_active_run, sync_milestone_bead_start,
+        validate_iterative_minimal_loop_settings, FinalReviewQueuedAmendment,
+        InterruptedRunContext, InterruptedRunUpdate, IterativeInvocationSidecar,
+        IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity, StagePlan,
+        TerminalIterativeResumeResult,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -11401,6 +11436,38 @@ mod tests {
                 loop_policy: None,
                 stage_target: None,
             })
+        );
+    }
+
+    #[test]
+    fn stage_running_summary_for_active_run_preserves_iterative_progress() {
+        let active_run = ActiveRun {
+            run_id: "run-iter".to_owned(),
+            stage_cursor: StageCursor::new(StageId::PlanAndImplement, 2, 2, 3).expect("cursor"),
+            started_at: Utc::now(),
+            prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+            prompt_hash_at_stage_start: "stage-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
+            iterative_implementer_state: Some(IterativeImplementerState {
+                completed_iterations: 3,
+                stable_count: 1,
+                loop_policy: Some(IterativeImplementerLoopPolicy {
+                    max_consecutive_implementer_rounds: 7,
+                    stable_rounds_required: 2,
+                }),
+                stage_target: None,
+            }),
+            stage_resolution_snapshot: None,
+        };
+
+        let summary =
+            stage_running_summary_for_active_run(StageId::PlanAndImplement, Some(&active_run), 10);
+
+        assert_eq!(
+            summary, "running: Plan and Implement (iteration 3/7)",
+            "resume and retry boundaries must preserve the durable iterative progress summary"
         );
     }
 
