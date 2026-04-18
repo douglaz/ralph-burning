@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T11:20:36.370522844Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI accepted both amendments. The first is a concrete, reproduced regression in the required `test-stub` verification path. The second identifies a real iterative state-management defect on stage retry that can violate the configured loop cap and discard convergence progress.\n\n## Votes\n\n- `fr-16-cc963f89`: Accept\n  Accepted. This is a reproducible regression in the required verification path, not a hypothetical concern. The failing test rewrites the terminal `.raw` file into a Claude envelope only after an initial run that used the default Codex implementer target. Resume intentionally prefers the persisted iterative target from the interrupted run (`iterative_resume_target` in `src/contexts/workflow_composition/engine.rs:6246-6266`), so raw recovery decodes with Codex semantics, not the edited Claude config. I reproduced the failure with `cargo test --features test-stub --test unit workflow_engine_test::iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing -- --exact --nocapture`, which fails contract validation exactly as described. `flake.nix:50-64` runs tests with `--features test-stub`, so this currently breaks the bead's required `nix build` gate.\n- `fr-16-f519c131`: Accept\n  Accepted. The retry path really does discard iterative loop state for the same stage/cycle/completion round once `attempt` increments, even though the workspace has already been mutated by prior implementer iterations. Successful iterations persist `completed_iterations` and `stable_count` into `active_run.iterative_implementer_state` (`src/contexts/workflow_composition/engine.rs:7120-7283`), but `carry_forward_iterative_state` only preserves that state when stage, cycle, attempt, and completion_round all match (`engine.rs:747-756`), and stage retries always do `cursor = cursor.retry()?` first (`engine.rs:6034`). On the next attempt, `carry_forward_active_run` therefore clears the iterative state (`engine.rs:1022-1040`), so the loop restarts from iteration 1 with `completed_iterations = 0` and `stable_count = 0` despite prior successful rounds. That can exceed `workflow.iterative_minimal.max_consecutive_implementer_rounds` and erase an earned stability streak, which conflicts with the documented iterative_minimal semantics and acceptance criterion that max rounds are respected.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}
