@@ -109,6 +109,12 @@ struct MessageOnlySignal {
     message: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct BlockedGraphSignal {
+    message: String,
+    blocked: Vec<String>,
+}
+
 fn adapter_with(scripted_calls: Vec<ScriptedBvCall>) -> (BvAdapter<MockBvRunner>, MockBvRunner) {
     let runner = MockBvRunner::new(scripted_calls);
     (BvAdapter::with_runner(runner.clone()), runner)
@@ -248,7 +254,9 @@ async fn bv_empty_graph_reports_no_next_bead_gracefully() -> Result<(), Box<dyn 
 async fn bv_blocked_graph_reports_all_beads_blocked() -> Result<(), Box<dyn std::error::Error>> {
     let (adapter, _) = adapter_with(vec![ScriptedBvCall {
         expected_args: vec!["--robot-next".to_owned()],
-        result: MockBvRunner::ok(r#"{"message":"No actionable items available"}"#),
+        result: MockBvRunner::ok(
+            r#"{"message":"All beads blocked","blocked":["bead-3","bead-8"]}"#,
+        ),
     }]);
 
     let error = adapter
@@ -264,10 +272,15 @@ async fn bv_blocked_graph_reports_all_beads_blocked() -> Result<(), Box<dyn std:
             command,
             ..
         } => {
-            let response: MessageOnlySignal = serde_json::from_str(&raw_output)?;
+            let response: BlockedGraphSignal = serde_json::from_str(&raw_output)?;
             assert_eq!(
-                response.message, "No actionable items available",
-                "a fully blocked graph should preserve the same message-only no-recommendation payload used elsewhere in the repo"
+                response.message, "All beads blocked",
+                "a fully blocked graph should preserve the blocked-graph message instead of collapsing into the empty-graph payload"
+            );
+            assert_eq!(
+                response.blocked,
+                vec!["bead-3".to_owned(), "bead-8".to_owned()],
+                "a fully blocked graph should preserve the blocked bead ids from stdout for higher-level recovery logic"
             );
             assert_eq!(
                 command, "bv --robot-next",

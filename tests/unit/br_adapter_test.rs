@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tempfile::tempdir;
 
 use ralph_burning::adapters::br_models::{
-    BeadDetail, BeadStatus, BeadSummary, DepTreeNode, ReadyBead,
+    BeadDetail, BeadStatus, BeadSummary, DepTreeNode, DependencyKind, ReadyBead,
 };
 use ralph_burning::adapters::br_process::{
     BrAdapter, BrCommand, BrError, BrMutationAdapter, BrOutput, ProcessRunner,
@@ -449,6 +449,136 @@ async fn br_close_mutation_issues_correct_command_line() -> Result<(), Box<dyn s
     assert!(
         pending_record_path(tmp.path(), adapter_id).is_file(),
         "successful close operations should persist a pending mutation journal record"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn br_add_dependency_mutation_issues_correct_command_line(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempdir()?;
+    let adapter_id = "dep-add-owner";
+    let (adapter, runner) = mutation_adapter_in(
+        tmp.path(),
+        adapter_id,
+        vec![ScriptedBrCall {
+            expected_args: vec![
+                "dep".to_owned(),
+                "add".to_owned(),
+                "bead-42".to_owned(),
+                "bead-7".to_owned(),
+            ],
+            result: MockBrRunner::ok("dependency added"),
+        }],
+    );
+
+    adapter.add_dependency("bead-42", "bead-7").await?;
+
+    assert_eq!(
+        runner.actual_calls()[0].args,
+        vec![
+            "dep".to_owned(),
+            "add".to_owned(),
+            "bead-42".to_owned(),
+            "bead-7".to_owned(),
+        ],
+        "default dependency mutations should issue `br dep add <from> <to>` without an explicit kind flag"
+    );
+    assert!(
+        pending_record_path(tmp.path(), adapter_id).is_file(),
+        "successful dependency adds should persist a pending mutation journal record"
+    );
+    assert!(
+        adapter.has_pending_mutations(),
+        "successful dependency adds should leave the adapter dirty until sync_flush runs"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn br_add_parent_child_dependency_mutation_issues_correct_command_line(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempdir()?;
+    let adapter_id = "dep-parent-owner";
+    let (adapter, runner) = mutation_adapter_in(
+        tmp.path(),
+        adapter_id,
+        vec![ScriptedBrCall {
+            expected_args: vec![
+                "dep".to_owned(),
+                "add".to_owned(),
+                "bead-parent".to_owned(),
+                "bead-child".to_owned(),
+                "--type=parent-child".to_owned(),
+            ],
+            result: MockBrRunner::ok("parent-child dependency added"),
+        }],
+    );
+
+    adapter
+        .add_dependency_with_kind("bead-parent", "bead-child", DependencyKind::ParentChild)
+        .await?;
+
+    assert_eq!(
+        runner.actual_calls()[0].args,
+        vec![
+            "dep".to_owned(),
+            "add".to_owned(),
+            "bead-parent".to_owned(),
+            "bead-child".to_owned(),
+            "--type=parent-child".to_owned(),
+        ],
+        "parent-child dependency mutations should render the explicit dependency kind flag"
+    );
+    assert!(
+        pending_record_path(tmp.path(), adapter_id).is_file(),
+        "successful parent-child dependency adds should persist a pending mutation journal record"
+    );
+    assert!(
+        adapter.has_pending_mutations(),
+        "successful parent-child dependency adds should leave the adapter dirty until sync_flush runs"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn br_remove_dependency_mutation_issues_correct_command_line(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempdir()?;
+    let adapter_id = "dep-remove-owner";
+    let (adapter, runner) = mutation_adapter_in(
+        tmp.path(),
+        adapter_id,
+        vec![ScriptedBrCall {
+            expected_args: vec![
+                "dep".to_owned(),
+                "remove".to_owned(),
+                "bead-42".to_owned(),
+                "bead-7".to_owned(),
+            ],
+            result: MockBrRunner::ok("dependency removed"),
+        }],
+    );
+
+    adapter.remove_dependency("bead-42", "bead-7").await?;
+
+    assert_eq!(
+        runner.actual_calls()[0].args,
+        vec![
+            "dep".to_owned(),
+            "remove".to_owned(),
+            "bead-42".to_owned(),
+            "bead-7".to_owned(),
+        ],
+        "dependency removals should issue `br dep remove <from> <to>`"
+    );
+    assert!(
+        pending_record_path(tmp.path(), adapter_id).is_file(),
+        "successful dependency removals should persist a pending mutation journal record"
+    );
+    assert!(
+        adapter.has_pending_mutations(),
+        "successful dependency removals should leave the adapter dirty until sync_flush runs"
     );
     Ok(())
 }

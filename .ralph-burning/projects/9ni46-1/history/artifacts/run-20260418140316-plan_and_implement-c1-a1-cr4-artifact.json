@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260418140316-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T15:30:47.272285317Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the adapter test suites without touching production adapter code. `tests/unit/br_adapter_test.rs` now covers nominal dependency mutations for `add_dependency`, explicit `parent-child` adds, and `remove_dependency`, asserting command-line construction plus pending-mutation journaling/dirty-state behavior. `tests/unit/bv_adapter_test.rs` now distinguishes the empty-graph and fully-blocked `bv --robot-next` no-work scenarios with separate scripted payloads so the blocked-graph test adds real coverage instead of duplicating the empty-graph case.\n\n## Steps\n\n1. [Completed] Inspect the new BR/BV adapter test files against the pending amendments and confirm the missing BR dependency-mutation coverage plus the duplicated BV no-work scenario.\n2. [Completed] Patch `tests/unit/br_adapter_test.rs` to add happy-path dependency mutation tests for default `dep add`, explicit `--type=parent-child`, and `dep remove`, asserting command args and pending-mutation journal/dirty-state behavior.\n3. [Completed] Patch `tests/unit/bv_adapter_test.rs` so the blocked-graph `--robot-next` case uses a distinct structured blocked payload instead of duplicating the empty-graph fixture, then rerun focused and full verification including `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`, and `nix build`.\n\n## Validation Evidence\n\n- `cargo test --test unit br_adapter` passed with 19/19 BR adapter tests green after adding dependency-mutation coverage.\n- `cargo test --test unit bv_adapter` passed with all 8 BV adapter tests green after differentiating the blocked-graph fixture.\n- `cargo test` passed on the full tree.\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- Verification mutated live orchestration state under `.ralph-burning/projects/9ni46-1/`; those files were intentionally left untouched per the prompt’s explicit exclusion of `.ralph-burning/` from review scope.\n- `nix build` refreshed the tracked `result` symlink in the worktree, and the differentiated blocked-graph BV fixture is test-local; if upstream `bv --robot-next` standardizes a different blocked payload, that fixture will need to be updated.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 4
+}
