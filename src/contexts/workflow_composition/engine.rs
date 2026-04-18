@@ -242,6 +242,7 @@ fn inject_scope_guidance(rendered_prompt: &str, scope_guidance: &str) -> String 
 }
 
 /// Resolved target per stage for preflight.
+#[derive(Clone)]
 pub struct StagePlan {
     pub stage_id: StageId,
     pub role: BackendRole,
@@ -1318,6 +1319,18 @@ fn resume_iteration_counters(
     ))
 }
 
+fn iterative_state_matches_cursor<'a>(
+    active_run: &'a ActiveRun,
+    cursor: &StageCursor,
+) -> Option<&'a IterativeImplementerState> {
+    (active_run.stage_cursor.stage == cursor.stage
+        && active_run.stage_cursor.cycle == cursor.cycle
+        && active_run.stage_cursor.attempt == cursor.attempt
+        && active_run.stage_cursor.completion_round == cursor.completion_round)
+        .then_some(active_run.iterative_implementer_state.as_ref())
+        .flatten()
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ExecutionOrigin {
     Start,
@@ -2114,6 +2127,8 @@ where
                 (current_prompt_hash.clone(), current_prompt_hash)
             }
         };
+    let (qa_iterations_current_cycle, review_iterations_current_cycle, iterative_implementer_state) =
+        resume_iteration_counters(&snapshot, &resume_state.cursor, &resume_events)?;
 
     // ── Resume drift detection (runs BEFORE preflight) ────────────────────────
     // Re-resolve the current stage or panel, compare against the persisted
@@ -2294,6 +2309,12 @@ where
             _ => {
                 let target =
                     policy.resolve_stage_target(current_stage, resume_state.cursor.cycle)?;
+                let target = resolved_target_for_stage_attempt(
+                    preset,
+                    current_stage,
+                    &target,
+                    iterative_implementer_state.as_ref(),
+                )?;
                 build_single_target_snapshot(current_stage, &target)
             }
         };
@@ -2323,14 +2344,24 @@ where
         }
     }
 
-    let (qa_iterations_current_cycle, review_iterations_current_cycle, iterative_implementer_state) =
-        resume_iteration_counters(&snapshot, &resume_state.cursor, &resume_events)?;
+    let mut preflight_plan = stage_plan[resume_state.stage_index..].to_vec();
+    if preset == FlowPreset::IterativeMinimal
+        && resume_state.cursor.stage == StageId::PlanAndImplement
+        && !preflight_plan.is_empty()
+    {
+        preflight_plan[0].target = resolved_target_for_stage_attempt(
+            preset,
+            preflight_plan[0].stage_id,
+            &preflight_plan[0].target,
+            iterative_implementer_state.as_ref(),
+        )?;
+    }
     let preflight_start_index = if preset == FlowPreset::IterativeMinimal
         && resume_state.cursor.stage == StageId::PlanAndImplement
         && resume_state.stage_index < stage_plan.len()
         && iterative_resume_skips_current_stage_preflight(
             &project_root,
-            &stage_plan[resume_state.stage_index].target,
+            &preflight_plan[0].target,
             &resume_state.run_id,
             &stage_plan[resume_state.stage_index],
             &resume_state.cursor,
@@ -2346,7 +2377,11 @@ where
             agent_service.adapter(),
             effective_config,
             resume_state.cursor.cycle,
-            &stage_plan[preflight_start_index..],
+            if preflight_start_index == resume_state.stage_index {
+                &preflight_plan
+            } else {
+                &stage_plan[preflight_start_index..]
+            },
         )
         .await
         .map_err(|error| AppError::ResumeFailed {
@@ -5565,7 +5600,19 @@ where
     let policy = BackendPolicyService::new(effective_config);
 
     loop {
-        let resolved_target = match policy.resolve_stage_target(stage_id, cursor.cycle) {
+        let resolved_target = match policy
+            .resolve_stage_target(stage_id, cursor.cycle)
+            .and_then(|target| {
+                resolved_target_for_stage_attempt(
+                    preset,
+                    stage_id,
+                    &target,
+                    snapshot
+                        .active_run
+                        .as_ref()
+                        .and_then(|active_run| iterative_state_matches_cursor(active_run, &cursor)),
+                )
+            }) {
             Ok(target) => target,
             Err(error) => {
                 return fail_run_result(
@@ -6194,6 +6241,19 @@ fn iterative_loop_policy_for_attempt(
         policy.stable_rounds_required,
     )?;
     Ok(policy)
+}
+
+fn resolved_target_for_stage_attempt(
+    preset: FlowPreset,
+    stage_id: StageId,
+    fallback_target: &ResolvedBackendTarget,
+    iterative_state: Option<&IterativeImplementerState>,
+) -> AppResult<ResolvedBackendTarget> {
+    if preset == FlowPreset::IterativeMinimal && stage_id == StageId::PlanAndImplement {
+        return iterative_resume_target(iterative_state, fallback_target, stage_id);
+    }
+
+    Ok(fallback_target.clone())
 }
 
 fn iterative_resume_target(
@@ -7157,7 +7217,7 @@ where
             execution_context,
             pending_amendments,
             cancellation_token.clone(),
-            resolved_target.clone(),
+            recovery_target.clone(),
             timeout,
             Some(&format!("it{iteration}")),
             Some(&iterative_invocation_context),
@@ -7210,7 +7270,7 @@ where
                 completed_iterations: iteration,
                 stable_count,
                 loop_policy: Some(loop_policy.clone()),
-                stage_target: Some(resolved_target_to_record(&resolved_target)),
+                stage_target: Some(resolved_target_to_record(&recovery_target)),
             });
         }
         run_snapshot_write
@@ -10661,6 +10721,118 @@ mod tests {
                         requested_model_id: "claude-opus".to_owned(),
                         actual_backend_family: "claude".to_owned(),
                         actual_model_id: "claude-opus".to_owned(),
+                    }
+                );
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_from_codex_raw_envelope_when_sidecar_is_missing(
+    ) {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-codex-raw").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery from Codex raw transcript".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-codex-raw").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output from Codex transcript",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from Codex last-message transcript",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from raw Codex transcript"],
+            "outstanding_risks": []
+        });
+        let raw_transcript = json!({
+            "transport": "rb_codex_process_v1",
+            "stdout": "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":12}}",
+            "last_message": payload.to_string(),
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&raw_transcript).expect("serialize raw transcript"),
+        )
+        .expect("write raw output");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result from Codex raw transcript");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output from Codex transcript"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+                assert_eq!(
+                    producer,
+                    RecordProducer::Agent {
+                        requested_backend_family: "codex".to_owned(),
+                        requested_model_id: "gpt-5.4".to_owned(),
+                        actual_backend_family: "codex".to_owned(),
+                        actual_model_id: "gpt-5.4".to_owned(),
                     }
                 );
             }

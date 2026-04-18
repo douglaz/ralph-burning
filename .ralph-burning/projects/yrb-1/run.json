@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 16
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-15-1d44cf39",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 15,
-        "body": "finding_summary: Resuming an in-progress iterative_minimal loop ignores the persisted implementer target and falls back to the current config target instead. engine.rs recovers stage_target from the interrupted snapshot at 1279-1289, but resume_run still preflights stage_plan[resume_state.stage_index].target at 2328-2350 and execute_iterative_plan_and_implement_stage invokes resolved_target.clone() at 7072-7163. If workflow.implementer_backend or model settings change after an iteration has completed, the resumed run can fail preflight or continue the same stage attempt on a different backend.\nseverity: medium\naffected_files: [\"src/contexts/workflow_composition/engine.rs:1279-1289\", \"src/contexts/workflow_composition/engine.rs:2328-2350\", \"src/contexts/workflow_composition/engine.rs:7072-7163\"]\nremediation_hint: When iterative_implementer_state.stage_target is present, resume preflight and subsequent iterative invocations should use that persisted target for the rest of the current stage attempt, not just terminal-output recovery.",
-        "created_at": "2026-04-18T10:51:58.305563782Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "f51ca236c18175fca450dc5552d61b0259320b0bdba8e0bcec5af40231c3323e"
-      },
-      {
-        "amendment_id": "fr-15-bbad6dde",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 15,
-        "body": "finding_summary: The terminal-recovery path for iterative_minimal cannot reliably recover Codex process invocations when the parsed sidecar is missing. ProcessBackendAdapter reads the structured payload from the temporary last-message file and only stores stdout as raw output on success (process_backend.rs:341-398), but recover_structured_payload_from_process_stdout later treats every non-Claude raw transcript as plain JSON (process_backend.rs:1925-1933). Because iterative invocations persist the parsed sidecar on a best-effort basis only (engine.rs:6352-6377 and 7304-7311) and recover_iterative_payload_from_raw_output depends on that helper (engine.rs:6406-6425), a run that crashes after a terminal Codex iteration but before stage commit can become impossible to resume even though the iteration itself succeeded.\nseverity: medium\naffected_files: [\"src/adapters/process_backend.rs:341-398\", \"src/adapters/process_backend.rs:1925-1933\", \"src/contexts/workflow_composition/engine.rs:6352-6377\", \"src/contexts/workflow_composition/engine.rs:6406-6425\", \"src/contexts/workflow_composition/engine.rs:7304-7311\"]\nremediation_hint: Either make parsed sidecar persistence mandatory for Codex iterative invocations, or persist/recover the actual last-message payload format instead of assuming stdout alone is sufficient.",
-        "created_at": "2026-04-18T10:51:58.305570174Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "23e993a8baef2c80204e7bbda2f82ce1b9c05926032f0a340081ea29aa52452e"
-      }
-    ],
-    "processed_count": 37
+    "pending": [],
+    "processed_count": 39
   },
-  "status_summary": "running: final review restart round 16 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T10:39:20.553776922Z",

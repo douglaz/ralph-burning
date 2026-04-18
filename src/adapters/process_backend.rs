@@ -12,7 +12,7 @@ use nix::errno::Errno;
 use nix::sys::signal::{self, Signal};
 #[cfg(unix)]
 use nix::unistd::Pid;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
@@ -34,6 +34,15 @@ const TEARDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
 /// Maximum time `spawn_background_reap` will wait for a killed child to exit
 /// before giving up and dropping the handle.
 const BACKGROUND_REAP_TIMEOUT: Duration = Duration::from_secs(30);
+const CODEX_RAW_TRANSCRIPT_VERSION: &str = "rb_codex_process_v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CodexRawTranscriptEnvelope {
+    transport: String,
+    stdout: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_message: Option<String>,
+}
 
 pub(crate) struct PreparedCommand {
     binary: std::path::PathBuf,
@@ -310,78 +319,80 @@ impl PreparedCommand {
             } => {
                 let session_resuming = *session_resuming;
                 let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
-                let parsed_payload = match tokio::fs::read_to_string(message_path).await {
-                    Ok(last_message_text) => {
-                        match serde_json::from_str::<Value>(&last_message_text) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                self.cleanup_failed_invocation(request, &output).await;
-                                let stderr_text =
-                                    String::from_utf8_lossy(&output.stderr).into_owned();
-                                let stderr_tail =
-                                    truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
-                                let message_tail =
-                                    truncate_str_tail(&last_message_text, STDERR_DETAIL_LIMIT);
-                                return Err(ProcessBackendAdapter::invocation_failed(
-                                    request,
-                                    FailureClass::SchemaValidationFailure,
-                                    format!(
-                                        "invalid Codex last-message JSON: {error} \
+                let (parsed_payload, last_message_text) =
+                    match tokio::fs::read_to_string(message_path).await {
+                        Ok(last_message_text) => {
+                            match serde_json::from_str::<Value>(&last_message_text) {
+                                Ok(value) => (value, Some(last_message_text)),
+                                Err(error) => {
+                                    self.cleanup_failed_invocation(request, &output).await;
+                                    let stderr_text =
+                                        String::from_utf8_lossy(&output.stderr).into_owned();
+                                    let stderr_tail =
+                                        truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                                    let message_tail =
+                                        truncate_str_tail(&last_message_text, STDERR_DETAIL_LIMIT);
+                                    return Err(ProcessBackendAdapter::invocation_failed(
+                                        request,
+                                        FailureClass::SchemaValidationFailure,
+                                        format!(
+                                            "invalid Codex last-message JSON: {error} \
                                          (message_len: {}, stdout_len: {}, stderr_len: {}, \
                                          message_tail: {message_tail:?}, \
                                          stderr_tail: {stderr_tail:?})",
-                                        last_message_text.len(),
-                                        output.stdout.len(),
-                                        output.stderr.len(),
-                                    ),
-                                ));
+                                            last_message_text.len(),
+                                            output.stdout.len(),
+                                            output.stderr.len(),
+                                        ),
+                                    ));
+                                }
                             }
                         }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        match serde_json::from_str::<Value>(&stdout_text) {
-                            Ok(value) => value,
-                            Err(stdout_error) => {
-                                self.cleanup_failed_invocation(request, &output).await;
-                                let stderr_text =
-                                    String::from_utf8_lossy(&output.stderr).into_owned();
-                                let stderr_tail =
-                                    truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
-                                let stdout_tail =
-                                    truncate_str_tail(&stdout_text, STDERR_DETAIL_LIMIT);
-                                return Err(ProcessBackendAdapter::invocation_failed(
-                                    request,
-                                    FailureClass::TransportFailure,
-                                    format!(
-                                        "failed to read codex last-message file: {error}; \
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            match serde_json::from_str::<Value>(&stdout_text) {
+                                Ok(value) => (value, None),
+                                Err(stdout_error) => {
+                                    self.cleanup_failed_invocation(request, &output).await;
+                                    let stderr_text =
+                                        String::from_utf8_lossy(&output.stderr).into_owned();
+                                    let stderr_tail =
+                                        truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                                    let stdout_tail =
+                                        truncate_str_tail(&stdout_text, STDERR_DETAIL_LIMIT);
+                                    return Err(ProcessBackendAdapter::invocation_failed(
+                                        request,
+                                        FailureClass::TransportFailure,
+                                        format!(
+                                            "failed to read codex last-message file: {error}; \
                                          stdout fallback was not valid JSON: {stdout_error} \
                                          (stdout_len: {}, stderr_len: {}, \
                                          stdout_tail: {stdout_tail:?}, \
                                          stderr_tail: {stderr_tail:?})",
-                                        output.stdout.len(),
-                                        output.stderr.len(),
-                                    ),
-                                ));
+                                            output.stdout.len(),
+                                            output.stderr.len(),
+                                        ),
+                                    ));
+                                }
                             }
                         }
-                    }
-                    Err(error) => {
-                        self.cleanup_failed_invocation(request, &output).await;
-                        let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
-                        let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
-                        return Err(ProcessBackendAdapter::invocation_failed(
-                            request,
-                            FailureClass::TransportFailure,
-                            format!(
-                                "failed to read codex last-message file: {error} \
+                        Err(error) => {
+                            self.cleanup_failed_invocation(request, &output).await;
+                            let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+                            let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                            return Err(ProcessBackendAdapter::invocation_failed(
+                                request,
+                                FailureClass::TransportFailure,
+                                format!(
+                                    "failed to read codex last-message file: {error} \
                                  (stdout_len: {}, stderr_len: {}, \
                                  stderr_tail: {stderr_tail:?})",
-                                output.stdout.len(),
-                                output.stderr.len(),
-                            ),
-                        ));
-                    }
-                };
+                                    output.stdout.len(),
+                                    output.stderr.len(),
+                                ),
+                            ));
+                        }
+                    };
+                let raw_output = codex_raw_transcript(&stdout_text, last_message_text.as_deref());
 
                 best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
 
@@ -394,7 +405,7 @@ impl PreparedCommand {
                 let token_counts = extract_codex_usage_from_stdout(&output.stdout);
 
                 Ok(InvocationEnvelope {
-                    raw_output_reference: RawOutputReference::Inline(stdout_text),
+                    raw_output_reference: RawOutputReference::Inline(raw_output),
                     parsed_payload,
                     metadata: InvocationMetadata {
                         invocation_id: request.invocation_id.clone(),
@@ -1922,12 +1933,40 @@ fn unwrap_claude_structured_output_transport_payload(
     }
 }
 
+fn codex_raw_transcript(stdout: &str, last_message: Option<&str>) -> String {
+    serde_json::to_string(&CodexRawTranscriptEnvelope {
+        transport: CODEX_RAW_TRANSCRIPT_VERSION.to_owned(),
+        stdout: stdout.to_owned(),
+        last_message: last_message.map(str::to_owned),
+    })
+    .unwrap_or_else(|_| stdout.to_owned())
+}
+
+fn recover_codex_structured_payload_from_stdout(raw_output: &str) -> Result<Value, String> {
+    if let Ok(envelope) = serde_json::from_str::<CodexRawTranscriptEnvelope>(raw_output) {
+        if envelope.transport == CODEX_RAW_TRANSCRIPT_VERSION {
+            if let Some(last_message) = envelope.last_message {
+                return serde_json::from_str(&last_message).map_err(|error| {
+                    format!("failed to parse Codex last-message JSON from raw transcript: {error}")
+                });
+            }
+            return serde_json::from_str(&envelope.stdout).map_err(|error| {
+                format!("failed to parse Codex stdout fallback JSON from raw transcript: {error}")
+            });
+        }
+    }
+
+    serde_json::from_str(raw_output)
+        .map_err(|error| format!("failed to parse raw output as JSON: {error}"))
+}
+
 pub(crate) fn recover_structured_payload_from_process_stdout(
     raw_output: &str,
     backend_family: BackendFamily,
 ) -> Result<Value, String> {
     match backend_family {
         BackendFamily::Claude => recover_claude_structured_payload_from_stdout(raw_output),
+        BackendFamily::Codex => recover_codex_structured_payload_from_stdout(raw_output),
         _ => serde_json::from_str(raw_output)
             .map_err(|error| format!("failed to parse raw output as JSON: {error}")),
     }
@@ -3936,6 +3975,34 @@ mod tests {
         assert!(!schema_path.exists());
         assert!(!message_path.exists());
         assert!(!project_dir.path().join("runtime/failed").exists());
+        match result.raw_output_reference {
+            RawOutputReference::Inline(raw_output) => {
+                let transcript: CodexRawTranscriptEnvelope =
+                    serde_json::from_str(&raw_output).expect("parse raw transcript");
+                assert_eq!(transcript.transport, CODEX_RAW_TRANSCRIPT_VERSION);
+                assert_eq!(
+                    transcript.stdout,
+                    r#"{"outcome":"approved","evidence":["stdout fallback"]}"#
+                );
+                assert!(transcript.last_message.is_none());
+            }
+            other => panic!("expected inline raw output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recover_structured_payload_from_process_stdout_uses_codex_last_message_envelope() {
+        let raw_output = codex_raw_transcript(
+            r#"{"type":"turn.completed","usage":{"input_tokens":12}}"#,
+            Some(r#"{"outcome":"approved","evidence":["codex last-message"]}"#),
+        );
+
+        let payload =
+            recover_structured_payload_from_process_stdout(&raw_output, BackendFamily::Codex)
+                .expect("recover codex payload from raw transcript");
+
+        assert_eq!(payload["outcome"], "approved");
+        assert_eq!(payload["evidence"][0], "codex last-message");
     }
 
     #[tokio::test]

@@ -2190,6 +2190,97 @@ async fn iterative_minimal_resume_uses_persisted_loop_policy_when_config_changes
 }
 
 #[tokio::test]
+async fn iterative_minimal_resume_uses_persisted_target_for_in_progress_loop() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-target-in-progress",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 5);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt the in-progress iterative loop before the terminal iteration commits"
+        );
+    }
+
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.backends", r#"["codex"]"#).unwrap();
+    EffectiveConfig::set(base_dir, "final_review.arbiter_backend", "codex").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.min_reviewers", "1").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(
+        UnavailableModelOnResumeAdapter::new(adapter_handle.clone(), BackendFamily::Claude),
+    );
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+
+    assert!(
+        resume_result.is_ok(),
+        "resume should continue the interrupted iterative loop on the persisted implementer target instead of the edited config target: {resume_result:?}"
+    );
+    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).unwrap();
+    let plan_payload = payloads
+        .iter()
+        .find(|record| {
+            record.stage_id == StageId::PlanAndImplement
+                && record.record_kind == RecordKind::StagePrimary
+        })
+        .expect("plan_and_implement payload");
+    match plan_payload.producer.clone() {
+        Some(RecordProducer::Agent {
+            requested_backend_family,
+            actual_backend_family,
+            ..
+        }) => {
+            assert_eq!(requested_backend_family, "codex");
+            assert_eq!(actual_backend_family, "codex");
+        }
+        other => panic!("expected codex producer metadata, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -2301,6 +2392,99 @@ async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidec
         1,
         "plan_and_implement should complete after recovering the Claude raw transcript"
     );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_recovers_terminal_codex_raw_output_when_sidecar_is_missing() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-missing-sidecar-codex-raw",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_id = failed_events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunStarted)
+        .and_then(|event| event.details["run_id"].as_str())
+        .expect("run_started run_id");
+    let raw_output_path = project_root(base_dir, pid.as_str())
+        .join("runtime/backend")
+        .join(format!("{run_id}-plan_and_implement-c1-a1-cr1-it3.raw"));
+    let payload: Value =
+        serde_json::from_str(&fs::read_to_string(&raw_output_path).expect("read raw payload"))
+            .expect("parse raw payload");
+    let raw_transcript = json!({
+        "transport": "rb_codex_process_v1",
+        "stdout": "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":99}}",
+        "last_message": payload.to_string(),
+    });
+    fs::write(&raw_output_path, raw_transcript.to_string()).expect("rewrite raw output");
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover the terminal Codex raw transcript instead of replaying the last implementer iteration: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should not re-run the terminal implementer iteration when the rewritten Codex raw transcript is recoverable"
+    );
+
+    let resumed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read resumed snapshot");
+    assert_eq!(resumed_snapshot.status, RunStatus::Completed);
 }
 
 #[tokio::test]
