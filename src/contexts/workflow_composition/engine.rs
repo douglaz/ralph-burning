@@ -33,9 +33,10 @@ use crate::contexts::milestone_record::model::{MilestoneId, PlannedElsewhereMapp
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
-    ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, JournalEventType, LogLevel,
-    PayloadRecord, ProjectRecord, QueuedAmendment, ResolvedTargetRecord, RollbackPoint,
-    RunSnapshot, RunStatus, RuntimeLogEntry, StageResolutionSnapshot,
+    ActiveRun, ArtifactRecord, CycleHistoryEntry, IterativeImplementerState, JournalEvent,
+    JournalEventType, LogLevel, PayloadRecord, ProjectRecord, QueuedAmendment,
+    ResolvedTargetRecord, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
+    StageResolutionSnapshot,
 };
 use crate::contexts::project_run_record::queries;
 use crate::contexts::project_run_record::service::{
@@ -720,6 +721,7 @@ fn build_active_run(
     qa_iterations_current_cycle: u32,
     review_iterations_current_cycle: u32,
     final_review_restart_count: u32,
+    iterative_implementer_state: Option<IterativeImplementerState>,
     stage_resolution_snapshot: Option<StageResolutionSnapshot>,
 ) -> ActiveRun {
     ActiveRun {
@@ -731,8 +733,20 @@ fn build_active_run(
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
         final_review_restart_count,
+        iterative_implementer_state,
         stage_resolution_snapshot,
     }
+}
+
+fn carry_forward_iterative_state(
+    current: &ActiveRun,
+    next_cursor: &StageCursor,
+) -> Option<IterativeImplementerState> {
+    (current.stage_cursor.stage == next_cursor.stage
+        && current.stage_cursor.cycle == next_cursor.cycle
+        && current.stage_cursor.completion_round == next_cursor.completion_round)
+        .then(|| current.iterative_implementer_state.clone())
+        .flatten()
 }
 
 fn current_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
@@ -1008,13 +1022,14 @@ fn carry_forward_active_run(
     let current = current_active_run(snapshot)?;
     Ok(build_active_run(
         run_id,
-        stage_cursor,
+        stage_cursor.clone(),
         current.started_at,
         current.prompt_hash_at_cycle_start.clone(),
         prompt_hash_at_stage_start,
         current.qa_iterations_current_cycle,
         current.review_iterations_current_cycle,
         current.final_review_restart_count,
+        carry_forward_iterative_state(current, &stage_cursor),
         stage_resolution_snapshot,
     ))
 }
@@ -1040,6 +1055,7 @@ fn reset_cycle_active_run(
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
         final_review_restart_count,
+        None,
         stage_resolution_snapshot,
     ))
 }
@@ -1055,13 +1071,14 @@ fn advance_completion_round_active_run(
     let current = current_active_run(snapshot)?;
     Ok(build_active_run(
         run_id,
-        stage_cursor,
+        stage_cursor.clone(),
         current.started_at,
         current.prompt_hash_at_cycle_start.clone(),
         prompt_hash,
         current.qa_iterations_current_cycle,
         current.review_iterations_current_cycle,
         final_review_restart_count,
+        carry_forward_iterative_state(current, &stage_cursor),
         stage_resolution_snapshot,
     ))
 }
@@ -1096,15 +1113,16 @@ fn prompt_change_baseline(snapshot: &RunSnapshot) -> AppResult<String> {
 fn resume_iteration_counters(
     snapshot: &RunSnapshot,
     resume_cursor: &StageCursor,
-) -> AppResult<(u32, u32)> {
+) -> AppResult<(u32, u32, Option<IterativeImplementerState>)> {
     let interrupted = interrupted_active_run(snapshot)?;
     if interrupted.stage_cursor.cycle != resume_cursor.cycle {
-        return Ok((0, 0));
+        return Ok((0, 0, None));
     }
 
     Ok((
         interrupted.qa_iterations_current_cycle,
         interrupted.review_iterations_current_cycle,
+        carry_forward_iterative_state(interrupted, resume_cursor),
     ))
 }
 
@@ -1356,6 +1374,7 @@ where
             0,
             0,
             0,
+            None,
             None,
         )),
         interrupted_run: None,
@@ -2126,7 +2145,7 @@ where
     // Seed the resumed ActiveRun with the (potentially updated) resolution
     // snapshot from drift detection so the stage can compare against it later.
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
-    let (qa_iterations_current_cycle, review_iterations_current_cycle) =
+    let (qa_iterations_current_cycle, review_iterations_current_cycle, iterative_implementer_state) =
         resume_iteration_counters(&snapshot, &resume_state.cursor)?;
     let final_review_restart_count = resume_final_review_restart_count(&snapshot, &resume_events)?;
     let resumed_at = Utc::now();
@@ -2140,6 +2159,7 @@ where
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
         final_review_restart_count,
+        iterative_implementer_state,
         resumed_snapshot,
     ));
     snapshot.interrupted_run = None;
@@ -2489,6 +2509,7 @@ where
                         0,
                         0,
                         current_active_run(snapshot)?.final_review_restart_count,
+                        None,
                         None,
                     ));
                     snapshot.status_summary = format!(
@@ -5847,12 +5868,6 @@ fn iterative_iteration_outcome(bundle: &ValidatedBundle) -> String {
         .unwrap_or_else(|| "completed".to_owned())
 }
 
-fn is_non_git_workspace_error(message: &str) -> bool {
-    message.contains("not a git repository")
-        || message.contains("unable to find repository")
-        || message.contains("failed to discover repository")
-}
-
 fn hash_workspace_entries(
     workspace_root: &Path,
     current: &Path,
@@ -5908,41 +5923,146 @@ fn workspace_diff_fingerprint(workspace_root: &Path) -> AppResult<String> {
     Ok(format!("fs:{:x}", hasher.finalize()))
 }
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    command.env("LC_ALL", "C");
+    command.env("LANG", "C");
+    command.env_remove("LANGUAGE");
+    command
+}
+
+fn run_git_output(repo_root: &Path, args: &[&str]) -> AppResult<std::process::Output> {
+    Ok(git_command().args(args).current_dir(repo_root).output()?)
+}
+
+fn git_repo_available(repo_root: &Path) -> AppResult<bool> {
+    let output = run_git_output(repo_root, &["rev-parse", "--is-inside-work-tree"])?;
+    Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
+}
+
+fn git_command_stdout(repo_root: &Path, args: &[&str], description: &str) -> AppResult<Vec<u8>> {
+    let output = run_git_output(repo_root, args)?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let details = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    };
+
+    Err(AppError::StageCommitFailed {
+        stage_id: StageId::PlanAndImplement,
+        details: format!(
+            "git {description} for iterative_minimal diff detection failed: {details}"
+        ),
+    })
+}
+
+fn hash_untracked_git_entry(
+    repo_root: &Path,
+    relative_path: &Path,
+    hasher: &mut Sha256,
+) -> AppResult<()> {
+    let absolute_path = repo_root.join(relative_path);
+    let metadata = fs::symlink_metadata(&absolute_path)?;
+    let display_path = relative_path.to_string_lossy();
+
+    if metadata.file_type().is_symlink() {
+        hasher.update(b"untracked-symlink\0");
+        hasher.update(display_path.as_bytes());
+        hasher.update(fs::read_link(&absolute_path)?.to_string_lossy().as_bytes());
+        return Ok(());
+    }
+
+    if metadata.is_file() {
+        hasher.update(b"untracked-file\0");
+        hasher.update(display_path.as_bytes());
+        hasher.update(metadata.len().to_le_bytes());
+        hasher.update(fs::read(&absolute_path)?);
+        return Ok(());
+    }
+
+    if metadata.is_dir() {
+        let mut nested = Sha256::new();
+        hash_workspace_entries(repo_root, &absolute_path, &mut nested)?;
+        hasher.update(b"untracked-dir\0");
+        hasher.update(display_path.as_bytes());
+        hasher.update(nested.finalize());
+    }
+
+    Ok(())
+}
+
 fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
-    let output = Command::new("git")
-        .args([
-            "status",
-            "--porcelain=v1",
-            "--untracked-files=all",
+    if !git_repo_available(repo_root)? {
+        return workspace_diff_fingerprint(repo_root);
+    }
+
+    let staged = git_command_stdout(
+        repo_root,
+        &[
+            "diff",
+            "--binary",
+            "--cached",
+            "--no-ext-diff",
             "--",
             ".",
             ":(exclude).ralph-burning",
-        ])
-        .current_dir(repo_root)
-        .output()?;
+        ],
+        "diff --cached",
+    )?;
+    let unstaged = git_command_stdout(
+        repo_root,
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--",
+            ".",
+            ":(exclude).ralph-burning",
+        ],
+        "diff",
+    )?;
+    let untracked_listing = git_command_stdout(
+        repo_root,
+        &[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+            ".",
+            ":(exclude).ralph-burning",
+        ],
+        "ls-files --others",
+    )?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let details = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("exit status {}", output.status)
-        };
+    let untracked_paths: Vec<PathBuf> = untracked_listing
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| PathBuf::from(String::from_utf8_lossy(entry).into_owned()))
+        .collect();
 
-        if is_non_git_workspace_error(&details) {
-            return workspace_diff_fingerprint(repo_root);
-        }
-
-        return Err(AppError::StageCommitFailed {
-            stage_id: StageId::PlanAndImplement,
-            details: format!("git status for iterative_minimal diff detection failed: {details}"),
-        });
+    if staged.is_empty() && unstaged.is_empty() && untracked_paths.is_empty() {
+        return Ok(String::new());
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    let mut hasher = Sha256::new();
+    hasher.update(b"staged\0");
+    hasher.update(&staged);
+    hasher.update(b"unstaged\0");
+    hasher.update(&unstaged);
+    for path in &untracked_paths {
+        hash_untracked_git_entry(repo_root, path, &mut hasher)?;
+    }
+
+    Ok(format!("git:{:x}", hasher.finalize()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5984,8 +6104,15 @@ where
         .stable_rounds_required
         .max(1);
 
-    let mut stable_count = 0;
-    let mut iteration = 0;
+    let persisted_state = current_active_run(snapshot)?
+        .iterative_implementer_state
+        .clone()
+        .unwrap_or(IterativeImplementerState {
+            completed_iterations: 0,
+            stable_count: 0,
+        });
+    let mut stable_count = persisted_state.stable_count;
+    let mut iteration = persisted_state.completed_iterations;
     loop {
         if cancellation_token.is_cancelled() {
             return Err(AppError::InvocationCancelled {
@@ -6111,6 +6238,20 @@ where
             max_rounds,
         );
         stable_count = next_stable_count;
+        if let Some(active_run) = snapshot.active_run.as_mut() {
+            active_run.iterative_implementer_state = Some(IterativeImplementerState {
+                completed_iterations: iteration,
+                stable_count,
+            });
+        }
+        run_snapshot_write
+            .write_run_snapshot(base_dir, project_id, snapshot)
+            .map_err(|error| AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to persist iterative_minimal state after iteration {iteration}: {error}"
+                ),
+            })?;
 
         if let Some(reason) = exit_reason {
             *seq += 1;
@@ -8984,8 +9125,8 @@ mod tests {
         create_milestone, persist_plan, CreateMilestoneInput,
     };
     use crate::contexts::project_run_record::model::{
-        ActiveRun, JournalEventType, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus,
-        TaskOrigin, TaskSource,
+        ActiveRun, IterativeImplementerState, JournalEventType, ProjectRecord,
+        ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::{
         create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
@@ -8993,7 +9134,7 @@ mod tests {
     use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
-        BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageId,
+        BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageCursor, StageId,
     };
     use crate::shared::error::{AppError, AppResult};
 
@@ -9002,9 +9143,9 @@ mod tests {
         complete_run, drift_still_satisfies_requirements, git_diff_fingerprint,
         mark_running_run_interrupted, milestone_lineage_plan_hash,
         partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
-        resume_run_with_retry, sync_milestone_bead_start, FinalReviewQueuedAmendment,
-        InterruptedRunContext, InterruptedRunUpdate, IterativeLoopExitReason, QueuedAmendment,
-        RunningAttemptIdentity,
+        resume_iteration_counters, resume_run_with_retry, sync_milestone_bead_start,
+        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
+        IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -9099,6 +9240,48 @@ mod tests {
     }
 
     #[test]
+    fn git_diff_fingerprint_changes_when_dirty_tracked_content_changes_again() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "baseline\nchanged once\n",
+        )
+        .expect("modify tracked file");
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "baseline\nchanged twice\n",
+        )
+        .expect("modify tracked file again");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "tracked content changes on an already-dirty file must change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_changes_when_dirty_untracked_content_changes_again() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        fs::write(temp_dir.path().join("scratch.txt"), "draft one\n").expect("write untracked");
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        fs::write(temp_dir.path().join("scratch.txt"), "draft two\n").expect("rewrite untracked");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "untracked content changes on an already-dirty file must change the fingerprint"
+        );
+    }
+
+    #[test]
     fn git_diff_fingerprint_falls_back_outside_git_repo_and_ignores_runtime_state() {
         let temp_dir = tempdir().expect("create temp dir");
         fs::write(temp_dir.path().join("tracked.txt"), "baseline\n").expect("write tracked file");
@@ -9128,6 +9311,90 @@ mod tests {
             baseline, changed,
             "non-runtime workspace changes must change the fallback fingerprint"
         );
+    }
+
+    #[test]
+    fn resume_iteration_counters_restore_iterative_loop_state_for_same_stage_round() {
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-iter".to_owned(),
+                stage_cursor: cursor.clone(),
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 6,
+                    stable_count: 1,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let (qa, review, iterative_state) =
+            resume_iteration_counters(&snapshot, &cursor).expect("resume counters");
+
+        assert_eq!(qa, 4);
+        assert_eq!(review, 5);
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 6,
+                stable_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_clear_iterative_loop_state_for_new_round() {
+        let interrupted_cursor =
+            StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let resume_cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 4).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-iter".to_owned(),
+                stage_cursor: interrupted_cursor,
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 1,
+                review_iterations_current_cycle: 2,
+                final_review_restart_count: 0,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 3,
+                    stable_count: 1,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 4,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let (qa, review, iterative_state) =
+            resume_iteration_counters(&snapshot, &resume_cursor).expect("resume counters");
+
+        assert_eq!(qa, 1);
+        assert_eq!(review, 2);
+        assert_eq!(iterative_state, None);
     }
 
     #[test]
@@ -9883,6 +10150,7 @@ mod tests {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             }),
             interrupted_run: None,

@@ -2724,6 +2724,7 @@ pub fn reopen_completed_project_with_snapshot(
         qa_iterations_current_cycle: 0,
         review_iterations_current_cycle: 0,
         final_review_restart_count: 0,
+        iterative_implementer_state: None,
         stage_resolution_snapshot: snapshot.last_stage_resolution_snapshot.clone(),
     });
     snapshot.active_run = None;

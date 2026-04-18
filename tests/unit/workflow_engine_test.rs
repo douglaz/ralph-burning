@@ -1851,6 +1851,52 @@ async fn iterative_minimal_falls_back_to_workspace_diff_when_no_git_repo_exists(
 }
 
 #[tokio::test]
+async fn iterative_minimal_detects_changes_to_already_dirty_files() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    init_git_repo(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-dirty", FlowPreset::IterativeMinimal);
+
+    let adapter = DirtyFileIterativePlanAdapter::new();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let completed: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+        .collect();
+    assert!(
+        completed.len() >= 2,
+        "expected at least two completed implementer iterations"
+    );
+    assert_eq!(completed[0].details["diff_changed"], true);
+    assert_eq!(
+        completed[1].details["diff_changed"], true,
+        "rewriting an already-dirty file must still count as a diff change"
+    );
+}
+
+#[tokio::test]
 async fn minimal_flow_remains_single_pass_without_iteration_events() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -2049,6 +2095,7 @@ async fn run_start_rejects_already_running() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -2726,6 +2773,7 @@ async fn bead_backed_run_resumed_failure_does_not_open_milestone_lineage() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -3335,6 +3383,56 @@ impl AgentExecutionPort for IterativePlanAdapter {
                     "changed once\n",
                 )
                 .expect("write iterative output");
+            }
+        }
+
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct DirtyFileIterativePlanAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+}
+
+impl DirtyFileIterativePlanAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+}
+
+impl AgentExecutionPort for DirtyFileIterativePlanAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let path = request.working_dir.join("iterative-output.txt");
+            match call {
+                1 => fs::write(&path, "changed once\n").expect("write first iterative output"),
+                2 => fs::write(&path, "changed twice\n").expect("write second iterative output"),
+                _ => {}
             }
         }
 
@@ -4099,6 +4197,7 @@ async fn resume_uses_interrupted_cycle_prompt_baseline_instead_of_project_record
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -4245,6 +4344,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_for_later_resumes(
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -4456,6 +4556,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_after_completion_r
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -4985,6 +5086,7 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -6561,6 +6663,7 @@ async fn resume_uses_current_cycle_review_counter_instead_of_prior_cycles() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7188,6 +7291,7 @@ async fn resume_reconciles_stale_running_snapshot_with_journal_run_failed() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7298,6 +7402,7 @@ async fn resume_recovers_stale_running_snapshot_when_pid_file_is_missing() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7396,6 +7501,7 @@ async fn resume_recovers_stale_running_snapshot_without_run_started_event() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7478,6 +7584,7 @@ async fn resume_recovers_unjournaled_resumed_attempt_without_inheriting_previous
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7586,6 +7693,7 @@ async fn resume_recovers_stale_running_snapshot_without_binding_to_old_run_histo
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7671,6 +7779,7 @@ fn status_reconciles_stale_running_snapshot_with_journal_run_failed() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7777,6 +7886,7 @@ fn status_reconciles_stale_running_snapshot_with_journal_run_completed() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7829,6 +7939,7 @@ fn status_reconciliation_ignores_terminal_events_before_latest_resume_boundary()
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7897,6 +8008,7 @@ fn status_reconciliation_ignores_terminal_events_before_unjournaled_resume_snaps
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7957,6 +8069,7 @@ fn status_reconciliation_repairs_terminal_snapshot_without_run_started_event() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),

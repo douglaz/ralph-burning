@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418021911-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T03:38:54.807943612Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the iterative_minimal amendments end to end. `git_diff_fingerprint` now uses locale-stable git commands plus content-aware fingerprints for staged diffs, unstaged diffs, and untracked file contents, so edits to already-dirty tracked or untracked files keep `diff_changed=true` while `.ralph-burning/` remains excluded. Iterative loop progress is now persisted in `ActiveRun` via `iterative_implementer_state` and restored on resume for the same stage/cycle/completion round, preventing full loop-budget resets after interruption. Added regression coverage for dirty-file diff detection, iterative-state resume behavior, and the end-to-end iterative_minimal dirty-file scenario; updated existing ActiveRun fixtures to carry the new persisted field.\n\n## Steps\n\n1. [Completed] Replace iterative_minimal diff fingerprinting with content-level git/workspace fingerprints that ignore `.ralph-burning/` and avoid locale-sensitive non-git detection.\n2. [Completed] Persist iterative implementer progress in `ActiveRun` and restore it on resume so iteration and stability state survive interrupted plan_and_implement retries.\n3. [Completed] Add regression tests for dirty tracked/untracked file diff detection, resume-state restoration, and iterative_minimal end-to-end behavior when rewriting already-dirty files.\n4. [Completed] Run formatting, tests, lint, conformance, and nix-build validation on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo run --features test-stub -- conformance run --filter SC-START-017` passed.\n- Targeted regression tests passed: `cargo test git_diff_fingerprint_changes_when_dirty_tracked_content_changes_again`, `cargo test resume_iteration_counters_restore_iterative_loop_state_for_same_stage_round`, and `cargo test --test unit --features test-stub iterative_minimal_detects_changes_to_already_dirty_files`.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}

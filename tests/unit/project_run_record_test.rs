@@ -282,6 +282,7 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
                     qa_iterations_current_cycle: 0,
                     review_iterations_current_cycle: 0,
                     final_review_restart_count: 0,
+                    iterative_implementer_state: None,
                     stage_resolution_snapshot: None,
                 }),
                 interrupted_run: None,
@@ -525,6 +526,7 @@ fn reopened_completed_snapshot_with_round(
             qa_iterations_current_cycle: 0,
             review_iterations_current_cycle: 0,
             final_review_restart_count: 0,
+            iterative_implementer_state: None,
             stage_resolution_snapshot: None,
         }),
         status: RunStatus::Paused,
@@ -2383,6 +2385,7 @@ fn run_snapshot_validates_paused_with_active_run_as_corrupt() {
             qa_iterations_current_cycle: 0,
             review_iterations_current_cycle: 0,
             final_review_restart_count: 0,
+            iterative_implementer_state: None,
             stage_resolution_snapshot: None,
         }),
         interrupted_run: None,
@@ -2414,6 +2417,7 @@ fn run_snapshot_validates_not_started_with_active_run_as_corrupt() {
             qa_iterations_current_cycle: 0,
             review_iterations_current_cycle: 0,
             final_review_restart_count: 0,
+            iterative_implementer_state: None,
             stage_resolution_snapshot: None,
         }),
         interrupted_run: None,
@@ -2479,6 +2483,7 @@ fn run_snapshot_validates_failed_with_active_run_as_corrupt() {
             qa_iterations_current_cycle: 0,
             review_iterations_current_cycle: 0,
             final_review_restart_count: 0,
+            iterative_implementer_state: None,
             stage_resolution_snapshot: None,
         }),
         interrupted_run: None,
@@ -2895,6 +2900,10 @@ fn active_run_with_snapshot_round_trip() {
         qa_iterations_current_cycle: 1,
         review_iterations_current_cycle: 2,
         final_review_restart_count: 3,
+        iterative_implementer_state: Some(IterativeImplementerState {
+            completed_iterations: 4,
+            stable_count: 1,
+        }),
         stage_resolution_snapshot: Some(StageResolutionSnapshot {
             stage_id: ralph_burning::shared::domain::StageId::Planning,
             resolved_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
@@ -2949,6 +2958,7 @@ fn active_run_without_snapshot_omits_field() {
         qa_iterations_current_cycle: 0,
         review_iterations_current_cycle: 0,
         final_review_restart_count: 0,
+        iterative_implementer_state: None,
         stage_resolution_snapshot: None,
     };
 

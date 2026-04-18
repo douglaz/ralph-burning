@@ -173,9 +173,19 @@ pub struct ActiveRun {
     pub review_iterations_current_cycle: u32,
     #[serde(default)]
     pub final_review_restart_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iterative_implementer_state: Option<IterativeImplementerState>,
     /// Resolution snapshot persisted at stage start before any agent invocation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_resolution_snapshot: Option<StageResolutionSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IterativeImplementerState {
+    #[serde(default)]
+    pub completed_iterations: u32,
+    #[serde(default)]
+    pub stable_count: u32,
 }
 
 /// Records the exact resolved backend/model targets at stage start.
