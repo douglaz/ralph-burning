@@ -24,6 +24,8 @@ use std::time::Duration;
 
 use crate::adapters::br_process::{BrAdapter, BrError, BrMutationAdapter, BrOutput, ProcessRunner};
 
+type MockBrDispatch = dyn Fn(&MockBrCall) -> Option<MockBrResponse> + Send + Sync;
+
 /// Recorded `br` invocation metadata for assertions.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MockBrCall {
@@ -92,10 +94,26 @@ impl MockBrResponse {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct MockBrState {
     calls: Mutex<Vec<MockBrCall>>,
     responses: Mutex<VecDeque<MockBrResponse>>,
+    dispatch: Option<Arc<MockBrDispatch>>,
+    default_working_dir: Mutex<Option<PathBuf>>,
+}
+
+impl std::fmt::Debug for MockBrState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MockBrState")
+            .field("calls", &self.calls)
+            .field("responses", &self.responses)
+            .field("dispatch", &self.dispatch.as_ref().map(|_| "<fn>"))
+            .field(
+                "default_working_dir",
+                &self.default_working_dir.lock().map(|dir| dir.clone()).ok(),
+            )
+            .finish()
+    }
 }
 
 /// Cloneable mock runner for `br` operations with full call tracking.
@@ -122,6 +140,19 @@ impl MockBrAdapter {
         mock
     }
 
+    /// Create a mock that can synthesize responses from the incoming command.
+    pub fn from_dispatch<F>(dispatch: F) -> Self
+    where
+        F: Fn(&MockBrCall) -> Option<MockBrResponse> + Send + Sync + 'static,
+    {
+        Self {
+            state: Arc::new(MockBrState {
+                dispatch: Some(Arc::new(dispatch)),
+                ..MockBrState::default()
+            }),
+        }
+    }
+
     /// Queue another response.
     pub fn push_response(&self, response: MockBrResponse) {
         self.state
@@ -140,9 +171,31 @@ impl MockBrAdapter {
             .clone()
     }
 
+    /// Bind a default working directory for convenience adapters.
+    pub fn set_default_working_dir(&self, path: PathBuf) {
+        *self
+            .state
+            .default_working_dir
+            .lock()
+            .expect("mock br working-dir lock poisoned") = Some(path);
+    }
+
+    fn default_working_dir(&self) -> Option<PathBuf> {
+        self.state
+            .default_working_dir
+            .lock()
+            .expect("mock br working-dir lock poisoned")
+            .clone()
+    }
+
     /// Build a read-only adapter backed by this mock.
     pub fn as_br_adapter(&self) -> BrAdapter<Self> {
-        BrAdapter::with_runner(self.clone())
+        let adapter = BrAdapter::with_runner(self.clone());
+        if let Some(path) = self.default_working_dir() {
+            adapter.with_working_dir(path)
+        } else {
+            adapter
+        }
     }
 
     /// Build a mutation adapter backed by this mock.
@@ -158,23 +211,30 @@ impl ProcessRunner for MockBrAdapter {
         timeout: Duration,
         working_dir: Option<&std::path::Path>,
     ) -> Result<BrOutput, BrError> {
+        let call = MockBrCall {
+            args,
+            timeout,
+            working_dir: working_dir.map(std::path::Path::to_path_buf),
+        };
         self.state
             .calls
             .lock()
             .expect("mock br call lock poisoned")
-            .push(MockBrCall {
-                args,
-                timeout,
-                working_dir: working_dir.map(std::path::Path::to_path_buf),
-            });
+            .push(call.clone());
 
-        let response = self
-            .state
-            .responses
-            .lock()
-            .expect("mock br response lock poisoned")
-            .pop_front()
-            .expect("mock br runner exhausted");
+        let response = if let Some(dispatch) = self.state.dispatch.as_ref() {
+            dispatch(&call)
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.state
+                .responses
+                .lock()
+                .expect("mock br response lock poisoned")
+                .pop_front()
+        })
+        .expect("mock br runner exhausted");
 
         if !response.latency.is_zero() {
             tokio::time::sleep(response.latency).await;
@@ -217,5 +277,39 @@ mod tests {
             .expect_err("runner error should surface");
 
         assert!(matches!(error, BrError::BrNotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn mock_br_adapter_can_dispatch_by_command() {
+        let mock = MockBrAdapter::from_dispatch(|call| match call.args.as_slice() {
+            [command, flag] if command == "ready" && flag == "--json" => {
+                Some(MockBrResponse::success("[]"))
+            }
+            _ => None,
+        });
+        let adapter = mock.as_br_adapter();
+
+        let ready = adapter
+            .exec_read(&BrCommand::ready())
+            .await
+            .expect("ready succeeds via dispatch");
+
+        assert_eq!(ready.stdout, "[]");
+        assert_eq!(mock.calls()[0].args, vec!["ready", "--json"]);
+    }
+
+    #[tokio::test]
+    async fn mock_br_adapter_applies_default_working_dir_to_convenience_adapter() {
+        let mock = MockBrAdapter::from_responses([MockBrResponse::success("[]")]);
+        let working_dir = std::env::temp_dir().join("mock-br-default-working-dir");
+        mock.set_default_working_dir(working_dir.clone());
+
+        let adapter = mock.as_br_adapter();
+        let _ = adapter
+            .exec_read(&BrCommand::ready())
+            .await
+            .expect("ready succeeds");
+
+        assert_eq!(mock.calls()[0].working_dir, Some(working_dir));
     }
 }
