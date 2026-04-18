@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418140316-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:29:47.389891374Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the amendment's claims against the repo. The real bv --robot-next no-recommendation contract is a message-only payload ({\"message\":\"No actionable items available\"}), handled in src/contexts/automation_runtime/success_reconciliation.rs:664-692 and emitted by fixtures in e2e_fixtures.rs:1059-1063 and run.rs:4645-4649. The unit tests at tests/unit/bv_adapter_test.rs:227-271 instead invent ad hoc payloads ({\"next\":null,...} and {\"ready\":[],\"blocked\":[...]}) that appear nowhere else in the codebase, and they deserialize them via locally-defined EmptyNextSignal/BlockedGraphSignal structs. The tests pass without exercising the real empty-graph path, so they do not protect the \"graceful no actionable items\" behavior this bead is supposed to cover.\n\n## Votes\n\n- `fr-1-6079fe9c`: Accept\n  Confirmed: grepping for {\"next\":null,\"reason\":\"nothing ready\"} returns only the test file itself; the real contract {\"message\":\"No actionable items available\"} is used consistently in production (success_reconciliation.rs:664-692), fixtures (e2e_fixtures.rs:1061, run.rs:4647), and other tests (success_reconciliation.rs:2296, 2318, 2454). The ad hoc payloads are round-tripped through test-local deserialization structs, so the tests validate an invented schema rather than the adapter's behavior on the actual bv empty-graph output. This is a real coverage gap for a bead whose stated purpose is adapter test coverage of the empty-graph path — the tests should either assert against the real message-only payload (via BvParseError + BvMessageOnlyResponse-style handling) or add adapter-facing NoRecommendation handling and exercise that directly.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

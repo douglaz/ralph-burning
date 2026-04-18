@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418140316-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:30:19.859136399Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe proposed amendment identifies a real test coverage gap: the referenced unit tests exercise synthetic bv --robot-next payloads that are not the contract used elsewhere in this repository for the exhausted/no-actionable case.\n\n## Votes\n\n- `fr-1-6079fe9c`: Accept\n  The finding is technically correct. In tests/unit/bv_adapter_test.rs, the empty/blocked cases deserialize ad hoc shapes ({\"next\":null,...} and {\"ready\":[],\"blocked\":[...]}), but the repo’s actual no-recommendation path for bv --robot-next is a message-only JSON payload, as shown in success_reconciliation.rs and the test fixtures/CLI helpers. Because BvAdapter::exec_json is generic, those current tests only prove serde can parse the invented structs; they do not verify the real exhausted-graph behavior that downstream code relies on, namely a parse failure on NextBeadResponse followed by message-only handling. That is a meaningful correctness and maintainability issue in the tests, so the amendment should be accepted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

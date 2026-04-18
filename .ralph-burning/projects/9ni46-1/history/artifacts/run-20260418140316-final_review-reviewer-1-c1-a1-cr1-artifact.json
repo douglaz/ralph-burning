@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418140316-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:26:45.063218563Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI found 1 fix-now issue. The new BR/BV adapter tests compile and the targeted/unit test runs passed, but the BV empty/blocked graph coverage is wired to invented `robot-next` payloads rather than the message-only payload the repo actually uses for \"no actionable items\". I also ran `cargo fmt --check` successfully; `cargo clippy --tests -- -D warnings` currently fails on an unrelated pre-existing lint in `tests/unit/process_backend_test.rs:2891`.\n\n## Amendments\n\n1. finding_summary: `tests/unit/bv_adapter_test.rs:107-117` and `tests/unit/bv_adapter_test.rs:227-271` model the \"no next bead\" / blocked-graph cases with ad hoc payloads (`{\"next\":null,\"reason\":\"nothing ready\"}` and `{\"ready\":[],\"blocked\":[...]}`), but the actual `bv --robot-next` no-recommendation contract used elsewhere in this repo is the message-only payload handled in `src/contexts/automation_runtime/success_reconciliation.rs:664-692` and emitted by fixtures in `src/test_support/e2e_fixtures.rs:1059-1063` and `src/cli/run.rs:4645-4649`. These tests therefore pass without exercising the real empty-graph path, so they do not actually protect the graceful \"no actionable items\" behavior this bead is supposed to cover.\naffected_files:\n- tests/unit/bv_adapter_test.rs\nremediation_hint: Replace the invented payloads with assertions against the real message-only `bv --robot-next` output, or add adapter-facing handling for that contract and test that behavior directly.\n   Rationale: The change is intended to add adapter coverage for missing/malformed tool output, but the new BV empty/blocked tests validate JSON shapes that are not the repository's current contract. That creates false confidence while leaving the real no-recommendation behavior uncovered at the adapter-test level.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

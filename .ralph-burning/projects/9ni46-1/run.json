@@ -2,29 +2,63 @@
   "active_run": {
     "run_id": "run-20260418140316",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-18T14:03:16.339847678Z",
     "prompt_hash_at_cycle_start": "27776d05f54654c264f07addceabca434c1f667a52803c5bbba985a076e81a5f",
     "prompt_hash_at_stage_start": "27776d05f54654c264f07addceabca434c1f667a52803c5bbba985a076e81a5f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-6079fe9c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: `tests/unit/bv_adapter_test.rs:107-117` and `tests/unit/bv_adapter_test.rs:227-271` model the \"no next bead\" / blocked-graph cases with ad hoc payloads (`{\"next\":null,\"reason\":\"nothing ready\"}` and `{\"ready\":[],\"blocked\":[...]}`), but the actual `bv --robot-next` no-recommendation contract used elsewhere in this repo is the message-only payload handled in `src/contexts/automation_runtime/success_reconciliation.rs:664-692` and emitted by fixtures in `src/test_support/e2e_fixtures.rs:1059-1063` and `src/cli/run.rs:4645-4649`. These tests therefore pass without exercising the real empty-graph path, so they do not actually protect the graceful \"no actionable items\" behavior this bead is supposed to cover.\naffected_files:\n- tests/unit/bv_adapter_test.rs\nremediation_hint: Replace the invented payloads with assertions against the real message-only `bv --robot-next` output, or add adapter-facing handling for that contract and test that behavior directly.",
+        "created_at": "2026-04-18T14:30:19.870914909Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "31b328c416cb4c90124793eab8c2a717468d548b51c1be99c928f434315b8507"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-18T14:21:58.846249794Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-7-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }
