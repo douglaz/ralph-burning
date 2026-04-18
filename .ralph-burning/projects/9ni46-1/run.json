@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260418140316",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-18T14:03:16.339847678Z",
     "prompt_hash_at_cycle_start": "27776d05f54654c264f07addceabca434c1f667a52803c5bbba985a076e81a5f",
     "prompt_hash_at_stage_start": "27776d05f54654c264f07addceabca434c1f667a52803c5bbba985a076e81a5f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-c080752f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: The new BR adapter suite never exercises the dependency mutation entry points, so one of the bead's explicit scope items (nominal dependency operations) is still unverified.\nseverity: low\naffected_files:\n- tests/unit/br_adapter_test.rs\n- src/adapters/br_process.rs\nevidence:\n- src/adapters/br_process.rs:1410-1445 contains `add_dependency`, `add_dependency_with_kind`, and `remove_dependency`, each with their own command construction and tracked-mutation/journaling path.\n- tests/unit/br_adapter_test.rs:281-328 covers only `dep tree` read parsing, and tests/unit/br_adapter_test.rs:360-570 moves on to create/update/close/sync without any add/remove dependency mutation test.\nimpact: A regression in `dep add`, `dep add --type=parent-child`, or `dep remove` would miss the new mocked unit coverage even though the bead scope calls out nominal dependency operations.\nremediation_hint: Add at least one happy-path dependency mutation test, and preferably one explicit parent-child kind case, asserting both the command line and pending-mutation journal behavior.",
+        "created_at": "2026-04-18T15:18:06.942488131Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "48cff3a0a1999f63fd0c82c9f20651091a5841aaeda932207a9d6019baa327d5"
+      },
+      {
+        "amendment_id": "fr-3-3069b6de",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "`bv_empty_graph_reports_no_next_bead_gracefully` (tests/unit/bv_adapter_test.rs:213-245) and `bv_blocked_graph_reports_all_beads_blocked` (tests/unit/bv_adapter_test.rs:247-280) are byte-for-byte duplicates. Both scripts return the exact same payload `{\"message\":\"No actionable items available\"}`, both assert `BvParseError` with identical `raw_output`, `command`, and error-branch structure, and both exercise the same `--robot-next` path. The bead scope explicitly called out these as two distinct scenarios (empty graph vs. fully blocked graph). As written, the second test adds no differential coverage over the first — one test produces the same signal, and running both inflates the count without adding a verifiable invariant.\n\nFix: either give the two tests genuinely different scripted inputs that distinguish the scenarios (for example, a completely empty JSON object for empty-graph and a payload that explicitly enumerates blocked bead IDs / returns `{\"message\":\"All beads blocked\",\"blocked\":[...]}` for the all-blocked case) and adjust the assertions to match each real bv payload shape, or collapse the pair into a single parameterized test covering both call sites with clearly separate inputs. Either approach keeps the bead's requested scenario coverage honest.",
+        "created_at": "2026-04-18T15:18:06.942492610Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "b79a147c2ad5ce3914b530144a6e90a592b9cca4ce679ba92771a1840c8dd010"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-18T14:42:10.514982799Z",
+    "resolved_at": "2026-04-18T15:06:41.321892795Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

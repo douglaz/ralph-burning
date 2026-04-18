@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260418140316-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T15:11:28.302911275Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the 24 new adapter tests added in tests/unit/br_adapter_test.rs (16 tests) and tests/unit/bv_adapter_test.rs (8 tests), plus the harness hookup in tests/unit.rs. The tests exercise a well-structured mock ProcessRunner / BvProcessRunner seam, cover both happy-path parsing (show/ready/list/dep tree/graph/robot-next/robot-triage) and error paths (not-found, timeout, non-zero exit preserving stdout/stderr, malformed and truncated JSON), and correctly verify the pending-mutation journal and legacy dirty-marker invariants across create/update/close/sync_flush/sync_import flows including the retry-safe failure path. `cargo test --test unit` passes (864 tests). The adapters remain unmodified as required. One substantive issue: two bv tests intended to cover distinct 'empty graph' vs. 'all beads blocked' scenarios are byte-for-byte duplicates (same input, same assertions), collapsing the bead-requested scenario coverage into a single effective case.\n\n## Amendments\n\n1. `bv_empty_graph_reports_no_next_bead_gracefully` (tests/unit/bv_adapter_test.rs:213-245) and `bv_blocked_graph_reports_all_beads_blocked` (tests/unit/bv_adapter_test.rs:247-280) are byte-for-byte duplicates. Both scripts return the exact same payload `{\"message\":\"No actionable items available\"}`, both assert `BvParseError` with identical `raw_output`, `command`, and error-branch structure, and both exercise the same `--robot-next` path. The bead scope explicitly called out these as two distinct scenarios (empty graph vs. fully blocked graph). As written, the second test adds no differential coverage over the first — one test produces the same signal, and running both inflates the count without adding a verifiable invariant.\n\nFix: either give the two tests genuinely different scripted inputs that distinguish the scenarios (for example, a completely empty JSON object for empty-graph and a payload that explicitly enumerates blocked bead IDs / returns `{\"message\":\"All beads blocked\",\"blocked\":[...]}` for the all-blocked case) and adjust the assertions to match each real bv payload shape, or collapse the pair into a single parameterized test covering both call sites with clearly separate inputs. Either approach keeps the bead's requested scenario coverage honest.\n   Rationale: The bead scope calls for distinct empty-graph vs. all-blocked-graph coverage; duplicating the same scripted input and assertions into two identically-named error branches masks a real coverage gap and inflates the test count without improving the safety net.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}
