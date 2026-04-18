@@ -17765,3 +17765,404 @@ fn task_show_fails_when_no_active_project() {
         "task show without active project should fail, got: {stderr}"
     );
 }
+
+#[test]
+fn milestone_create_produces_valid_milestone() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["milestone", "create", "Alpha Launch"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+
+    assert!(
+        output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Created milestone 'ms-alpha-launch'"));
+    assert!(milestone_root(temp_dir.path(), "ms-alpha-launch").exists());
+    assert!(milestone_root(temp_dir.path(), "ms-alpha-launch")
+        .join("milestone.toml")
+        .exists());
+    assert!(milestone_root(temp_dir.path(), "ms-alpha-launch")
+        .join("status.json")
+        .exists());
+}
+
+#[test]
+fn milestone_create_rejects_invalid_id() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["milestone", "create", "!!!"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+
+    assert!(!output.status.success(), "milestone create should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid identifier"));
+    assert!(stderr.contains("single path segments"));
+}
+
+#[test]
+fn milestone_show_displays_milestone_detail() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(
+        output.status.success(),
+        "milestone show should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Milestone:    ms-alpha"));
+    assert!(stdout.contains("Name:         Alpha Milestone"));
+    assert!(stdout.contains("Description:  Deliver the alpha milestone."));
+    assert!(stdout.contains("Status:       ready"));
+    assert!(stdout.contains("Plan Version: 2"));
+}
+
+#[test]
+fn milestone_show_json_output() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(
+        output.status.success(),
+        "milestone show --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("milestone show json should parse");
+    assert_eq!(value["id"], "ms-alpha");
+    assert_eq!(value["name"], "Alpha Milestone");
+    assert_eq!(value["status"], "ready");
+    assert_eq!(value["bead_count"], 3);
+    assert_eq!(value["plan_version"], 2);
+    assert_eq!(value["has_plan"], true);
+    assert!(value.get("progress").is_some());
+}
+
+#[test]
+fn milestone_status_shows_current_state() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+
+    let output = Command::new(binary())
+        .args(["milestone", "status", "ms-alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone status");
+
+    assert!(
+        output.status.success(),
+        "milestone status should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Milestone:    ms-alpha"));
+    assert!(stdout.contains("Status:       ready"));
+    assert_eq!(
+        fs::read_to_string(active_milestone_path(temp_dir.path())).expect("read active milestone"),
+        "ms-alpha"
+    );
+}
+
+#[test]
+fn task_show_dispatches_to_project_show() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let task_output = Command::new(binary())
+        .args(["task", "show", "alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task show");
+    let project_output = Command::new(binary())
+        .args(["project", "show", "alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+
+    assert!(task_output.status.success(), "task show should succeed");
+    assert!(
+        project_output.status.success(),
+        "project show should succeed"
+    );
+    let task_json: serde_json::Value =
+        serde_json::from_slice(&task_output.stdout).expect("task show json should parse");
+    let project_json: serde_json::Value =
+        serde_json::from_slice(&project_output.stdout).expect("project show json should parse");
+    assert_eq!(task_json, project_json);
+    assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
+    assert!(String::from_utf8_lossy(&project_output.stderr).contains("deprecated"));
+}
+
+#[test]
+fn task_list_dispatches_to_project_list() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    create_project_fixture(temp_dir.path(), "beta");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let task_output = Command::new(binary())
+        .args(["task", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task list");
+    let project_output = Command::new(binary())
+        .args(["project", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project list");
+
+    assert!(task_output.status.success(), "task list should succeed");
+    assert!(
+        project_output.status.success(),
+        "project list should succeed"
+    );
+    assert_eq!(task_output.stdout, project_output.stdout);
+    let stdout = String::from_utf8_lossy(&task_output.stdout);
+    assert!(stdout.contains("alpha *"));
+    assert!(stdout.contains("beta"));
+    assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
+    assert!(String::from_utf8_lossy(&project_output.stderr).contains("deprecated"));
+}
+
+#[test]
+fn task_select_dispatches_to_project_select() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let task_output = Command::new(binary())
+        .args(["task", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task select");
+
+    assert!(task_output.status.success(), "task select should succeed");
+    assert_eq!(
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project"),
+        "alpha"
+    );
+    assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
+
+    fs::remove_file(active_project_path(temp_dir.path())).expect("clear active project");
+
+    let project_output = Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project select");
+
+    assert!(
+        project_output.status.success(),
+        "project select should succeed"
+    );
+    assert_eq!(
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project"),
+        "alpha"
+    );
+    assert!(String::from_utf8_lossy(&project_output.stderr).contains("deprecated"));
+}
+
+#[test]
+fn project_commands_print_deprecation_to_stderr() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let show = Command::new(binary())
+        .args(["project", "show", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+    let list = Command::new(binary())
+        .args(["project", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project list");
+    let select = Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project select");
+
+    assert!(show.status.success());
+    assert!(list.status.success());
+    assert!(select.status.success());
+    assert!(String::from_utf8_lossy(&show.stderr).contains("project show"));
+    assert!(String::from_utf8_lossy(&list.stderr).contains("project list"));
+    assert!(String::from_utf8_lossy(&select.stderr).contains("project select"));
+}
+
+#[test]
+fn project_commands_stdout_unaffected_by_deprecation() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let show = Command::new(binary())
+        .args(["project", "show", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+    let list = Command::new(binary())
+        .args(["project", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project list");
+    let select = Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project select");
+
+    let show_stdout = String::from_utf8_lossy(&show.stdout);
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    let select_stdout = String::from_utf8_lossy(&select.stdout);
+    assert!(!show_stdout.contains("deprecated"));
+    assert!(!list_stdout.contains("deprecated"));
+    assert!(!select_stdout.contains("deprecated"));
+    assert!(show_stdout.contains("Project: alpha"));
+    assert!(list_stdout.contains("alpha"));
+    assert!(select_stdout.contains("Selected project alpha"));
+}
+
+#[test]
+fn project_show_still_works_with_deprecation() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "show", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+
+    assert!(
+        output.status.success(),
+        "project show should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stdout.contains("Project: alpha"));
+    assert!(stdout.contains("Name: Fixture alpha"));
+    assert!(stdout.contains("Run status: not started"));
+    assert!(stderr.contains("Note: `ralph-burning project show` is deprecated."));
+}
+
+#[test]
+fn milestone_show_nonexistent_produces_error() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-missing"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(!output.status.success(), "missing milestone should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-missing' was not found"));
+}
+
+#[test]
+fn milestone_run_without_workspace_fails() {
+    let temp_dir = tempdir().expect("create temp dir");
+
+    let output = Command::new(binary())
+        .args(["milestone", "run"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone run");
+
+    assert!(!output.status.success(), "milestone run should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("No such file or directory") || stderr.contains("workspace.toml"),
+        "milestone run outside a workspace should fail clearly, got: {stderr}"
+    );
+}
+
+#[test]
+fn task_show_nonexistent_produces_error() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["task", "show", "missing"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run task show");
+
+    assert!(!output.status.success(), "missing task should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project 'missing' was not found"));
+}
+
+#[test]
+fn milestone_show_human_readable_format() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let create = Command::new(binary())
+        .args(["milestone", "create", "Alpha Launch"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+    assert!(create.status.success(), "milestone create should succeed");
+
+    let output = Command::new(binary())
+        .args(["milestone", "show", "ms-alpha-launch"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone show");
+
+    assert!(output.status.success(), "milestone show should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Milestone:"));
+    assert!(stdout.contains("Description:"));
+    assert!(stdout.contains("Progress:"));
+    assert!(stdout.contains("Created At:"));
+    assert!(stdout.contains("Updated At:"));
+}
+
+#[test]
+fn milestone_status_json_format() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+
+    let output = Command::new(binary())
+        .args(["milestone", "status", "ms-alpha", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone status");
+
+    assert!(
+        output.status.success(),
+        "milestone status --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("milestone status json should parse");
+    assert_eq!(value["id"], "ms-alpha");
+    assert_eq!(value["status"], "ready");
+    assert_eq!(value["bead_count"], 3);
+    assert_eq!(value["plan_version"], 2);
+    assert_eq!(value["has_plan"], true);
+    assert_eq!(value["progress"]["total_beads"], 3);
+}
