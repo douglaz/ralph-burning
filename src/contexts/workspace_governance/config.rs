@@ -569,7 +569,9 @@ impl EffectiveConfig {
         apply_to_document(&mut document, key, value)?;
         let serialized = document.to_string();
         let workspace_config: WorkspaceConfig = toml::from_str(&serialized)?;
-        validate_workspace_iterative_minimal_settings(base_dir, &workspace_config)?;
+        if workspace_iterative_minimal_key(key) {
+            validate_workspace_iterative_minimal_settings(base_dir, &workspace_config)?;
+        }
         FileSystem::write_atomic(&config_path, &serialized)?;
 
         Self::load(base_dir)?.get(key)
@@ -2314,6 +2316,14 @@ fn validate_workspace_iterative_minimal_settings(
     }
 
     Ok(())
+}
+
+fn workspace_iterative_minimal_key(key: &str) -> bool {
+    matches!(
+        key,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds"
+            | "workflow.iterative_minimal.stable_rounds_required"
+    )
 }
 
 fn candidate_project_ids_for_iterative_validation(base_dir: &Path) -> AppResult<Vec<ProjectId>> {

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 15
@@ -23,66 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-14-9eaf9015",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "finding_summary: Terminal-loop resume for `iterative_minimal` is driven by the *current* `workflow.iterative_minimal.*` settings instead of the durable state of the interrupted attempt. `iterative_terminal_resume_ready` and `resume_terminal_iterative_stage_result` both recompute terminality from the latest config, so changing `stable_rounds_required` or `max_consecutive_implementer_rounds` between a crash and `run resume` can make the same journaled attempt either stop early or re-enter the implementer after it had already durably exited.\naffected_files:\n- src/contexts/workflow_composition/engine.rs:6494-6507\n- src/contexts/workflow_composition/engine.rs:6571-6576\nremediation_hint: Persist the iterative loop policy for the active attempt, or derive terminal resume readiness from the durable `ImplementerLoopExited` / iteration events for that attempt rather than re-reading mutable config on resume.",
-        "created_at": "2026-04-18T10:20:28.002263119Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "6fbc5d30390a6a9b851cb7a1572d20a0bb2468613e28f5205a15516140f52990"
-      },
-      {
-        "amendment_id": "fr-14-4cf19bb1",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "finding_summary: Raw-output recovery for terminal iterative resumes trusts the *current* resolved target instead of the target that originally produced the terminal iteration. Single-target drift is explicitly allowed on resume, but the fallback parser/producer metadata are chosen from the current backend family/model. If the parsed sidecar is missing and the implementer backend changed between suspend and resume, recovery can either fail by using the wrong parser family or succeed while attributing the recovered output to the wrong model.\naffected_files:\n- src/contexts/workflow_composition/engine.rs:6205-6211\n- src/contexts/workflow_composition/engine.rs:6324-6360\n- src/contexts/workflow_composition/engine.rs:6485-6522\n- src/contexts/workflow_composition/engine.rs:6556-6600\n- src/contexts/workflow_composition/engine.rs:9856-9925\nremediation_hint: When recovering an iterative terminal result, prefer the persisted stage-resolution snapshot (or other durable original-target metadata) to select the parser and reconstruct producer metadata, instead of the newly resolved target.",
-        "created_at": "2026-04-18T10:20:28.002268910Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "f5d9629bda0b6f1cd8363a572db606e31d1406f2d6f27a8a9370f67f2a895c8d"
-      },
-      {
-        "amendment_id": "fr-14-b57c192d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "Workspace fingerprint path reads entire files into memory via `fs::read` at `src/contexts/workflow_composition/engine.rs:6687` (inside `hash_workspace_entries`) and `src/contexts/workflow_composition/engine.rs:6812` (inside `hash_untracked_git_entry`). For workspaces containing large binaries (build artifacts that aren't excluded, database dumps, media assets, etc.), this will load the full file into RAM just to feed SHA-256 — a multi-GB file would OOM the process. Both paths are exercised on every iterative_minimal iteration: the fallback workspace walker runs twice per iteration when git is unavailable, and `hash_untracked_git_entry` hashes every untracked file even when git is available. Replace `hasher.update(fs::read(&path)?)` with a bounded streaming hash (e.g., `std::io::copy(&mut File::open(&path)?, &mut HashWriter(&mut hasher))` using an 8–64 KiB buffer) so fingerprinting never materializes file contents in memory. Consider also adding a size cap / skip list for large files to bound CPU cost.",
-        "created_at": "2026-04-18T10:20:28.002274952Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "4cce5411d0424e3e591aa4c52d67e0910c210b21a5c2e9e69cd033801c63496c"
-      },
-      {
-        "amendment_id": "fr-14-b54af5da",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "`validate_workspace_iterative_minimal_settings` (src/contexts/workspace_governance/config.rs:2305-2317) is invoked from `EffectiveConfig::set_workspace_value` on every `rb config set` at workspace scope (src/contexts/workspace_governance/config.rs:570-572). It enumerates every project directory via `candidate_project_ids_for_iterative_validation` and calls `FileSystem::read_project_config(base_dir, &project_id)?` for each. If any single project has a malformed `project.toml`, the `?` propagates the parse error and blocks *all* workspace-level config edits — including edits to keys unrelated to `workflow.iterative_minimal.*`. Previously a corrupt per-project config only affected that project. Two real issues: (1) a regression in blast radius (unrelated config keys can no longer be set from the workspace level); (2) a latent DoS where accidentally committing a malformed project.toml freezes the whole workspace's config surface. Fix by either (a) only running the cross-project validation when the key being set is one of the `workflow.iterative_minimal.*` keys, or (b) treating per-project read/parse failures as warnings and continuing validation against the remaining projects.",
-        "created_at": "2026-04-18T10:20:28.002281384Z",
-        "batch_sequence": 4,
-        "source": "workflow_stage",
-        "dedup_key": "d9bca68faec2cb38b51e0855ab632b1ea48f3e1c545f6993f70bc70baf0d41a2"
-      },
-      {
-        "amendment_id": "fr-14-5dd20308",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 14,
-        "body": "When an iterative iteration's backend invocation fails, `execute_iterative_plan_and_implement_stage` (src/contexts/workflow_composition/engine.rs:7080-7104) appends an `implementer_loop_exited` event with `reason: \"error\"` and then returns the error. However, the string \"error\" is not a member of the `IterativeLoopExitReason` enum (src/contexts/workflow_composition/engine.rs: `Stable`, `MaxRounds`). On a subsequent resume, `iterative_loop_exit_recorded` only matches `Stable` / `MaxRounds` reasons, so it does NOT block re-entry; the loop correctly continues iterating. The result is a journal where an `implementer_loop_exited` event is followed by more `implementer_iteration_started` events for the same cursor — contradicting the \"loop exited\" semantics that external consumers (status/tail UX, observability, the run summary in src/cli/run.rs) rely on. This also means there is no equivalent to \"loop_exited stable/max_rounds\" idempotency for the error case: if the same error recurs on resume, a second error-event is appended. Fix options: (a) use a new event type like `implementer_iteration_failed` instead of overloading `implementer_loop_exited`; (b) extend `IterativeLoopExitReason` with an `Error` variant and document that \"error\" exits may be followed by subsequent iterations on resume; or (c) skip the event entirely and rely on `stage_failed` — the error handling around it is already the common path.",
-        "created_at": "2026-04-18T10:20:28.002288868Z",
-        "batch_sequence": 5,
-        "source": "workflow_stage",
-        "dedup_key": "06d874e130e233f4f1a0c2391ac9171b4e6ec154ecb21db7535ddc7f4f888304"
-      }
-    ],
-    "processed_count": 32
+    "pending": [],
+    "processed_count": 37
   },
-  "status_summary": "running: final review restart round 15 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T10:03:06.969344046Z",

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -37,10 +38,10 @@ use crate::contexts::milestone_record::model::{MilestoneId, PlannedElsewhereMapp
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
-    ActiveRun, ArtifactRecord, CycleHistoryEntry, IterativeImplementerState, JournalEvent,
-    JournalEventType, LogLevel, PayloadRecord, ProjectRecord, QueuedAmendment,
-    ResolvedTargetRecord, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
-    StageResolutionSnapshot,
+    ActiveRun, ArtifactRecord, CycleHistoryEntry, IterativeImplementerLoopPolicy,
+    IterativeImplementerState, JournalEvent, JournalEventType, LogLevel, PayloadRecord,
+    ProjectRecord, QueuedAmendment, ResolvedTargetRecord, RollbackPoint, RunSnapshot, RunStatus,
+    RuntimeLogEntry, StageResolutionSnapshot,
 };
 use crate::contexts::project_run_record::queries;
 use crate::contexts::project_run_record::service::{
@@ -1254,6 +1255,8 @@ fn reconstruct_iterative_state_from_events(
     Ok(found.then_some(IterativeImplementerState {
         completed_iterations,
         stable_count,
+        loop_policy: None,
+        stage_target: None,
     }))
 }
 
@@ -1273,10 +1276,22 @@ fn resume_iteration_counters(
         && interrupted.stage_cursor.completion_round == resume_cursor.completion_round)
         .then(|| interrupted.iterative_implementer_state.clone())
         .flatten();
+    let snapshot_loop_policy = snapshot_state
+        .as_ref()
+        .and_then(|state| state.loop_policy.clone());
+    let snapshot_stage_target = snapshot_state
+        .as_ref()
+        .and_then(|state| state.stage_target.clone())
+        .or_else(|| {
+            interrupted
+                .stage_resolution_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.primary_target.clone())
+        });
     let run_id = RunId::new(&interrupted.run_id)?;
     let recovered_state =
         reconstruct_iterative_state_from_events(resume_events, &run_id, resume_cursor)?;
-    let iterative_state = match (snapshot_state, recovered_state) {
+    let mut iterative_state = match (snapshot_state, recovered_state) {
         (Some(snapshot_state), Some(recovered_state))
             if recovered_state.completed_iterations >= snapshot_state.completed_iterations =>
         {
@@ -1287,6 +1302,14 @@ fn resume_iteration_counters(
         (None, Some(recovered_state)) => Some(recovered_state),
         (None, None) => None,
     };
+    if let Some(state) = iterative_state.as_mut() {
+        if state.loop_policy.is_none() {
+            state.loop_policy = snapshot_loop_policy;
+        }
+        if state.stage_target.is_none() {
+            state.stage_target = snapshot_stage_target;
+        }
+    }
 
     Ok((
         interrupted.qa_iterations_current_cycle,
@@ -6138,6 +6161,65 @@ fn validate_iterative_minimal_loop_settings(
     Ok(())
 }
 
+fn iterative_loop_policy(
+    max_rounds: u32,
+    stable_rounds_required: u32,
+) -> IterativeImplementerLoopPolicy {
+    IterativeImplementerLoopPolicy {
+        max_consecutive_implementer_rounds: max_rounds,
+        stable_rounds_required,
+    }
+}
+
+fn iterative_loop_policy_for_attempt(
+    state: Option<&IterativeImplementerState>,
+    effective_config: &EffectiveConfig,
+) -> AppResult<IterativeImplementerLoopPolicy> {
+    let policy = state
+        .and_then(|state| state.loop_policy.clone())
+        .unwrap_or_else(|| {
+            iterative_loop_policy(
+                effective_config
+                    .run_policy()
+                    .iterative_minimal
+                    .max_consecutive_implementer_rounds,
+                effective_config
+                    .run_policy()
+                    .iterative_minimal
+                    .stable_rounds_required,
+            )
+        });
+    validate_iterative_minimal_loop_settings(
+        policy.max_consecutive_implementer_rounds,
+        policy.stable_rounds_required,
+    )?;
+    Ok(policy)
+}
+
+fn iterative_resume_target(
+    state: Option<&IterativeImplementerState>,
+    fallback_target: &ResolvedBackendTarget,
+    stage_id: StageId,
+) -> AppResult<ResolvedBackendTarget> {
+    let Some(target) = state.and_then(|state| state.stage_target.as_ref()) else {
+        return Ok(fallback_target.clone());
+    };
+    let backend_family = target
+        .backend_family
+        .parse::<BackendFamily>()
+        .map_err(|error| AppError::StageCommitFailed {
+            stage_id,
+            details: format!(
+                "persisted iterative_minimal target backend `{}` is invalid during resume recovery: {error}",
+                target.backend_family
+            ),
+        })?;
+    Ok(ResolvedBackendTarget::new(
+        backend_family,
+        target.model_id.clone(),
+    ))
+}
+
 fn event_matches_run(event: &JournalEvent, run_id: &RunId) -> bool {
     event.details.get("run_id").and_then(Value::as_str) == Some(run_id.as_str())
 }
@@ -6365,7 +6447,7 @@ fn recover_iterative_iteration_result(
     run_id: &RunId,
     stage_entry: &StagePlan,
     cursor: &StageCursor,
-    resolved_target: &ResolvedBackendTarget,
+    recovery_target: &ResolvedBackendTarget,
     iteration: u32,
 ) -> Result<(ValidatedBundle, RecordProducer), IterativeIterationRecoveryFailure> {
     let invocation_id = invocation_id_for_stage(
@@ -6386,7 +6468,7 @@ fn recover_iterative_iteration_result(
             return recover_iterative_payload_from_raw_output(
                 &raw_output_path,
                 stage_entry,
-                resolved_target,
+                recovery_target,
                 iteration,
                 &sidecar_error,
             );
@@ -6402,7 +6484,7 @@ fn recover_iterative_iteration_result(
             return recover_iterative_payload_from_raw_output(
                 &raw_output_path,
                 stage_entry,
-                resolved_target,
+                recovery_target,
                 iteration,
                 &sidecar_error,
             );
@@ -6422,7 +6504,7 @@ fn recover_iterative_iteration_result(
                     return recover_iterative_payload_from_raw_output(
                         &raw_output_path,
                         stage_entry,
-                        resolved_target,
+                        recovery_target,
                         iteration,
                         &sidecar_error,
                     );
@@ -6438,7 +6520,7 @@ fn recover_iterative_iteration_result(
                     return recover_iterative_payload_from_raw_output(
                         &raw_output_path,
                         stage_entry,
-                        resolved_target,
+                        recovery_target,
                         iteration,
                         &sidecar_error,
                     );
@@ -6454,7 +6536,7 @@ fn recover_iterative_iteration_result(
                     return recover_iterative_payload_from_raw_output(
                         &raw_output_path,
                         stage_entry,
-                        resolved_target,
+                        recovery_target,
                         iteration,
                         &sidecar_error,
                     );
@@ -6464,7 +6546,7 @@ fn recover_iterative_iteration_result(
         }
         legacy_payload => (
             legacy_payload,
-            recovered_iterative_record_producer(resolved_target),
+            recovered_iterative_record_producer(recovery_target),
         ),
     };
     let details_context = format!(
@@ -6491,19 +6573,14 @@ fn iterative_terminal_resume_ready(
     state: &IterativeImplementerState,
     effective_config: &EffectiveConfig,
 ) -> AppResult<bool> {
-    let stable_rounds_required = effective_config
-        .run_policy()
-        .iterative_minimal
-        .stable_rounds_required;
-    let max_rounds = effective_config
-        .run_policy()
-        .iterative_minimal
-        .max_consecutive_implementer_rounds;
+    let loop_policy = iterative_loop_policy_for_attempt(Some(state), effective_config)?;
+    let recovery_target =
+        iterative_resume_target(Some(state), resolved_target, stage_entry.stage_id)?;
     let Some(_) = iterative_loop_exit_reason(
         state.stable_count,
         state.completed_iterations,
-        stable_rounds_required,
-        max_rounds,
+        loop_policy.stable_rounds_required,
+        loop_policy.max_consecutive_implementer_rounds,
     ) else {
         return Ok(false);
     };
@@ -6513,7 +6590,7 @@ fn iterative_terminal_resume_ready(
         run_id,
         stage_entry,
         cursor,
-        resolved_target,
+        &recovery_target,
         state.completed_iterations,
     ) {
         Ok(_) => Ok(true),
@@ -6562,7 +6639,7 @@ fn resume_terminal_iterative_stage_result(
     seq: &mut u64,
     stage_entry: &StagePlan,
     cursor: &StageCursor,
-    resolved_target: &ResolvedBackendTarget,
+    recovery_target: &ResolvedBackendTarget,
     completed_iterations: u32,
     stable_count: u32,
     stable_rounds_required: u32,
@@ -6583,7 +6660,7 @@ fn resume_terminal_iterative_stage_result(
         run_id,
         stage_entry,
         cursor,
-        resolved_target,
+        recovery_target,
         completed_iterations,
     ) {
         Ok(recovered) => recovered,
@@ -6643,6 +6720,19 @@ fn git_args_with_iterative_fingerprint_pathspecs<'a>(base_args: &'a [&'a str]) -
         .collect()
 }
 
+fn hash_file_contents(path: &Path, hasher: &mut Sha256) -> AppResult<()> {
+    let mut file = fs::File::open(path)?;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(())
+}
+
 fn hash_workspace_entries(
     workspace_root: &Path,
     current: &Path,
@@ -6684,7 +6774,7 @@ fn hash_workspace_entries(
             hasher.update(relative.as_bytes());
             hash_metadata_mode(&metadata, hasher);
             hasher.update(metadata.len().to_le_bytes());
-            hasher.update(fs::read(&path)?);
+            hash_file_contents(&path, hasher)?;
         }
     }
 
@@ -6809,7 +6899,7 @@ fn hash_untracked_git_entry(
         hasher.update(display_path.as_bytes());
         hash_metadata_mode(&metadata, hasher);
         hasher.update(metadata.len().to_le_bytes());
-        hasher.update(fs::read(&absolute_path)?);
+        hash_file_contents(&absolute_path, hasher)?;
         return Ok(());
     }
 
@@ -6967,23 +7057,23 @@ where
     S: SessionStorePort,
 {
     let repo_root = execution_cwd.unwrap_or(base_dir);
-    let max_rounds = effective_config
-        .run_policy()
-        .iterative_minimal
-        .max_consecutive_implementer_rounds;
-    let stable_rounds_required = effective_config
-        .run_policy()
-        .iterative_minimal
-        .stable_rounds_required;
-    validate_iterative_minimal_loop_settings(max_rounds, stable_rounds_required)?;
-
     let persisted_state = current_active_run(snapshot)?
         .iterative_implementer_state
         .clone()
         .unwrap_or(IterativeImplementerState {
             completed_iterations: 0,
             stable_count: 0,
+            loop_policy: None,
+            stage_target: None,
         });
+    let loop_policy = iterative_loop_policy_for_attempt(Some(&persisted_state), effective_config)?;
+    let max_rounds = loop_policy.max_consecutive_implementer_rounds;
+    let stable_rounds_required = loop_policy.stable_rounds_required;
+    let recovery_target = iterative_resume_target(
+        Some(&persisted_state),
+        &resolved_target,
+        stage_entry.stage_id,
+    )?;
     let mut stable_count = persisted_state.stable_count;
     let mut iteration = persisted_state.completed_iterations;
     loop {
@@ -7003,7 +7093,7 @@ where
             seq,
             stage_entry,
             cursor,
-            &resolved_target,
+            &recovery_target,
             iteration,
             stable_count,
             stable_rounds_required,
@@ -7076,33 +7166,7 @@ where
 
         let (bundle, producer) = match iteration_result {
             Ok(result) => result,
-            Err(error) => {
-                *seq += 1;
-                let exited = journal::implementer_loop_exited_event(
-                    *seq,
-                    Utc::now(),
-                    run_id,
-                    stage_entry.stage_id,
-                    cursor.cycle,
-                    cursor.attempt,
-                    cursor.completion_round,
-                    "error",
-                    iteration,
-                );
-                let exited_line = journal::serialize_event(&exited)?;
-                if let Err(append_error) =
-                    journal_store.append_event(base_dir, project_id, &exited_line)
-                {
-                    *seq -= 1;
-                    return Err(AppError::StageCommitFailed {
-                        stage_id: stage_entry.stage_id,
-                        details: format!(
-                            "failed to persist implementer_loop_exited error event after implementer failure `{error}`: {append_error}"
-                        ),
-                    });
-                }
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
 
         let diff_after = git_diff_fingerprint(repo_root)?;
@@ -7145,6 +7209,8 @@ where
             active_run.iterative_implementer_state = Some(IterativeImplementerState {
                 completed_iterations: iteration,
                 stable_count,
+                loop_policy: Some(loop_policy.clone()),
+                stage_target: Some(resolved_target_to_record(&resolved_target)),
             });
         }
         run_snapshot_write
@@ -11147,6 +11213,8 @@ mod tests {
                 iterative_implementer_state: Some(IterativeImplementerState {
                     completed_iterations: 6,
                     stable_count: 1,
+                    loop_policy: None,
+                    stage_target: None,
                 }),
                 stage_resolution_snapshot: None,
             }),
@@ -11170,6 +11238,8 @@ mod tests {
             Some(IterativeImplementerState {
                 completed_iterations: 6,
                 stable_count: 1,
+                loop_policy: None,
+                stage_target: None,
             })
         );
     }
@@ -11191,6 +11261,8 @@ mod tests {
                 iterative_implementer_state: Some(IterativeImplementerState {
                     completed_iterations: 2,
                     stable_count: 0,
+                    loop_policy: None,
+                    stage_target: None,
                 }),
                 stage_resolution_snapshot: None,
             }),
@@ -11237,6 +11309,8 @@ mod tests {
                 iterative_implementer_state: Some(IterativeImplementerState {
                     completed_iterations: 1,
                     stable_count: 0,
+                    loop_policy: None,
+                    stage_target: None,
                 }),
                 stage_resolution_snapshot: None,
             }),
@@ -11286,6 +11360,8 @@ mod tests {
             Some(IterativeImplementerState {
                 completed_iterations: 3,
                 stable_count: 1,
+                loop_policy: None,
+                stage_target: None,
             })
         );
     }
@@ -11310,6 +11386,8 @@ mod tests {
                 iterative_implementer_state: Some(IterativeImplementerState {
                     completed_iterations: 6,
                     stable_count: 1,
+                    loop_policy: None,
+                    stage_target: None,
                 }),
                 stage_resolution_snapshot: None,
             }),
@@ -11372,6 +11450,8 @@ mod tests {
             Some(IterativeImplementerState {
                 completed_iterations: 1,
                 stable_count: 1,
+                loop_policy: None,
+                stage_target: None,
             }),
             "retry attempts must rebuild only from the current attempt boundary"
         );
@@ -11396,6 +11476,8 @@ mod tests {
                 iterative_implementer_state: Some(IterativeImplementerState {
                     completed_iterations: 3,
                     stable_count: 1,
+                    loop_policy: None,
+                    stage_target: None,
                 }),
                 stage_resolution_snapshot: None,
             }),

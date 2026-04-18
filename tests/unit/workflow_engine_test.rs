@@ -1985,6 +1985,13 @@ async fn iterative_minimal_stage_failed_records_iteration_invocation_id() {
         stage_failed_line.contains(&format!("invocation_id={expected_invocation_id}")),
         "runtime log should reference the iterative invocation id: {stage_failed_line}"
     );
+    assert!(
+        events.iter().all(|event| {
+            event.event_type != JournalEventType::ImplementerLoopExited
+                || event.details["reason"] != "error"
+        }),
+        "iterative failures should rely on stage_failed instead of emitting misleading implementer_loop_exited error events"
+    );
 }
 
 #[tokio::test]
@@ -2100,6 +2107,89 @@ async fn iterative_minimal_resume_recovers_terminal_raw_output_when_sidecar_is_m
 }
 
 #[tokio::test]
+async fn iterative_minimal_resume_uses_persisted_loop_policy_when_config_changes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-policy-drift",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "10",
+    )
+    .unwrap();
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "10",
+    )
+    .unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+
+    assert!(
+        resume_result.is_ok(),
+        "resume should honor the interrupted attempt's loop policy instead of the edited config: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should not re-enter the implementer loop after a terminal iteration when only the config changed"
+    );
+}
+
+#[tokio::test]
 async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -2211,6 +2301,120 @@ async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidec
         1,
         "plan_and_implement should complete after recovering the Claude raw transcript"
     );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_recovers_terminal_raw_output_with_original_target_metadata() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-target-drift",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_id = failed_events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunStarted)
+        .and_then(|event| event.details["run_id"].as_str())
+        .expect("run_started run_id");
+    let raw_output_path = project_root(base_dir, pid.as_str())
+        .join("runtime/backend")
+        .join(format!("{run_id}-plan_and_implement-c1-a1-cr1-it3.raw"));
+    let payload: Value =
+        serde_json::from_str(&fs::read_to_string(&raw_output_path).expect("read raw payload"))
+            .expect("parse raw payload");
+    let raw_transcript = json!({
+        "type": "result",
+        "result": "assistant prose that is not the structured payload",
+        "session_id": "sess-terminal",
+        "structured_output": {
+            "data": payload
+        }
+    });
+    fs::write(&raw_output_path, raw_transcript.to_string()).expect("rewrite raw output");
+
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover terminal raw output with the original implementer target even when the current backend drifts: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume must not re-run the implementer when raw output is recoverable under the original target metadata"
+    );
+
+    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).unwrap();
+    let plan_payload = payloads
+        .iter()
+        .find(|record| {
+            record.stage_id == StageId::PlanAndImplement
+                && record.record_kind == RecordKind::StagePrimary
+        })
+        .expect("plan_and_implement payload");
+    match plan_payload.producer.clone() {
+        Some(RecordProducer::Agent {
+            requested_backend_family,
+            actual_backend_family,
+            ..
+        }) => {
+            assert_eq!(requested_backend_family, "claude");
+            assert_eq!(actual_backend_family, "claude");
+        }
+        other => panic!("expected claude producer metadata, got {other:?}"),
+    }
 }
 
 #[tokio::test]

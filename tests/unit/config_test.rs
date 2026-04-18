@@ -15,7 +15,7 @@ use ralph_burning::shared::domain::{
 use ralph_burning::shared::error::AppError;
 use tempfile::tempdir;
 
-use super::workspace_test::initialize_workspace_fixture;
+use super::workspace_test::{initialize_workspace_fixture, live_project_root};
 
 #[test]
 fn effective_config_loads_compiled_defaults() {
@@ -424,6 +424,31 @@ fn config_set_rejects_cross_scope_iterative_minimal_policy_against_existing_proj
         }
         other => panic!("expected InvalidConfigValue, got {other:?}"),
     }
+}
+
+#[test]
+fn config_set_allows_unrelated_workspace_edits_when_project_config_is_malformed() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+    let project_id = ProjectId::new("broken-project").expect("project id");
+
+    FileSystem::write_project_config(temp_dir.path(), &project_id, &Default::default())
+        .expect("seed project config");
+    let project_config_path =
+        live_project_root(temp_dir.path(), project_id.as_str()).join("config.toml");
+    fs::write(
+        &project_config_path,
+        "[workflow.iterative_minimal\nstable_rounds_required = 2\n",
+    )
+    .expect("write malformed project config");
+
+    let entry = EffectiveConfig::set(temp_dir.path(), "default_flow", "quick_dev")
+        .expect("unrelated workspace config edit should ignore malformed project configs");
+    assert_eq!("default_flow", entry.key);
+    assert_eq!("quick_dev", entry.value.display_value());
+
+    let reloaded = EffectiveConfig::load(temp_dir.path()).expect("reload workspace config");
+    assert_eq!(FlowPreset::QuickDev, reloaded.default_flow());
 }
 
 #[test]

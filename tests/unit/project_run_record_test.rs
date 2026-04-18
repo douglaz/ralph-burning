@@ -2903,6 +2903,14 @@ fn active_run_with_snapshot_round_trip() {
         iterative_implementer_state: Some(IterativeImplementerState {
             completed_iterations: 4,
             stable_count: 1,
+            loop_policy: Some(ralph_burning::contexts::project_run_record::model::IterativeImplementerLoopPolicy {
+                max_consecutive_implementer_rounds: 10,
+                stable_rounds_required: 2,
+            }),
+            stage_target: Some(ResolvedTargetRecord {
+                backend_family: "codex".to_owned(),
+                model_id: "gpt-5.4".to_owned(),
+            }),
         }),
         stage_resolution_snapshot: Some(StageResolutionSnapshot {
             stage_id: ralph_burning::shared::domain::StageId::Planning,
