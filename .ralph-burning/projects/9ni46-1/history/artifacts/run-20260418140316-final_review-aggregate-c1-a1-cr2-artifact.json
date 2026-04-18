@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260418140316-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418140316-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:55:10.978547131Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-db74ab47`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-2-e946249d`\n\n## Final Accepted Amendments\n\n### `fr-2-db74ab47`\n\nfinding_summary: `tests/unit/br_adapter_test.rs:112-116,287-304` validates `br dep tree` with a test-only `DependencyTreeNode { dependencies: ... }` schema instead of the repo’s real public model in `src/adapters/br_models.rs:448-455` (`DepTreeNode`, which requires `title`, `status`, and `children`). Because this adapter test bypasses the actual type used by callers, it can pass even if real `DepTreeNode` deserialization is broken for `br dep tree` output. remediation_hint: switch the test to `ralph_burning::adapters::br_models::DepTreeNode` and feed it a realistic fixture matching the public contract.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

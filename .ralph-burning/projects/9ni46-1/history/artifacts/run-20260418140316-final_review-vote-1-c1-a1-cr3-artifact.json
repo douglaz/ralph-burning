@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260418140316-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T15:16:13.083353644Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendments that identify real test-coverage defects: the BR suite still lacks public dependency-mutation coverage, and the two BV exhaustion tests are functionally duplicate. Rejected the amendment that treats message-only `bv --robot-next` output as requiring a new adapter-level success path, because the current layered design already handles that case intentionally outside `exec_json` and the cited tests are consistent with that contract.\n\n## Votes\n\n- `fr-3-739ab7e0`: Reject\n  `BvAdapter::exec_json<T>` is a strict deserialization helper, so returning `BvParseError` for message-only `{\"message\":\"No actionable items available\"}` output is consistent with its current contract. The repository already has explicit higher-level handling for this case in `success_reconciliation` and controller selection by interpreting the raw output after `exec_read`/`BvParseError`, so the proposed adapter-level 'no recommendation' path is not clearly required for correctness or safety. The real gap is that the empty-graph and blocked-graph tests do not differentiate scenarios, which is better captured by `fr-3-3069b6de`.\n- `fr-3-c080752f`: Accept\n  `tests/unit/br_adapter_test.rs` verifies create, update, close, and sync mutation flows with command-shape and pending-journal assertions, but it does not do the same for `add_dependency`, `add_dependency_with_kind`, or `remove_dependency`. There is some existing lower-level coverage in `src/adapters/br_process.rs` for command builders and dirty-flag behavior, but that does not exercise the full public tracked-mutation path in the new suite, including working-directory propagation and persisted pending-mutation records. That leaves a real regression gap, especially for the explicit `parent-child` dependency kind.\n- `fr-3-3069b6de`: Accept\n  The two BV tests use the same scripted `--robot-next` payload, drive the same code path, and assert the same parse-error structure, so the second test does not add meaningful behavioral coverage. Given that the bead called out empty-graph and fully-blocked scenarios separately, the suite should either model distinct observable outputs for those cases or collapse them into one exhaustion test if BV intentionally emits the same payload for both. As written, the pair overstates scenario coverage without verifying any distinct invariant.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

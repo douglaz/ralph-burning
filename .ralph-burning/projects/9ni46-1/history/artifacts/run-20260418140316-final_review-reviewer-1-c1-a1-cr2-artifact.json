@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418140316-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:47:41.131791086Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` and read the new adapter tests plus the relevant BR/BV implementation/model code. I found 2 fix-now issues: the BV no-work cases are asserted as parse errors instead of the intended graceful signal, and the BR dep-tree test bypasses the real public model so it does not validate the caller-facing parse contract.\n\n## Amendments\n\n1. finding_summary: `tests/unit/bv_adapter_test.rs:214-279` hard-codes both `bv_empty_graph_reports_no_next_bead_gracefully` and `bv_blocked_graph_reports_all_beads_blocked` as `expect_err(BvParseError)` against the same `{\"message\":\"No actionable items available\"}` payload. That locks in the wrong contract for the two no-work `bv --robot-next` scenarios: neither test verifies the requested graceful/no-recommendation signal, and the blocked-graph case is not distinguished from the empty-graph case at all. remediation_hint: exercise the intended no-recommendation path explicitly and use a distinct blocked-graph fixture/assertion so the suite fails if either case regresses back to an undifferentiated parse error.\n   Rationale: These are explicit acceptance cases for this bead. As written, the new BV adapter coverage will stay green even if the implementation continues surfacing both scenarios only as generic parse failures, so the bead does not actually validate the behavior it was supposed to protect.\n2. finding_summary: `tests/unit/br_adapter_test.rs:112-116,287-304` validates `br dep tree` with a test-only `DependencyTreeNode { dependencies: ... }` schema instead of the repo’s real public model in `src/adapters/br_models.rs:448-455` (`DepTreeNode`, which requires `title`, `status`, and `children`). Because this adapter test bypasses the actual type used by callers, it can pass even if real `DepTreeNode` deserialization is broken for `br dep tree` output. remediation_hint: switch the test to `ralph_burning::adapters::br_models::DepTreeNode` and feed it a realistic fixture matching the public contract.\n   Rationale: The bead is supposed to add adapter-level parsing coverage. Using an ad-hoc shape here weakens that end-to-end guarantee and gives false confidence about the adapter/model integration that consumers actually rely on.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

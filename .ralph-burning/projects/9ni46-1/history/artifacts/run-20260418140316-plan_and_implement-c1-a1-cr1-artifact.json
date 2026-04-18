@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418140316-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T14:21:58.734148661Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded 24 new external adapter tests in `tests/unit/br_adapter_test.rs` and `tests/unit/bv_adapter_test.rs`, and registered both modules in `tests/unit.rs`. The new coverage uses scripted mock process runners only and exercises br/bv happy paths, malformed output handling, missing-tool/timeout/non-zero-exit surfacing, and br pending-mutation flush/import discipline without changing adapter source code.\n\n## Steps\n\n1. [Completed] Add `tests/unit/br_adapter_test.rs` with a scripted mock `ProcessRunner` and 16 async tests covering br JSON parsing, command-line construction, sync marker/journal behavior, and error propagation.\n2. [Completed] Add `tests/unit/bv_adapter_test.rs` with a scripted mock `BvProcessRunner` and 8 async tests covering bv recommendation parsing and graceful/error handling paths.\n3. [Completed] Register the new unit modules in `tests/unit.rs`, then run focused and full verification including `cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`, and `nix build`.\n\n## Validation Evidence\n\n- `cargo test --test unit br_adapter` passed with 16/16 new br adapter tests.\n- `cargo test --test unit bv_adapter` passed with 8/8 new bv adapter tests.\n- `cargo test` passed on the full tree.\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed.\n- `nix build` passed after staging the new test files so the Nix source filter included them.\n\n## Outstanding Risks\n\n- An unrelated untracked `.ralph-burning/projects/9ni46-1/` directory remains in the worktree and was intentionally left untouched per instructions.\n- The new adapter fixtures assert current CLI JSON shapes; if upstream `br` or `bv` output contracts change, these tests will need fixture updates.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

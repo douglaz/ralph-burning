@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260418140316-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T15:15:19.848416252Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAll three amendments identify legitimate quality issues in the newly-added adapter tests. The two bv empty-graph/blocked-graph tests use identical scripted payloads and identical assertions (confirmed at tests/unit/bv_adapter_test.rs:213-279), and their assertions lock in a BvParseError contract while the bead scope (prompt.md:90) calls for a clean \"nothing ready\" signal. Separately, the br adapter suite tests dep_tree reads but never exercises add_dependency/remove_dependency even though src/adapters/br_process.rs:1405-1446 has their own command and journaling paths and the bead scope note explicitly lists \"nominal dependency operations\" as required coverage.\n\n## Votes\n\n- `fr-3-739ab7e0`: Accept\n  Valid finding. The test names promise a clean no-recommendation signal, but the assertions ratchet in the opposite contract (BvParseError on every message-only payload), and both cases use identical inputs so they cannot distinguish empty-graph from blocked-graph semantics. Whether fixed by a thin no-recommendation helper or by reframing the tests to honestly reflect current behavior, the present tests actively freeze a misleading contract and fail the bead's explicit \"clean signal\" requirement.\n- `fr-3-c080752f`: Accept\n  Legitimate coverage gap. The bead scope note explicitly requires \"nominal dependency operations\" and br_process.rs:1405-1446 carries distinct command construction plus tracked-mutation/journaling paths for add_dependency, add_dependency_with_kind, and remove_dependency. The current suite only covers dep_tree reads and generic create/update/close, so a regression in dep add/remove command wiring or the parent-child kind flag would slip past the new mocked coverage. One happy-path mutation test (plus ideally a parent-child kind variant) is low-cost and closes a real gap.\n- `fr-3-3069b6de`: Accept\n  Confirmed by direct inspection: tests/unit/bv_adapter_test.rs:216-219 and 249-252 use the exact same scripted payload {\"message\":\"No actionable items available\"}, the same expected_args, and identical BvParseError assertions on raw_output/command. The bead scope lists these as two distinct scenarios, so a second test with byte-identical input and assertions contributes no differential coverage and would pass or fail in lockstep with the first. Either distinguish the inputs (e.g., an empty object vs. a payload enumerating blocked ids) or collapse into one parameterized test.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}

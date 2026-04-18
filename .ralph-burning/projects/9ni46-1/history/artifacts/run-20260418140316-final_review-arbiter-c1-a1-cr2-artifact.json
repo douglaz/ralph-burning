@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-arbiter-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418140316-final_review-arbiter-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:55:10.964928708Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment because the adapter contract is correctly exercised as `BvParseError` for message-only `bv --robot-next` output; graceful `NoRecommendation` handling is intentionally implemented and tested in higher-level selection/reconciliation code, not in `BvAdapter::exec_json`.\n\n## Rulings\n\n- `fr-2-e946249d`: Reject\n  `tests/unit/bv_adapter_test.rs:214-279` is redundant, but the amendment’s core contract claim is not supported by the code. At the adapter layer, `BvAdapter::exec_json` in `src/adapters/bv_process.rs:423-429` simply deserializes stdout into `NextBeadResponse`, and `NextBeadResponse` in `src/adapters/bv_process.rs:345-352` requires `id` and `title`. A message-only payload like `{\"message\":\"No actionable items available\"}` therefore should produce `BvParseError` at this layer. The graceful/no-recommendation behavior is implemented one layer up: `capture_next_step_hint` in `src/contexts/automation_runtime/success_reconciliation.rs:683-694` and `request_next_recommendation` in `src/cli/run.rs:347-366` explicitly reinterpret that parse failure by re-parsing the raw stdout as a message-only response. `src/test_support/e2e_fixtures.rs:1662-1671` also intentionally expects `exec_json::<NextBeadResponse>` to fail on the exhausted message-only response. Because the public adapter contract is parse-error-on-message-only, changing these adapter tests to expect a graceful success path would test the wrong layer. The two tests are effectively duplicates and could be renamed or consolidated, but that is not the defect asserted in the amendment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
