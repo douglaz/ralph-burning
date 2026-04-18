@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T04:17:05.668859626Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` excluding `.ralph-burning`, read the main workflow/config/journal/CLI changes end-to-end, and spot-checked with `cargo test --features test-stub`, `cargo clippy --features test-stub -- -D warnings`, and `cargo fmt --check`. I found one recovery-path correctness issue in the iterative implementer loop. `nix build` was still in progress when I finalized the review.\n\n## Amendments\n\n1. Handle resumed `iterative_minimal` stages that have already durably emitted `implementer_loop_exited` without invoking the implementer again. `reconstruct_iterative_state_from_events` only rebuilds state from `ImplementerIterationCompleted` events (`src/contexts/workflow_composition/engine.rs:1162-1191`), and `execute_iterative_plan_and_implement_stage` unconditionally increments `completed_iterations` before re-checking stop conditions (`src/contexts/workflow_composition/engine.rs:6234-6245`) even after the prior run has already journaled `ImplementerLoopExited` (`src/contexts/workflow_composition/engine.rs:6376-6398`). If the process dies or stage commit/payload persistence fails after the loop exit event is written but before `stage_completed`, a resume performs one extra implementer invocation, can exceed `max_consecutive_implementer_rounds`, and may mutate an already-stable workspace.\n   Rationale: This breaks the core stop-condition guarantee on the exact recovery path the new workflow introduces. A resumed run can do new work after the loop already terminated, which makes the journal/history inconsistent and can produce additional code changes that final_review was never supposed to see.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

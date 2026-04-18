@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-18T02:19:11.612527594Z",
     "prompt_hash_at_cycle_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "prompt_hash_at_stage_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-68b23572",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Handle resumed `iterative_minimal` stages that have already durably emitted `implementer_loop_exited` without invoking the implementer again. `reconstruct_iterative_state_from_events` only rebuilds state from `ImplementerIterationCompleted` events (`src/contexts/workflow_composition/engine.rs:1162-1191`), and `execute_iterative_plan_and_implement_stage` unconditionally increments `completed_iterations` before re-checking stop conditions (`src/contexts/workflow_composition/engine.rs:6234-6245`) even after the prior run has already journaled `ImplementerLoopExited` (`src/contexts/workflow_composition/engine.rs:6376-6398`). If the process dies or stage commit/payload persistence fails after the loop exit event is written but before `stage_completed`, a resume performs one extra implementer invocation, can exceed `max_consecutive_implementer_rounds`, and may mutate an already-stable workspace.",
+        "created_at": "2026-04-18T04:25:06.884516831Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d6abbe364d89bd374291822ef6ab293293d5db32d49144a38f962b9acb1a9193"
+      },
+      {
+        "amendment_id": "fr-3-ffd697a2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Add an exit-check at the top of the iterative loop in `execute_iterative_plan_and_implement_stage` (src/contexts/workflow_composition/engine.rs:6234-6244). When `persisted_state` is restored on resume with `stable_count >= stable_rounds_required` or `completed_iterations >= max_rounds`, the loop currently runs an extra (wasted) iteration before exiting. This can happen when a run is interrupted between `run_snapshot_write.write_run_snapshot` (engine.rs:6367-6374, which persists the terminal `(completed_iterations, stable_count)` tuple) and the `implementer_loop_exited` event append (engine.rs:6376-6398). On resume, `reconstruct_iterative_state_from_events` observes the same terminal state from journal `ImplementerIterationCompleted` events, but the loop body at engine.rs:6244 unconditionally does `iteration += 1` and re-invokes the backend. Fix: before `iteration += 1`, call `advance_iterative_loop_state` (or equivalent predicate) using the loaded state and, if it already yields an exit reason, emit the `implementer_loop_exited` event and return without another backend invocation. Add a unit test covering the resume-with-terminal-state case (e.g., `stable_count == stable_rounds_required` in `persisted_state`).",
+        "created_at": "2026-04-18T04:25:06.884523845Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "bd45de496f5e437a76b7a2f185cee7ce58cfd0fa86a90fc18a7bc21b50928c25"
+      },
+      {
+        "amendment_id": "fr-3-fdb3f000",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Replace the silent `.max(1)` coercion on `max_consecutive_implementer_rounds` and `stable_rounds_required` in `execute_iterative_plan_and_implement_stage` (src/contexts/workflow_composition/engine.rs:6216-6225) with explicit validation, or at minimum validate at config ingestion in `apply_to_document` / the config loader (src/contexts/workspace_governance/config.rs). Today a user-provided `0` for either setting is silently rewritten to `1`, which (a) hides user error, (b) interacts with the resume bug above (a persisted `stable_count=0` would exit on the first stable round instead of the default two), and (c) produces behavior that does not match what the user configured. Prefer: reject zero at config parse time with a clear `AppError` citing the config key and recommending a positive integer, OR keep the clamp but log a `DurableWarning` so the discrepancy is visible in the journal.",
+        "created_at": "2026-04-18T04:25:06.884529385Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "fc14cbaf9a920d55b117650f3177f9a8443935937fd19e1a14e10b7a610120d9"
+      }
+    ],
     "processed_count": 6
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-18T03:38:55.170297542Z",
+    "resolved_at": "2026-04-18T04:06:25.378964526Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

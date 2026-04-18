@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T04:23:01.949032920Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThree amendments identify real correctness and robustness issues in `iterative_minimal` resume/config handling. The sequence-counter amendment targets an effectively unreachable serializer error path in the current `JournalEvent` model, so I do not consider it a material defect warranting acceptance.\n\n## Votes\n\n- `fr-3-68b23572`: Accept\n  `execute_iterative_plan_and_implement_stage` restores `completed_iterations`/`stable_count` from durable state and then immediately does `iteration += 1` before checking any exit condition. That makes resume non-idempotent for a stage that had already reached a terminal iterative state, including the window after `implementer_loop_exited` was journaled but before `stage_completed` committed. The result is an unnecessary extra implementer invocation, possible overrun of the configured max rounds, and avoidable workspace mutation.\n- `fr-3-ffd697a2`: Accept\n  The earlier crash window is also real: after `write_run_snapshot` persists a terminal `(completed_iterations, stable_count)` tuple, a resume can come back with already-terminal iterative state and still invoke the backend once more because the loop has no pre-check. Adding an exit predicate before incrementing/invoking, plus a regression test for resume with terminal persisted state, is the right hardening. The implementation should preserve or reconstruct the last successful result rather than re-running the implementer.\n- `fr-3-2de75dec`: Reject\n  The seq rollback observation is mechanically true on the `serialize_event(&event)?` path, but for the current `JournalEvent` shape (`u64`, `DateTime<Utc>`, enum, and `serde_json::Value`) `serde_json::to_string` is effectively infallible in normal execution. That makes this a defensive cleanup on an unreachable path, not a concrete correctness defect comparable to the real resume bugs above.\n- `fr-3-fdb3f000`: Accept\n  These settings are user-configurable loop bounds/termination thresholds, yet the engine silently rewrites `0` to `1` with `.max(1)` instead of surfacing the invalid configuration. That hides operator error and makes runtime behavior diverge from the persisted config. Validation at config load/set time, or at least a durable warning, is a correctness and maintainability improvement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
