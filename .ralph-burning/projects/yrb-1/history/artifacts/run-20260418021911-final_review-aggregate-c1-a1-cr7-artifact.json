@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260418021911-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260418021911-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T06:58:21.911866160Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 7/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-7-13e645ad`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-7-656cf9e6`\n\n## Final Accepted Amendments\n\n### `fr-7-13e645ad`\n\nIn `src/contexts/workflow_composition/engine.rs`, `invoke_stage_on_backend` (lines 6856-6918) calls `persist_invocation_parsed_payload` (lines 6161-6185) inline after the contract evaluates the envelope, gated by `invocation_suffix.is_some()`. If the atomic write fails (disk full, permissions, transient IO), the `?` inside the `and_then` closure turns a completed backend invocation into `Err(AppError::StageCommitFailed)`, which the iterative loop (line 6756) catches and journals as `implementer_loop_exited` reason=\"error\". On resume, `reconstruct_iterative_state_from_events` sees `implementer_iteration_started` for iteration N without a matching `implementer_iteration_completed`, so `completed_iterations = N-1`. The loop then invokes iteration N again — but `recover_iterative_iteration_result` cannot find the parsed payload sidecar (never written), so the backend gets called (and billed) a second time for the same iteration, and the original in-memory bundle is discarded without use. Additionally, the error path makes the user's implementer call completely wasted: despite the backend having produced a valid bundle, the run exits failed. Fix options: (1) degrade persistence failures to `tracing::warn!` plus a best-effort retry and continue with the in-memory bundle (accepting that resume may need to re-invoke, but succeeding on the happy path); or (2) sequence persistence so the sidecar is written BEFORE `implementer_iteration_started` is appended is not viable, but (3) fold the sidecar write into the same atomic boundary as `implementer_iteration_completed` journal append so both succeed-or-fail together. Option (1) is the least invasive.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}
