@@ -232,6 +232,7 @@ impl EffectiveConfig {
                 ),
             },
         };
+        validate_effective_iterative_minimal_policy(&run_policy.iterative_minimal)?;
 
         let prompt_review_policy = EffectivePromptReviewPolicy {
             enabled: resolve_scalar(
@@ -564,7 +565,10 @@ impl EffectiveConfig {
         let raw = FileSystem::read_to_string(&config_path)?;
         let mut document = raw.parse::<DocumentMut>()?;
         apply_to_document(&mut document, key, value)?;
-        FileSystem::write_atomic(&config_path, &document.to_string())?;
+        let serialized = document.to_string();
+        let workspace_config: WorkspaceConfig = toml::from_str(&serialized)?;
+        validate_iterative_minimal_settings(&workspace_config, &ProjectConfig::default())?;
+        FileSystem::write_atomic(&config_path, &serialized)?;
 
         Self::load(base_dir)?.get(key)
     }
@@ -584,11 +588,13 @@ impl EffectiveConfig {
         value: &str,
     ) -> AppResult<ConfigEntry> {
         let _ = Self::load_for_project(base_dir, Some(project_id), CliBackendOverrides::default())?;
-        let mut project_config = FileSystem::read_project_config(base_dir, project_id)?;
-        let raw = toml::to_string_pretty(&project_config)?;
+        let raw = toml::to_string_pretty(&FileSystem::read_project_config(base_dir, project_id)?)?;
         let mut document = raw.parse::<DocumentMut>()?;
         apply_to_document(&mut document, key, value)?;
-        project_config = toml::from_str(&document.to_string())?;
+        let serialized = document.to_string();
+        let project_config: ProjectConfig = toml::from_str(&serialized)?;
+        let workspace_config = load_workspace_config(base_dir)?;
+        validate_iterative_minimal_settings(&workspace_config, &project_config)?;
         FileSystem::write_project_config(base_dir, project_id, &project_config)?;
 
         Self::load_for_project(base_dir, Some(project_id), CliBackendOverrides::default())?.get(key)
@@ -2158,6 +2164,47 @@ fn validate_optional_positive_u32(key: &str, value: Option<u32>) -> AppResult<()
     Ok(())
 }
 
+fn validate_iterative_minimal_range(
+    max_key: &str,
+    max_rounds: u32,
+    stable_key: &str,
+    stable_rounds_required: u32,
+) -> AppResult<()> {
+    if stable_rounds_required > max_rounds {
+        return Err(AppError::InvalidConfigValue {
+            key: stable_key.to_owned(),
+            value: stable_rounds_required.to_string(),
+            reason: format!("must be less than or equal to {max_key} ({max_rounds})"),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_optional_iterative_minimal_range(
+    max_key: &str,
+    max_rounds: Option<u32>,
+    stable_key: &str,
+    stable_rounds_required: Option<u32>,
+) -> AppResult<()> {
+    if let (Some(max_rounds), Some(stable_rounds_required)) = (max_rounds, stable_rounds_required) {
+        validate_iterative_minimal_range(max_key, max_rounds, stable_key, stable_rounds_required)?;
+    }
+
+    Ok(())
+}
+
+fn validate_effective_iterative_minimal_policy(
+    policy: &EffectiveIterativeMinimalPolicy,
+) -> AppResult<()> {
+    validate_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        policy.max_consecutive_implementer_rounds,
+        "workflow.iterative_minimal.stable_rounds_required",
+        policy.stable_rounds_required,
+    )
+}
+
 fn validate_iterative_minimal_settings(
     workspace_config: &WorkspaceConfig,
     project_config: &ProjectConfig,
@@ -2184,6 +2231,30 @@ fn validate_iterative_minimal_settings(
             .stable_rounds_required,
     )?;
     validate_optional_positive_u32(
+        "workflow.iterative_minimal.stable_rounds_required",
+        project_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+    validate_optional_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+        "workflow.iterative_minimal.stable_rounds_required",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+    validate_optional_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        project_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
         "workflow.iterative_minimal.stable_rounds_required",
         project_config
             .workflow

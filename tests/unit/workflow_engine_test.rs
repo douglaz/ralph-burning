@@ -1877,6 +1877,118 @@ async fn iterative_minimal_continues_when_terminal_parsed_payload_sidecar_persis
 }
 
 #[tokio::test]
+async fn iterative_minimal_resume_reinvokes_terminal_iteration_when_sidecar_is_missing() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-missing-sidecar",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "initial run should stop after the terminal iteration completes"
+    );
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read interrupted snapshot");
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        failed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "the interrupted run should already have one durable loop-exit event"
+    );
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should re-invoke the terminal implementer iteration instead of failing when the parsed sidecar is missing: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        4,
+        "resume should re-run only the terminal implementer iteration"
+    );
+
+    let resumed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read resumed snapshot");
+    assert_eq!(resumed_snapshot.status, RunStatus::Completed);
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        resumed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "resume should reuse the existing loop-exit record while re-invoking the terminal iteration"
+    );
+    assert_eq!(
+        stage_events(
+            &resumed_events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement should complete successfully after the resume fallback"
+    );
+}
+
+#[tokio::test]
 async fn iterative_minimal_falls_back_to_workspace_diff_when_no_git_repo_exists() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

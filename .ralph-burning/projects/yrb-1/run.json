@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 9
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-8-bc9d1ee1",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "finding_summary: `iterative_minimal` resume can become unrecoverable if the terminal iteration's parsed sidecar could not be written.\naffected_files: [\"src/contexts/workflow_composition/engine.rs\"]\ndetails: `persist_invocation_parsed_payload_best_effort` explicitly treats parsed-sidecar persistence as optional and warns that resume may need to re-invoke the iteration when both writes fail ([src/contexts/workflow_composition/engine.rs:6187-6210]). But once the saved loop state looks terminal, `resume_terminal_iterative_stage_result` always tries to reload that sidecar and returns an error if it is missing or unreadable ([src/contexts/workflow_composition/engine.rs:6323-6370], reached from [src/contexts/workflow_composition/engine.rs:6713-6728]). In the realistic failure mode where the final stable/max-rounds iteration finished, sidecar persistence failed, and the run then dies before `stage_completed`, `run resume` has no recovery path even though the code comments say it should be able to re-invoke that iteration. The helper also appends `implementer_loop_exited` before proving recovery is possible, which leaves the journal claiming a clean loop exit on a failing resume path.\nremediation_hint: When terminal recovery cannot load the saved parsed payload, fall back to continuing the loop and re-invoking the implementer instead of failing resume, and add a regression test that combines terminal-sidecar persistence failure with an interrupted stage commit.",
-        "created_at": "2026-04-18T07:25:03.244265666Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "434b0fa3e93aca38e03f13e2eb4890b2dda992e7ebc7bca253934d2ae8abf590"
-      },
-      {
-        "amendment_id": "fr-8-c370455f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "Harden iterative_minimal resume against a missing parsed-payload sidecar.\n\nCurrent flow in `src/contexts/workflow_composition/engine.rs`:\n- `persist_invocation_parsed_payload_best_effort` (6187-6213) tries twice and swallows the error on failure.\n- The iterative loop then updates `snapshot.active_run.iterative_implementer_state` to the new `completed_iterations`/`stable_count` and persists the snapshot (6850-6864).\n- Only after that does it append `implementer_loop_exited` (when terminal) and return to the caller, which then runs `persist_stage_success` to durably record `stage_completed`.\n\nFailure window: if both sidecar writes fail AND the process is killed after the snapshot write but before `stage_completed` is durable, the persisted state is terminal but the sidecar is absent. On resume, `resume_terminal_iterative_stage_result` (6323) sees `iterative_loop_exit_reason(...) = Some(..)`, skips preflight via `iterative_terminal_resume_ready` only when the sidecar exists, and then calls `recover_iterative_iteration_result` (6215) which hard-fails on `fs::read_to_string(&parsed_output_path)`. The result is a `StageCommitFailed` resume error with no built-in recovery path — the operator has to edit the snapshot to clear `iterative_implementer_state` before the run can progress.\n\nRecommended fix: when `recover_iterative_iteration_result` sees the sidecar missing, fall back to re-invoking iteration N (invocation_id is deterministic via the `it{iteration}` suffix, so the raw/parsed paths get recreated) instead of failing. Equivalent alternatives: embed the parsed payload inline on `ImplementerIterationCompleted` event details for redundancy, or escalate a sidecar persistence failure to a hard stage retry so no terminal state can be recorded without durable recovery data.",
-        "created_at": "2026-04-18T07:25:03.244274172Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "33f91576677cb98032ea2837ab8170e4e4d16b28ca5ebfb0577ca13455700033"
-      },
-      {
-        "amendment_id": "fr-8-72cfeb11",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "Add cross-field validation that `workflow.iterative_minimal.stable_rounds_required <= workflow.iterative_minimal.max_consecutive_implementer_rounds`.\n\n`validate_iterative_minimal_loop_setting` in `src/contexts/workflow_composition/engine.rs:6068-6078` (and the equivalents in `src/contexts/workspace_governance/config.rs`) only check that each value is non-zero. If an operator configures e.g. `stable_rounds_required=10, max_consecutive_implementer_rounds=5`, the `Stable` exit branch in `iterative_loop_exit_reason` (6010-6020) becomes unreachable — every run silently degrades to the max-rounds cap and the stability signal is inert.\n\nFix: add a cross-field check in the config validator that rejects `stable_rounds_required > max_consecutive_implementer_rounds` with a clear InvalidConfigValue error, and mirror the check at run start inside `execute_iterative_plan_and_implement_stage`.",
-        "created_at": "2026-04-18T07:25:03.244278420Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "ab79b31e66e95f0a9f4fcd309d56265ccecc83ecff2b86a60f740e8969b96db0"
-      }
-    ],
-    "processed_count": 20
+    "pending": [],
+    "processed_count": 23
   },
-  "status_summary": "running: final review restart round 9 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T07:05:54.837480092Z",

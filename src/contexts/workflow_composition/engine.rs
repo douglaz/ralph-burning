@@ -1196,6 +1196,7 @@ fn last_stage_attempt_entry_sequence(
     events: &[JournalEvent],
     run_id: &RunId,
     cursor: &StageCursor,
+    before_sequence: Option<u64>,
 ) -> Option<u64> {
     events
         .iter()
@@ -1207,6 +1208,7 @@ fn last_stage_attempt_entry_sequence(
                 && event.details.get("cycle").and_then(Value::as_u64) == Some(cursor.cycle as u64)
                 && event.details.get("attempt").and_then(Value::as_u64)
                     == Some(cursor.attempt as u64)
+                && before_sequence.is_none_or(|limit| event.sequence < limit)
         })
         .map(|event| event.sequence)
         .max()
@@ -1220,7 +1222,7 @@ fn reconstruct_iterative_state_from_events(
     let mut completed_iterations = 0;
     let mut stable_count = 0;
     let mut found = false;
-    let stage_attempt_boundary = last_stage_attempt_entry_sequence(events, run_id, cursor);
+    let stage_attempt_boundary = last_stage_attempt_entry_sequence(events, run_id, cursor, None);
 
     for event in events {
         if event.event_type != JournalEventType::ImplementerIterationCompleted
@@ -6077,6 +6079,31 @@ fn validate_iterative_minimal_loop_setting(key: &str, value: u32) -> AppResult<(
     Ok(())
 }
 
+fn validate_iterative_minimal_loop_settings(
+    max_rounds: u32,
+    stable_rounds_required: u32,
+) -> AppResult<()> {
+    validate_iterative_minimal_loop_setting(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        max_rounds,
+    )?;
+    validate_iterative_minimal_loop_setting(
+        "workflow.iterative_minimal.stable_rounds_required",
+        stable_rounds_required,
+    )?;
+    if stable_rounds_required > max_rounds {
+        return Err(AppError::InvalidConfigValue {
+            key: "workflow.iterative_minimal.stable_rounds_required".to_owned(),
+            value: stable_rounds_required.to_string(),
+            reason: format!(
+                "must be less than or equal to workflow.iterative_minimal.max_consecutive_implementer_rounds ({max_rounds})"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 fn event_matches_run(event: &JournalEvent, run_id: &RunId) -> bool {
     event.details.get("run_id").and_then(Value::as_str) == Some(run_id.as_str())
 }
@@ -6212,6 +6239,11 @@ fn persist_invocation_parsed_payload_best_effort(
     }
 }
 
+enum IterativeIterationRecoveryFailure {
+    SidecarUnavailable { details: String },
+    InvalidPayload(AppError),
+}
+
 fn recover_iterative_iteration_result(
     project_root: &Path,
     run_id: &RunId,
@@ -6219,7 +6251,7 @@ fn recover_iterative_iteration_result(
     cursor: &StageCursor,
     resolved_target: &ResolvedBackendTarget,
     iteration: u32,
-) -> AppResult<(ValidatedBundle, RecordProducer)> {
+) -> Result<(ValidatedBundle, RecordProducer), IterativeIterationRecoveryFailure> {
     let invocation_id = invocation_id_for_stage(
         run_id,
         stage_entry.stage_id,
@@ -6229,8 +6261,7 @@ fn recover_iterative_iteration_result(
     let raw_output_path = iterative_backend_raw_output_path(project_root, &invocation_id);
     let parsed_output_path = iterative_backend_parsed_output_path(project_root, &invocation_id);
     let parsed_payload = fs::read_to_string(&parsed_output_path).map_err(|error| {
-        AppError::StageCommitFailed {
-            stage_id: stage_entry.stage_id,
+        IterativeIterationRecoveryFailure::SidecarUnavailable {
             details: format!(
                 "failed to recover iterative_minimal parsed payload for iteration {iteration} from {}: {error}; raw output remains at {}",
                 parsed_output_path.display(),
@@ -6238,29 +6269,71 @@ fn recover_iterative_iteration_result(
             ),
         }
     })?;
-    let parsed_payload = serde_json::from_str::<Value>(&parsed_payload).map_err(|error| {
-        AppError::StageCommitFailed {
-            stage_id: stage_entry.stage_id,
-            details: format!(
-                "failed to parse recovered iterative_minimal parsed payload for iteration {iteration} from {}: {error}; inspect raw output at {}",
-                parsed_output_path.display(),
-                raw_output_path.display()
-            ),
-        }
-    })?;
+    let parsed_payload =
+        serde_json::from_str::<Value>(&parsed_payload).map_err(|error| {
+            IterativeIterationRecoveryFailure::SidecarUnavailable {
+                details: format!(
+                    "failed to parse recovered iterative_minimal parsed payload for iteration {iteration} from {}: {error}; inspect raw output at {}",
+                    parsed_output_path.display(),
+                    raw_output_path.display()
+                ),
+            }
+        })?;
     let bundle = stage_entry
         .contract
         .evaluate_permissive(&parsed_payload)
-        .map_err(|error| AppError::StageCommitFailed {
-            stage_id: stage_entry.stage_id,
-            details: format!(
-                "recovered iterative_minimal parsed payload for iteration {iteration} did not satisfy the stage contract: {error}; inspect {} and {}",
-                parsed_output_path.display(),
-                raw_output_path.display()
-            ),
+        .map_err(|error| {
+            IterativeIterationRecoveryFailure::InvalidPayload(AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "recovered iterative_minimal parsed payload for iteration {iteration} did not satisfy the stage contract: {error}; inspect {} and {}",
+                    parsed_output_path.display(),
+                    raw_output_path.display()
+                ),
+            })
         })?;
 
     Ok((bundle, recovered_iterative_record_producer(resolved_target)))
+}
+
+fn reconstruct_iterative_state_before_iteration(
+    events: &[JournalEvent],
+    run_id: &RunId,
+    cursor: &StageCursor,
+    target_iteration: u32,
+    before_sequence: Option<u64>,
+) -> AppResult<IterativeImplementerState> {
+    let mut completed_iterations = 0;
+    let mut stable_count = 0;
+    let stage_attempt_boundary =
+        last_stage_attempt_entry_sequence(events, run_id, cursor, before_sequence);
+
+    for event in events {
+        if event.event_type != JournalEventType::ImplementerIterationCompleted
+            || !event_matches_run(event, run_id)
+            || !event_matches_stage_cursor(event, cursor)?
+            || !event_matches_stage_attempt(event, cursor)?
+        {
+            continue;
+        }
+        if stage_attempt_boundary.is_some_and(|boundary| event.sequence <= boundary) {
+            continue;
+        }
+
+        let iteration = event_detail_u32(event, "iteration")?;
+        if iteration >= target_iteration || iteration <= completed_iterations {
+            continue;
+        }
+
+        let diff_changed = event_detail_bool(event, "diff_changed")?;
+        completed_iterations = iteration;
+        stable_count = if diff_changed { 0 } else { stable_count + 1 };
+    }
+
+    Ok(IterativeImplementerState {
+        completed_iterations,
+        stable_count,
+    })
 }
 
 fn iterative_terminal_resume_ready(
@@ -6319,6 +6392,13 @@ fn iterative_resume_skips_current_stage_preflight(
     )
 }
 
+#[derive(Debug)]
+enum TerminalIterativeResumeResult {
+    NotTerminal,
+    Recovered(Box<(ValidatedBundle, RecordProducer)>),
+    Reinvoke(IterativeImplementerState),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resume_terminal_iterative_stage_result(
     journal_store: &dyn JournalStorePort,
@@ -6334,17 +6414,49 @@ fn resume_terminal_iterative_stage_result(
     stable_count: u32,
     stable_rounds_required: u32,
     max_rounds: u32,
-) -> AppResult<Option<(ValidatedBundle, RecordProducer)>> {
+) -> AppResult<TerminalIterativeResumeResult> {
     let Some(reason) = iterative_loop_exit_reason(
         stable_count,
         completed_iterations,
         stable_rounds_required,
         max_rounds,
     ) else {
-        return Ok(None);
+        return Ok(TerminalIterativeResumeResult::NotTerminal);
     };
 
     let events = journal_store.read_journal(base_dir, project_id)?;
+    let recovered = match recover_iterative_iteration_result(
+        project_root,
+        run_id,
+        stage_entry,
+        cursor,
+        resolved_target,
+        completed_iterations,
+    ) {
+        Ok(recovered) => recovered,
+        Err(IterativeIterationRecoveryFailure::SidecarUnavailable { details }) => {
+            let rewind_state = reconstruct_iterative_state_before_iteration(
+                &events,
+                run_id,
+                cursor,
+                completed_iterations,
+                Some(*seq),
+            )?;
+            tracing::warn!(
+                stage = %stage_entry.stage_id,
+                run_id = %run_id,
+                iteration = completed_iterations,
+                exit_reason = reason.as_str(),
+                error = %details,
+                "terminal iterative_minimal output sidecar unavailable during resume; rewinding state and re-invoking the final implementer iteration"
+            );
+            return Ok(TerminalIterativeResumeResult::Reinvoke(rewind_state));
+        }
+        Err(IterativeIterationRecoveryFailure::InvalidPayload(error)) => {
+            return Err(error);
+        }
+    };
+
     if !iterative_loop_exit_recorded(&events, run_id, cursor)? {
         append_implementer_loop_exited_event(
             journal_store,
@@ -6359,15 +6471,9 @@ fn resume_terminal_iterative_stage_result(
         )?;
     }
 
-    recover_iterative_iteration_result(
-        project_root,
-        run_id,
-        stage_entry,
-        cursor,
-        resolved_target,
-        completed_iterations,
-    )
-    .map(Some)
+    Ok(TerminalIterativeResumeResult::Recovered(Box::new(
+        recovered,
+    )))
 }
 
 fn iterative_fingerprint_excludes_path(relative_path: &Path) -> bool {
@@ -6684,14 +6790,7 @@ where
         .run_policy()
         .iterative_minimal
         .stable_rounds_required;
-    validate_iterative_minimal_loop_setting(
-        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
-        max_rounds,
-    )?;
-    validate_iterative_minimal_loop_setting(
-        "workflow.iterative_minimal.stable_rounds_required",
-        stable_rounds_required,
-    )?;
+    validate_iterative_minimal_loop_settings(max_rounds, stable_rounds_required)?;
 
     let persisted_state = current_active_run(snapshot)?
         .iterative_implementer_state
@@ -6710,7 +6809,7 @@ where
             });
         }
 
-        if let Some(recovered) = resume_terminal_iterative_stage_result(
+        match resume_terminal_iterative_stage_result(
             journal_store,
             base_dir,
             project_root,
@@ -6725,7 +6824,24 @@ where
             stable_rounds_required,
             max_rounds,
         )? {
-            return Ok(recovered);
+            TerminalIterativeResumeResult::Recovered(recovered) => return Ok(*recovered),
+            TerminalIterativeResumeResult::Reinvoke(rewind_state) => {
+                iteration = rewind_state.completed_iterations;
+                stable_count = rewind_state.stable_count;
+                if let Some(active_run) = snapshot.active_run.as_mut() {
+                    active_run.iterative_implementer_state = Some(rewind_state);
+                }
+                run_snapshot_write
+                    .write_run_snapshot(base_dir, project_id, snapshot)
+                    .map_err(|error| AppError::StageCommitFailed {
+                        stage_id: stage_entry.stage_id,
+                        details: format!(
+                            "failed to rewind iterative_minimal state before re-invoking iteration {}: {error}",
+                            iteration.saturating_add(1)
+                        ),
+                    })?;
+            }
+            TerminalIterativeResumeResult::NotTerminal => {}
         }
 
         iteration += 1;
@@ -6864,17 +6980,20 @@ where
             })?;
 
         if let Some(reason) = exit_reason {
-            append_implementer_loop_exited_event(
-                journal_store,
-                base_dir,
-                project_id,
-                run_id,
-                seq,
-                stage_entry.stage_id,
-                cursor,
-                reason,
-                iteration,
-            )?;
+            let events = journal_store.read_journal(base_dir, project_id)?;
+            if !iterative_loop_exit_recorded(&events, run_id, cursor)? {
+                append_implementer_loop_exited_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    run_id,
+                    seq,
+                    stage_entry.stage_id,
+                    cursor,
+                    reason,
+                    iteration,
+                )?;
+            }
             return Ok((bundle, producer));
         }
     }
@@ -9756,9 +9875,10 @@ mod tests {
         mark_running_run_interrupted, milestone_lineage_plan_hash,
         partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
         resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
-        role_for_stage, sync_milestone_bead_start, FinalReviewQueuedAmendment,
-        InterruptedRunContext, InterruptedRunUpdate, IterativeLoopExitReason, QueuedAmendment,
-        RunningAttemptIdentity, StagePlan,
+        role_for_stage, sync_milestone_bead_start, validate_iterative_minimal_loop_settings,
+        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
+        IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity, StagePlan,
+        TerminalIterativeResumeResult,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -9831,6 +9951,20 @@ mod tests {
             Some(IterativeLoopExitReason::MaxRounds)
         );
         assert_eq!(iterative_loop_exit_reason(1, 2, 2, 10), None);
+    }
+
+    #[test]
+    fn iterative_loop_settings_reject_unreachable_stability_threshold() {
+        let error = validate_iterative_minimal_loop_settings(5, 6)
+            .expect_err("stable rounds above max rounds must be rejected");
+        match error {
+            AppError::InvalidConfigValue { key, value, reason } => {
+                assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+                assert_eq!(value, "6");
+                assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+            }
+            other => panic!("expected InvalidConfigValue, got {other:?}"),
+        }
     }
 
     #[test]
@@ -9919,17 +10053,22 @@ mod tests {
             2,
             10,
         )
-        .expect("recover terminal result")
-        .expect("terminal result should exist");
+        .expect("recover terminal result");
 
-        match recovered.0.payload {
-            StagePayload::Execution(payload) => {
-                assert_eq!(
-                    payload.change_summary,
-                    "Recovered iterative execution output"
-                );
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, _producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
             }
-            other => panic!("expected execution payload, got {other:?}"),
+            other => panic!("expected recovered terminal result, got {other:?}"),
         }
 
         let events = FsJournalStore
@@ -10049,17 +10188,22 @@ mod tests {
             2,
             10,
         )
-        .expect("recover terminal result")
-        .expect("terminal result should exist");
+        .expect("recover terminal result");
 
-        match recovered.0.payload {
-            StagePayload::Execution(payload) => {
-                assert_eq!(
-                    payload.change_summary,
-                    "Recovered iterative execution output"
-                );
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, _producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
             }
-            other => panic!("expected execution payload, got {other:?}"),
+            other => panic!("expected recovered terminal result, got {other:?}"),
         }
 
         let events = FsJournalStore
@@ -10072,6 +10216,107 @@ mod tests {
         assert_eq!(exited_events.len(), 2);
         assert_eq!(exited_events[0].details["run_id"], old_run_id.as_str());
         assert_eq!(exited_events[1].details["run_id"], run_id.as_str());
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_rewinds_when_sidecar_is_missing() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-missing-sidecar").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery missing sidecar".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-rewind").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target,
+        };
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        for (iteration, diff_changed) in [(1, true), (2, false)] {
+            seq += 1;
+            let completed = journal::implementer_iteration_completed_event(
+                seq,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                cursor.cycle,
+                cursor.attempt,
+                cursor.completion_round,
+                iteration,
+                diff_changed,
+                "completed",
+            );
+            let line = journal::serialize_event(&completed).expect("serialize completed event");
+            FsJournalStore
+                .append_event(temp_dir.path(), &project_id, &line)
+                .expect("append completed event");
+        }
+
+        let result = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &FileSystem::project_root(temp_dir.path(), &project_id),
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
+            2,
+            1,
+            1,
+            10,
+        )
+        .expect("resume terminal result");
+
+        match result {
+            TerminalIterativeResumeResult::Reinvoke(state) => {
+                assert_eq!(
+                    state,
+                    IterativeImplementerState {
+                        completed_iterations: 1,
+                        stable_count: 0,
+                    }
+                );
+            }
+            other => panic!("expected reinvoke state, got {other:?}"),
+        }
+
+        let events = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read journal");
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != JournalEventType::ImplementerLoopExited),
+            "resume fallback must not append a clean loop exit event before recovery is possible"
+        );
     }
 
     #[test]
