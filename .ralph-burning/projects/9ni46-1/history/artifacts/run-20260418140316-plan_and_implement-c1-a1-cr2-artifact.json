@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418140316-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T14:42:10.398270989Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `tests/unit/bv_adapter_test.rs` so the `bv --robot-next` no-work cases now exercise the repository’s real message-only contract (`{\"message\":\"No actionable items available\"}`) instead of ad hoc payloads. The remediated tests assert that the adapter returns a `BvParseError` without panicking, preserves the raw stdout, and keeps the `bv --robot-next` command context intact, with no source changes outside the test file.\n\n## Steps\n\n1. [Completed] Inspect the existing bv adapter tests and compare their no-work fixtures against the actual `bv --robot-next` contract used elsewhere in the repository.\n2. [Completed] Patch `tests/unit/bv_adapter_test.rs` to replace invented empty/blocked payloads with the real message-only payload and assert parse-error/raw-output behavior through the adapter seam.\n3. [Completed] Re-run focused and full verification to confirm the remediated tests and the full tree still pass.\n\n## Validation Evidence\n\n- `cargo test --test unit bv_adapter` passed with all 8 bv adapter tests green after the fixture correction.\n- `cargo test` passed on the full tree (library tests, CLI tests, unit harness, and doctests).\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- Verification mutated live orchestration state under `.ralph-burning/projects/9ni46-1/`; those files were intentionally left untouched per the prompt’s exclusion of `.ralph-burning/` from review scope.\n- The bv no-recommendation tests now pin the current message-only payload string; if upstream `bv` changes that contract, the fixtures will need to be updated.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 2
+}

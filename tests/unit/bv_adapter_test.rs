@@ -105,21 +105,8 @@ impl BvProcessRunner for MockBvRunner {
 }
 
 #[derive(Debug, Deserialize)]
-struct EmptyNextSignal {
-    next: Option<NextBeadResponse>,
-    reason: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct BlockedGraphSignal {
-    ready: Vec<NextBeadResponse>,
-    blocked: Vec<BlockedBead>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BlockedBead {
-    id: String,
-    blocked_by: Vec<String>,
+struct MessageOnlySignal {
+    message: String,
 }
 
 fn adapter_with(scripted_calls: Vec<ScriptedBvCall>) -> (BvAdapter<MockBvRunner>, MockBvRunner) {
@@ -228,19 +215,32 @@ async fn bv_empty_graph_reports_no_next_bead_gracefully() -> Result<(), Box<dyn 
 {
     let (adapter, _) = adapter_with(vec![ScriptedBvCall {
         expected_args: vec!["--robot-next".to_owned()],
-        result: MockBvRunner::ok(r#"{"next":null,"reason":"nothing ready"}"#),
+        result: MockBvRunner::ok(r#"{"message":"No actionable items available"}"#),
     }]);
 
-    let response: EmptyNextSignal = adapter.exec_json(&BvCommand::robot_next()).await?;
+    let error = adapter
+        .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
+        .await
+        .expect_err("message-only robot-next output should surface as a parse error, not panic");
 
-    assert!(
-        response.next.is_none(),
-        "an empty graph should deserialize to an explicit no-next-bead signal"
-    );
-    assert_eq!(
-        response.reason, "nothing ready",
-        "an empty graph should explain why no bead was recommended"
-    );
+    match error {
+        BvError::BvParseError {
+            raw_output,
+            command,
+            ..
+        } => {
+            let response: MessageOnlySignal = serde_json::from_str(&raw_output)?;
+            assert_eq!(
+                response.message, "No actionable items available",
+                "an empty graph should preserve the real message-only no-recommendation payload"
+            );
+            assert_eq!(
+                command, "bv --robot-next",
+                "empty-graph parse errors should preserve the robot-next command context"
+            );
+        }
+        other => panic!("expected BvParseError, got {other:?}"),
+    }
     Ok(())
 }
 
@@ -248,26 +248,34 @@ async fn bv_empty_graph_reports_no_next_bead_gracefully() -> Result<(), Box<dyn 
 async fn bv_blocked_graph_reports_all_beads_blocked() -> Result<(), Box<dyn std::error::Error>> {
     let (adapter, _) = adapter_with(vec![ScriptedBvCall {
         expected_args: vec!["--robot-next".to_owned()],
-        result: MockBvRunner::ok(
-            r#"{"ready":[],"blocked":[{"id":"bead-3","blocked_by":["bead-1","bead-2"]}]}"#,
-        ),
+        result: MockBvRunner::ok(r#"{"message":"No actionable items available"}"#),
     }]);
 
-    let response: BlockedGraphSignal = adapter.exec_json(&BvCommand::robot_next()).await?;
+    let error = adapter
+        .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
+        .await
+        .expect_err(
+            "a fully blocked graph should surface the real message-only no-recommendation payload",
+        );
 
-    assert!(
-        response.ready.is_empty(),
-        "a fully blocked graph should report no ready beads"
-    );
-    assert_eq!(
-        response.blocked[0].id, "bead-3",
-        "a blocked-graph response should identify the blocked bead"
-    );
-    assert_eq!(
-        response.blocked[0].blocked_by,
-        vec!["bead-1".to_owned(), "bead-2".to_owned()],
-        "a blocked-graph response should list every blocking dependency"
-    );
+    match error {
+        BvError::BvParseError {
+            raw_output,
+            command,
+            ..
+        } => {
+            let response: MessageOnlySignal = serde_json::from_str(&raw_output)?;
+            assert_eq!(
+                response.message, "No actionable items available",
+                "a fully blocked graph should preserve the same message-only no-recommendation payload used elsewhere in the repo"
+            );
+            assert_eq!(
+                command, "bv --robot-next",
+                "blocked-graph parse errors should preserve the robot-next command context"
+            );
+        }
+        other => panic!("expected BvParseError, got {other:?}"),
+    }
     Ok(())
 }
 
