@@ -1924,6 +1924,69 @@ async fn iterative_minimal_invocations_include_iteration_context() {
     }
 }
 
+#[tokio::test(start_paused = true)]
+async fn iterative_minimal_stage_failed_records_iteration_invocation_id() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-stage-failed-id",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::PlanAndImplement, 1),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let stage_failed = events
+        .iter()
+        .find(|event| {
+            event.event_type == JournalEventType::StageFailed
+                && event.details["stage_id"] == "plan_and_implement"
+        })
+        .expect("plan_and_implement stage_failed event");
+    let run_id = stage_failed.details["run_id"].as_str().expect("run_id");
+    let invocation_id = stage_failed.details["invocation_id"]
+        .as_str()
+        .expect("invocation_id");
+    let expected_invocation_id = format!("{run_id}-plan_and_implement-c1-a1-cr1-it1");
+    assert_eq!(invocation_id, expected_invocation_id);
+
+    let runtime_log_path =
+        project_root(base_dir, "iter-stage-failed-id").join("runtime/logs/run.ndjson");
+    let runtime_logs = fs::read_to_string(&runtime_log_path).expect("runtime log should exist");
+    let stage_failed_line = runtime_logs
+        .lines()
+        .find(|line| line.contains("stage_failed: plan_and_implement"))
+        .expect("stage_failed runtime log entry");
+    assert!(
+        stage_failed_line.contains(&format!("invocation_id={expected_invocation_id}")),
+        "runtime log should reference the iterative invocation id: {stage_failed_line}"
+    );
+}
+
 #[tokio::test]
 async fn iterative_minimal_resume_reinvokes_terminal_iteration_when_sidecar_is_missing() {
     let tmp = tempdir().unwrap();

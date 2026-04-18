@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 12
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-11-2824764e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 11,
-        "body": "finding_summary: Failed `iterative_minimal` iterations are journaled under the wrong invocation id. `execute_stage_with_retry()` always emits `stage_failed` with `history_record_base_id(...)` (`src/contexts/workflow_composition/engine.rs:5782`), but iterative implementer calls are actually invoked with suffixed ids from `invocation_id_for_stage(..., Some(\"it{iteration}\"))` (`src/contexts/workflow_composition/engine.rs:7103`). When an implementer iteration fails, `stage_failed.details.invocation_id` and the matching runtime log entry no longer identify the real raw output artifact for that failure, which breaks failure forensics and any tooling/operators that follow the recorded invocation id to inspect the backend output. remediation_hint: thread the actual invocation id (or the iteration suffix) back out of the iterative invocation path so the failure event records the same id the backend used.",
-        "created_at": "2026-04-18T08:45:09.770869028Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "8f51fa9fa408e0c79eecaef6912081a581d96eeeb326c99714ce79241b5f92fa"
-      }
-    ],
-    "processed_count": 28
+    "pending": [],
+    "processed_count": 29
   },
-  "status_summary": "running: final review restart round 12 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T08:33:20.109531292Z",

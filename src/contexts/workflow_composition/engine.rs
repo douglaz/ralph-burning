@@ -5779,7 +5779,8 @@ where
                     && !cancellation_token.is_cancelled();
 
                 let error_display = error.to_string();
-                let failed_invocation_id = history_record_base_id(run_id, stage_id, &cursor, 0);
+                let failed_invocation_id =
+                    failed_invocation_id_for_stage(run_id, stage_id, &cursor, snapshot, preset);
 
                 *seq += 1;
                 let stage_failed = journal::stage_failed_event(
@@ -5989,6 +5990,33 @@ fn invocation_id_for_stage(
         Some(suffix) => format!("{base}-{suffix}"),
         None => base,
     }
+}
+
+fn failed_invocation_id_for_stage(
+    run_id: &RunId,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    snapshot: &RunSnapshot,
+    preset: FlowPreset,
+) -> String {
+    if preset == FlowPreset::IterativeMinimal && stage_id == StageId::PlanAndImplement {
+        let next_iteration = snapshot
+            .active_run
+            .as_ref()
+            .filter(|active_run| {
+                active_run.stage_cursor.stage == cursor.stage
+                    && active_run.stage_cursor.cycle == cursor.cycle
+                    && active_run.stage_cursor.attempt == cursor.attempt
+                    && active_run.stage_cursor.completion_round == cursor.completion_round
+            })
+            .and_then(|active_run| active_run.iterative_implementer_state.as_ref())
+            .map(|state| state.completed_iterations.saturating_add(1))
+            .unwrap_or(1);
+        let suffix = format!("it{next_iteration}");
+        return invocation_id_for_stage(run_id, stage_id, cursor, Some(&suffix));
+    }
+
+    history_record_base_id(run_id, stage_id, cursor, 0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9963,9 +9991,9 @@ mod tests {
 
     use super::{
         advance_iterative_loop_state, build_final_review_snapshot, build_prompt_review_snapshot,
-        complete_run, drift_still_satisfies_requirements, git_diff_fingerprint,
-        git_repo_available_with_program, invocation_id_for_stage, iterative_loop_exit_reason,
-        mark_running_run_interrupted, milestone_lineage_plan_hash,
+        complete_run, drift_still_satisfies_requirements, failed_invocation_id_for_stage,
+        git_diff_fingerprint, git_repo_available_with_program, invocation_id_for_stage,
+        iterative_loop_exit_reason, mark_running_run_interrupted, milestone_lineage_plan_hash,
         partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
         resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
         role_for_stage, sync_milestone_bead_start, validate_iterative_minimal_loop_settings,
@@ -10824,6 +10852,51 @@ mod tests {
                 completed_iterations: 6,
                 stable_count: 1,
             })
+        );
+    }
+
+    #[test]
+    fn failed_invocation_id_for_iterative_minimal_uses_next_iteration_suffix() {
+        let run_id = RunId::new("run-iter-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: cursor.clone(),
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 2,
+                    stable_count: 0,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let invocation_id = failed_invocation_id_for_stage(
+            &run_id,
+            StageId::PlanAndImplement,
+            &cursor,
+            &snapshot,
+            FlowPreset::IterativeMinimal,
+        );
+
+        assert_eq!(
+            invocation_id,
+            format!("{}-plan_and_implement-c2-a1-cr3-it3", run_id.as_str())
         );
     }
 
