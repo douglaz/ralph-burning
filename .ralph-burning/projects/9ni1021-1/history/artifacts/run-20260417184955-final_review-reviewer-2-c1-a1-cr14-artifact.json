@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr14-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T00:36:14.122462284Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the e2e fixture changes for bead 9ni1021-1. Read the full 1706-line src/test_support/e2e_fixtures.rs plus modifications to br.rs, bv.rs, fixtures.rs, and mod.rs. Ran cargo test --lib (1068 tests passed) and cargo clippy on the library (clean). The 24 clippy errors surfaced under --tests are pre-existing on master (confirmed via stash + checkout), not introduced by this branch.\n\nThe changes are additive and well-contained: (1) new MockBrDispatch/MockBvDispatch type aliases and from_dispatch constructors, (2) default_working_dir support on mock adapters so as_br_adapter/as_br_mutation_adapter/as_bv_adapter apply a consistent CWD when callers don't override, (3) a factored write_bead_graph_issues helper shared between BeadGraphFixtureBuilder and the new scenario, (4) build_e2e_milestone_scenario_fixture producing a realistic 6-node bead graph (3 epics + 3 tasks) with milestone, workstream, proposal, and acceptance artifacts on disk. The dispatch handlers faithfully simulate br list/show/ready/create/close/dep-add/sync and bv robot-next, including dangling-dep detection, reopen semantics, and external-rewrite detection. ScenarioState uses Mutex correctly — no await points under lock.\n\nMinor observations that do NOT rise to amendments: (a) the smoke test's 10s perf assertion is looser than the <1s target mentioned in the bead scope but still guards against regressions; (b) add_dependency doesn't bump bead.updated_at in the mock (matches what existing tests rely on); (c) the unreachable fallback in the --type flag parser is defensive. None affect correctness of the fixture or its consumers. No fix-now, planned-elsewhere, or propose-new-bead amendments identified.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 14
+}

@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260417184955",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 14
+      "completion_round": 15
     },
     "started_at": "2026-04-17T21:08:41.567727685Z",
     "prompt_hash_at_cycle_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "prompt_hash_at_stage_start": "4e1235213e1ec7bc918147a2bbdbc59217491b5abf2435f2edaf252e53455788",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 13
+    "final_review_restart_count": 14
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 14,
+  "completion_rounds": 15,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-14-991f1a3c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 14,
+        "body": "finding_summary: `src/test_support/e2e_fixtures.rs:849-852` models an exhausted `bv --robot-next` as a non-zero process failure (`exit_failure(1, \"no ready bead\")`). Production code treats the real `bv` contract for this case as a successful message-only JSON payload and uses that branch to clear stale next-step hints (`src/contexts/automation_runtime/success_reconciliation.rs:664-693`). Any integration test built on this fixture will therefore exercise the wrong branch once the graph is exhausted and can miss bugs in the no-recommendation flow.\naffected_files:\n- `src/test_support/e2e_fixtures.rs:849-852`\n- `src/contexts/automation_runtime/success_reconciliation.rs:664-693`\nremediation_hint: When `next_ready_issue()` returns `None`, return the same success payload that `bv --robot-next` emits for \"no actionable items available\" instead of a non-zero exit.",
+        "created_at": "2026-04-18T00:39:06.103089346Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "33bea69fdb68c19b445c0310ddc715e6008b47a23dfd3d29ace538eab9cc50ba"
+      },
+      {
+        "amendment_id": "fr-14-7ed43a28",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 14,
+        "body": "finding_summary: `src/test_support/e2e_fixtures.rs:120-121,389-390` constructs proposal labels as `proposal:{fully_qualified_bead_id}`. That does not match milestone export semantics: explicit qualified bead IDs are normalized by stripping the `milestone_id.` prefix before the proposal label is formed (`src/contexts/milestone_record/bundle.rs:690-710`, `src/contexts/milestone_record/service.rs:1651-1676`). In this fixture, tasks get labels like `proposal:ms-e2e-scenario.task-assemble-workspace`, while production materialization would emit `proposal:task-assemble-workspace`. Tests that rely on label matching or proposal-identity reuse will pass against a graph shape that cannot occur in production.\naffected_files:\n- `src/test_support/e2e_fixtures.rs:120-121`\n- `src/test_support/e2e_fixtures.rs:389-390`\n- `src/contexts/milestone_record/bundle.rs:690-710`\n- `src/contexts/milestone_record/service.rs:1651-1676`\nremediation_hint: Derive the proposal label with the same normalization path as `canonical_export_proposal_id` instead of concatenating the stored bead id verbatim.",
+        "created_at": "2026-04-18T00:39:06.103094255Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "be4f17259d491b90cc9693472e161dfadbfa3783ff043d51f1a48e439b2062c9"
+      }
+    ],
     "processed_count": 20
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 15 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-17T23:55:34.241009491Z",
+    "resolved_at": "2026-04-18T00:23:16.168102192Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
