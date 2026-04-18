@@ -1877,6 +1877,54 @@ async fn iterative_minimal_continues_when_terminal_parsed_payload_sidecar_persis
 }
 
 #[tokio::test]
+async fn iterative_minimal_invocations_include_iteration_context() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-context", FlowPreset::IterativeMinimal);
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let loop_policy = config.run_policy().iterative_minimal.clone();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let contexts = adapter_handle.plan_contexts();
+    assert_eq!(contexts.len(), 3);
+    for (index, context) in contexts.iter().enumerate() {
+        let iteration = (index + 1) as u64;
+        assert_eq!(context["iteration"], iteration);
+        assert_eq!(
+            context["iterative_minimal"]["max_consecutive_implementer_rounds"],
+            loop_policy.max_consecutive_implementer_rounds
+        );
+        assert_eq!(
+            context["iterative_minimal"]["stable_rounds_required"],
+            loop_policy.stable_rounds_required
+        );
+    }
+}
+
+#[tokio::test]
 async fn iterative_minimal_resume_reinvokes_terminal_iteration_when_sidecar_is_missing() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -1986,6 +2034,103 @@ async fn iterative_minimal_resume_reinvokes_terminal_iteration_when_sidecar_is_m
         1,
         "plan_and_implement should complete successfully after the resume fallback"
     );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_appends_fresh_loop_exit_when_stale_exit_event_mismatches() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-stale-exit",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    let journal_path = project_root(base_dir, pid.as_str()).join("journal.ndjson");
+    let raw_journal = fs::read_to_string(&journal_path).expect("read journal");
+    let mut journal_events = journal::parse_journal(&raw_journal).expect("parse journal");
+    let stale_exit = journal_events
+        .iter_mut()
+        .find(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .expect("durable loop exit event");
+    stale_exit.details["reason"] = json!("max_rounds");
+    stale_exit.details["total_iterations"] = json!(2);
+    let rewritten = journal_events
+        .iter()
+        .map(journal::serialize_event)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("serialize journal")
+        .join("\n");
+    fs::write(&journal_path, format!("{rewritten}\n")).expect("rewrite journal");
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        4,
+        "resume should re-run the terminal implementer iteration"
+    );
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let exited_events: Vec<_> = resumed_events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .collect();
+    assert_eq!(
+        exited_events.len(),
+        2,
+        "resume should append a fresh loop-exit event when the durable one no longer matches the rerun terminal state"
+    );
+    assert_eq!(exited_events[0].details["reason"], "max_rounds");
+    assert_eq!(exited_events[0].details["total_iterations"], 2);
+    assert_eq!(exited_events[1].details["reason"], "stable");
+    assert_eq!(exited_events[1].details["total_iterations"], 3);
 }
 
 #[tokio::test]
@@ -3722,6 +3867,7 @@ impl AgentExecutionPort for RecordingAdapter {
 struct IterativePlanAdapter {
     inner: StubBackendAdapter,
     plan_calls: Arc<AtomicU32>,
+    plan_contexts: Arc<Mutex<Vec<Value>>>,
 }
 
 impl IterativePlanAdapter {
@@ -3729,11 +3875,19 @@ impl IterativePlanAdapter {
         Self {
             inner: StubBackendAdapter::default(),
             plan_calls: Arc::new(AtomicU32::new(0)),
+            plan_contexts: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     fn plan_calls(&self) -> u32 {
         self.plan_calls.load(Ordering::SeqCst)
+    }
+
+    fn plan_contexts(&self) -> Vec<Value> {
+        self.plan_contexts
+            .lock()
+            .expect("iterative plan contexts lock poisoned")
+            .clone()
     }
 }
 
@@ -3755,6 +3909,10 @@ impl AgentExecutionPort for IterativePlanAdapter {
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            self.plan_contexts
+                .lock()
+                .expect("iterative plan contexts lock poisoned")
+                .push(request.payload.context.clone());
             let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
             if call == 1 {
                 fs::write(

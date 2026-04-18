@@ -10,7 +10,7 @@ use ralph_burning::contexts::workspace_governance::{
     ConfigValue, EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
 };
 use ralph_burning::shared::domain::{
-    FlowPreset, PromptReviewSettings, WorkspaceConfig, WorkspaceSettings,
+    FlowPreset, ProjectId, PromptReviewSettings, WorkspaceConfig, WorkspaceSettings,
 };
 use ralph_burning::shared::error::AppError;
 use tempfile::tempdir;
@@ -354,6 +354,68 @@ fn config_set_rejects_iterative_minimal_stable_rounds_above_max_rounds() {
         "6",
     )
     .expect_err("stable rounds above max rounds must be rejected");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+            assert_eq!(value, "6");
+            assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_set_project_rejects_cross_scope_iterative_minimal_policy() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+    let project_id = ProjectId::new("cross-scope-project").expect("project id");
+
+    EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "5",
+    )
+    .expect("seed workspace iterative max rounds");
+
+    let error = EffectiveConfig::set_project(
+        temp_dir.path(),
+        &project_id,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "6",
+    )
+    .expect_err("project override should be rejected when it exceeds the workspace max rounds");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+            assert_eq!(value, "6");
+            assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_set_rejects_cross_scope_iterative_minimal_policy_against_existing_project_override() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+    let project_id = ProjectId::new("cross-scope-project").expect("project id");
+
+    EffectiveConfig::set_project(
+        temp_dir.path(),
+        &project_id,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "6",
+    )
+    .expect("seed project iterative stable rounds");
+
+    let error = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "5",
+    )
+    .expect_err(
+        "workspace edit should be rejected when it would invalidate an existing project override",
+    );
     match error {
         AppError::InvalidConfigValue { key, value, reason } => {
             assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");

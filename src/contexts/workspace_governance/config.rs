@@ -1,4 +1,6 @@
+use std::collections::BTreeSet;
 use std::fmt;
+use std::fs;
 use std::path::Path;
 
 use toml_edit::{value, Array, DocumentMut, Item};
@@ -567,7 +569,7 @@ impl EffectiveConfig {
         apply_to_document(&mut document, key, value)?;
         let serialized = document.to_string();
         let workspace_config: WorkspaceConfig = toml::from_str(&serialized)?;
-        validate_iterative_minimal_settings(&workspace_config, &ProjectConfig::default())?;
+        validate_workspace_iterative_minimal_settings(base_dir, &workspace_config)?;
         FileSystem::write_atomic(&config_path, &serialized)?;
 
         Self::load(base_dir)?.get(key)
@@ -2261,8 +2263,91 @@ fn validate_iterative_minimal_settings(
             .iterative_minimal
             .stable_rounds_required,
     )?;
+    validate_effective_iterative_minimal_settings(workspace_config, project_config)?;
 
     Ok(())
+}
+
+fn validate_effective_iterative_minimal_settings(
+    workspace_config: &WorkspaceConfig,
+    project_config: &ProjectConfig,
+) -> AppResult<()> {
+    validate_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        resolve_scalar(
+            workspace_config
+                .workflow
+                .iterative_minimal
+                .max_consecutive_implementer_rounds,
+            project_config
+                .workflow
+                .iterative_minimal
+                .max_consecutive_implementer_rounds,
+            None,
+            DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS,
+        ),
+        "workflow.iterative_minimal.stable_rounds_required",
+        resolve_scalar(
+            workspace_config
+                .workflow
+                .iterative_minimal
+                .stable_rounds_required,
+            project_config
+                .workflow
+                .iterative_minimal
+                .stable_rounds_required,
+            None,
+            DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED,
+        ),
+    )
+}
+
+fn validate_workspace_iterative_minimal_settings(
+    base_dir: &Path,
+    workspace_config: &WorkspaceConfig,
+) -> AppResult<()> {
+    validate_iterative_minimal_settings(workspace_config, &ProjectConfig::default())?;
+
+    for project_id in candidate_project_ids_for_iterative_validation(base_dir)? {
+        let project_config = FileSystem::read_project_config(base_dir, &project_id)?;
+        validate_iterative_minimal_settings(workspace_config, &project_config)?;
+    }
+
+    Ok(())
+}
+
+fn candidate_project_ids_for_iterative_validation(base_dir: &Path) -> AppResult<Vec<ProjectId>> {
+    let mut candidate_ids = BTreeSet::new();
+    for projects_dir in [
+        FileSystem::audit_workspace_root_path(base_dir).join("projects"),
+        FileSystem::live_workspace_root_path(base_dir).join("projects"),
+    ] {
+        if !projects_dir.is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(&projects_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+
+            if let Ok(project_id) = ProjectId::new(name.as_ref()) {
+                candidate_ids.insert(project_id.to_string());
+            }
+        }
+    }
+
+    candidate_ids
+        .into_iter()
+        .map(ProjectId::new)
+        .collect::<AppResult<Vec<_>>>()
 }
 
 fn parse_f64(key: &str, raw_value: &str) -> AppResult<f64> {

@@ -5747,6 +5747,7 @@ where
                     resolved_target.clone(),
                     timeout,
                     None,
+                    None,
                 )
                 .await
             };
@@ -6112,12 +6113,16 @@ fn iterative_loop_exit_recorded(
     events: &[JournalEvent],
     run_id: &RunId,
     cursor: &StageCursor,
+    reason: IterativeLoopExitReason,
+    total_iterations: u32,
 ) -> AppResult<bool> {
     for event in events {
         if event.event_type == JournalEventType::ImplementerLoopExited
             && event_matches_run(event, run_id)
             && event_matches_stage_cursor(event, cursor)?
             && event_matches_stage_attempt(event, cursor)?
+            && event.details.get("reason").and_then(Value::as_str) == Some(reason.as_str())
+            && event_detail_u32(event, "total_iterations")? == total_iterations
         {
             return Ok(true);
         }
@@ -6457,7 +6462,7 @@ fn resume_terminal_iterative_stage_result(
         }
     };
 
-    if !iterative_loop_exit_recorded(&events, run_id, cursor)? {
+    if !iterative_loop_exit_recorded(&events, run_id, cursor, reason, completed_iterations)? {
         append_implementer_loop_exited_event(
             journal_store,
             base_dir,
@@ -6879,6 +6884,13 @@ where
         }
 
         let diff_before = git_diff_fingerprint(repo_root)?;
+        let iterative_invocation_context = json!({
+            "iteration": iteration,
+            "iterative_minimal": {
+                "max_consecutive_implementer_rounds": max_rounds,
+                "stable_rounds_required": stable_rounds_required,
+            }
+        });
         let iteration_result = invoke_stage_on_backend(
             agent_service,
             base_dir,
@@ -6894,6 +6906,7 @@ where
             resolved_target.clone(),
             timeout,
             Some(&format!("it{iteration}")),
+            Some(&iterative_invocation_context),
         )
         .await;
 
@@ -6981,7 +6994,7 @@ where
 
         if let Some(reason) = exit_reason {
             let events = journal_store.read_journal(base_dir, project_id)?;
-            if !iterative_loop_exit_recorded(&events, run_id, cursor)? {
+            if !iterative_loop_exit_recorded(&events, run_id, cursor, reason, iteration)? {
                 append_implementer_loop_exited_event(
                     journal_store,
                     base_dir,
@@ -7015,6 +7028,7 @@ async fn invoke_stage_on_backend<A, R, S>(
     resolved_target: ResolvedBackendTarget,
     timeout: Duration,
     invocation_suffix: Option<&str>,
+    additional_context: Option<&Value>,
 ) -> AppResult<(ValidatedBundle, RecordProducer)>
 where
     A: AgentExecutionPort,
@@ -7032,7 +7046,12 @@ where
         resolved_target: resolved_target.clone(),
         payload: InvocationPayload {
             prompt,
-            context: invocation_context(cursor, execution_context, pending_amendments),
+            context: invocation_context(
+                cursor,
+                execution_context,
+                pending_amendments,
+                additional_context,
+            ),
         },
         timeout,
         cancellation_token,
@@ -7777,6 +7796,7 @@ fn invocation_context(
     cursor: &StageCursor,
     execution_context: Option<&Value>,
     pending_amendments: Option<&[QueuedAmendment]>,
+    additional_context: Option<&Value>,
 ) -> Value {
     let mut context = json!({
         "cycle": cursor.cycle,
@@ -7802,6 +7822,12 @@ fn invocation_context(
         if !amendments.is_empty() {
             let amendment_bodies: Vec<&str> = amendments.iter().map(|a| a.body.as_str()).collect();
             context["pending_amendments"] = json!(amendment_bodies);
+        }
+    }
+
+    if let Some(additional_context) = additional_context.and_then(Value::as_object) {
+        for (key, value) in additional_context {
+            context[key] = value.clone();
         }
     }
 

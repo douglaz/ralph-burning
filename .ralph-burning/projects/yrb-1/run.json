@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,44 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-884f8134",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "finding_summary: `config set` / `config set-project` can persist an invalid `iterative_minimal` policy whenever `max_consecutive_implementer_rounds` and `stable_rounds_required` are split across workspace and project scopes. affected_files: `src/contexts/workspace_governance/config.rs:561-573`, `src/contexts/workspace_governance/config.rs:584-600`, `src/contexts/workspace_governance/config.rs:2208-2265`. The setters only validate each TOML file in isolation, so a workspace `max_consecutive_implementer_rounds = 5` plus a project `stable_rounds_required = 6` is accepted even though the next merged `EffectiveConfig::load_for_project()` will fail. The same bug exists in reverse for workspace edits against existing project overrides. remediation_hint: After applying an edit, validate the resolved effective policy for the affected scope(s) instead of only calling `validate_iterative_minimal_settings()` on the individual documents.",
-        "created_at": "2026-04-18T07:51:37.754661518Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "0b8ee9ed3de507828b91dcfc2a2b47c12fd19cc6af74631d5dd7938009090035"
-      },
-      {
-        "amendment_id": "fr-9-5a90e87a",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "finding_summary: Iterative implementer invocations never receive the current loop iteration, so every stabilization pass is dispatched with the same agent-visible request context. affected_files: `src/contexts/workflow_composition/engine.rs:7026-7042`, `src/contexts/workflow_composition/engine.rs:7776-7808`. The new preset is supposed to call the implementer with `(prompt, amendments, iteration)`, but the request only carries `cycle`, `attempt`, `completion_round`, and pending amendments, while `attempt_number` also stays constant for the whole stage attempt. remediation_hint: Thread `iteration` (and ideally the loop limits) into the iterative `InvocationPayload.context` so the backend can distinguish first vs later stabilization passes.",
-        "created_at": "2026-04-18T07:51:37.754665866Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "51a22058bbfbaebb2b946aa94dcd7a3cb01843e089aea234c89e04bca315441b"
-      },
-      {
-        "amendment_id": "fr-9-2345ceea",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "finding_summary: A stale `ImplementerLoopExited` event suppresses the real exit record when resume rewinds and re-runs the terminal iteration. affected_files: `src/contexts/workflow_composition/engine.rs:6111-6127`, `src/contexts/workflow_composition/engine.rs:6437-6453`, `src/contexts/workflow_composition/engine.rs:6982-6995`. If the terminal sidecar is missing, resume rewinds state and re-invokes the last iteration, but any previously written loop-exited event is left in place. Later exit recording only checks whether any matching exit event already exists for the run/cursor/attempt, so a stale `reason` / `total_iterations` from the abandoned terminal attempt prevents the correct exit event from ever being appended. remediation_hint: Clear or ignore prior loop-exited records when rewinding, or make `iterative_loop_exit_recorded()` verify that the existing event matches the current terminal iteration before suppressing a new append.",
-        "created_at": "2026-04-18T07:51:37.754670796Z",
-        "batch_sequence": 3,
-        "source": "workflow_stage",
-        "dedup_key": "4da81a49b9d1139ab8c7ac60e22bb91e8b8323f7ea25531005b20df3c2909032"
-      }
-    ],
-    "processed_count": 23
+    "pending": [],
+    "processed_count": 26
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T07:38:50.088775839Z",
