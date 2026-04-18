@@ -6,7 +6,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use tempfile::tempdir;
 
-use ralph_burning::adapters::br_models::{BeadDetail, BeadSummary, ReadyBead};
+use ralph_burning::adapters::br_models::{
+    BeadDetail, BeadStatus, BeadSummary, DepTreeNode, ReadyBead,
+};
 use ralph_burning::adapters::br_process::{
     BrAdapter, BrCommand, BrError, BrMutationAdapter, BrOutput, ProcessRunner,
 };
@@ -107,13 +109,6 @@ impl ProcessRunner for MockBrRunner {
 
         scripted.result
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct DependencyTreeNode {
-    id: String,
-    #[serde(default)]
-    dependencies: Vec<DependencyTreeNode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,8 +282,22 @@ async fn br_list_by_status_parses_array_output() -> Result<(), Box<dyn std::erro
 async fn br_dep_tree_parses_nested_dependency_output() -> Result<(), Box<dyn std::error::Error>> {
     let tree_json = r#"{
         "id":"bead-root",
-        "dependencies":[
-            {"id":"bead-child","dependencies":[{"id":"bead-leaf","dependencies":[]}]}
+        "title":"Root bead",
+        "status":"open",
+        "children":[
+            {
+                "id":"bead-child",
+                "title":"Child bead",
+                "status":"in_progress",
+                "children":[
+                    {
+                        "id":"bead-leaf",
+                        "title":"Leaf bead",
+                        "status":"closed",
+                        "children":[]
+                    }
+                ]
+            }
         ]
     }"#;
     let (adapter, _) = read_adapter_with(vec![ScriptedBrCall {
@@ -301,14 +310,19 @@ async fn br_dep_tree_parses_nested_dependency_output() -> Result<(), Box<dyn std
         result: MockBrRunner::ok(tree_json),
     }]);
 
-    let tree: DependencyTreeNode = adapter.exec_json(&BrCommand::dep_tree("bead-root")).await?;
+    let tree: DepTreeNode = adapter.exec_json(&BrCommand::dep_tree("bead-root")).await?;
 
     assert_eq!(
         tree.id, "bead-root",
         "dep tree should parse the requested root bead"
     );
     assert_eq!(
-        tree.dependencies[0].dependencies[0].id, "bead-leaf",
+        tree.status,
+        BeadStatus::Open,
+        "dep tree should deserialize the public bead status contract"
+    );
+    assert_eq!(
+        tree.children[0].children[0].id, "bead-leaf",
         "dep tree should preserve nested dependency structure"
     );
     Ok(())

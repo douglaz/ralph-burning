@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260418140316-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T15:06:41.185946727Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated `tests/unit/br_adapter_test.rs` so `br_dep_tree_parses_nested_dependency_output` now exercises the real public `DepTreeNode` contract from `ralph_burning::adapters::br_models` instead of a test-only schema. The test now uses a realistic `br dep tree --json` fixture with `title`, `status`, and `children`, and asserts both nested child parsing and public `BeadStatus` deserialization without changing adapter source code.\n\n## Steps\n\n1. [Completed] Inspect the br adapter test and the canonical dep-tree model in `src/adapters/br_models.rs` to confirm the mismatch called out in the pending amendment.\n2. [Completed] Patch `tests/unit/br_adapter_test.rs` to remove the test-only dependency tree struct, import `DepTreeNode` and `BeadStatus`, and switch the dep-tree fixture/assertions to the real public schema.\n3. [Completed] Re-run focused and full verification after formatting to confirm the remediation holds under the normal test pipeline and the repository’s `nix build` gate.\n\n## Validation Evidence\n\n- `cargo test --test unit br_adapter` passed with all 16 br adapter tests green after the dep-tree fixture/model correction.\n- `cargo fmt --check` initially reported import formatting drift; after `cargo fmt`, `cargo fmt --check` passed.\n- `cargo test` passed on the full tree after the remediation.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\n- Verification left pre-existing orchestration-state changes under `.ralph-burning/projects/9ni46-1/` untouched, per the explicit exclusion for `.ralph-burning/`.\n- `nix build` refreshed the tracked `result` symlink in the worktree during verification; it was not modified further.\n- The dep-tree fixture now pins the current public JSON contract for `DepTreeNode`; if upstream `br` output changes, this test will need fixture updates.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 3
+}
