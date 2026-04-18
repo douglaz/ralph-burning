@@ -26,6 +26,7 @@ pub const LABEL_VOCABULARY: &[&str] = &[
     "rb:flow:docs_change",
     "rb:flow:ci_improvement",
     "rb:flow:minimal",
+    "rb:flow:iterative_minimal",
     "rb:requirements",
     "rb:waiting-feedback",
 ];

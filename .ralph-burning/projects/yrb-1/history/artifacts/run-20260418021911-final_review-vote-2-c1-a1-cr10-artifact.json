@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T08:20:49.641536168Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAll three amendments identify genuine defects: producer metadata fabrication during resume can misattribute artifacts to a different backend/model than ran; filesystem fallback fingerprint omits build-artifact exclusions present in the git path causing non-git workspaces to never converge; and unconditional cross-project iterative_minimal validation on every Config::set couples unrelated workspace config writes to the integrity of every project.toml.\n\n## Votes\n\n- `fr-10-488bdb64`: Accept\n  Confirmed at engine.rs:6172-6178 that recovered_iterative_record_producer synthesizes both requested AND actual backend/model strictly from the current resolved_target, with no persisted record of what actually ran. Combined with the new preflight-skip path that explicitly tolerates target drift before resume, this can attribute a persisted plan_and_implement artifact to a backend/model that never produced it (and erases any divergence the adapter originally reported between requested vs actual). Persisting the original RecordProducer alongside the sidecar and reading it back during recovery is the right fix; the synthesized producer is a correctness/provenance bug, not a cosmetic one.\n- `fr-10-936c7269`: Accept\n  Verified: hash_workspace_entries (engine.rs:6508-6551) only consults iterative_fingerprint_excludes_path which filters .git and .ralph-burning, while the git path uses iterative_untracked_build_artifact (engine.rs:6687-6695) to additionally drop target/, target-final, and result*/result- entries. In a non-git workspace any cargo build, cargo test, or nix-result symlink will mutate the fingerprint, so diff_changed=true persists indefinitely and the loop cannot reach the stable stop condition that the git-backed path can. Applying the same exclusions to the filesystem fallback restores parity and lets the convergence detector work for users without git.\n- `fr-10-0a37a422`: Accept\n  Confirmed at config.rs:572 that Config::set unconditionally invokes validate_workspace_iterative_minimal_settings, which at config.rs:2305-2317 iterates every audit/live project and calls FileSystem::read_project_config — surfacing any per-project parse/IO failure as the error of the workspace-level set, regardless of whether the key being set is iterative_minimal-related. A single corrupted or partially written project.toml would then block unrelated workspace settings (default_backend, max_qa_iterations, etc.) and the error message would point at the iterative_minimal validator, not the offending project. Scoping the cross-project walk to keys under workflow.iterative_minimal.* (option a) keeps the safety guarantee where it matters while removing the spurious coupling for unrelated keys.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 10
+}

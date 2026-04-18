@@ -611,15 +611,17 @@ pub enum FlowPreset {
     DocsChange,
     CiImprovement,
     Minimal,
+    IterativeMinimal,
 }
 
 impl FlowPreset {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Standard,
         Self::QuickDev,
         Self::DocsChange,
         Self::CiImprovement,
         Self::Minimal,
+        Self::IterativeMinimal,
     ];
 
     pub fn all() -> &'static [Self] {
@@ -642,6 +644,7 @@ impl FlowPreset {
             Self::DocsChange => "docs_change",
             Self::CiImprovement => "ci_improvement",
             Self::Minimal => "minimal",
+            Self::IterativeMinimal => "iterative_minimal",
         }
     }
 
@@ -658,6 +661,9 @@ impl FlowPreset {
                 "CI improvement flow for automation planning, updates, and validation."
             }
             Self::Minimal => "Minimal flow with plan+implement and final review only.",
+            Self::IterativeMinimal => {
+                "Minimal flow with iterative implementer stabilization before final review."
+            }
         }
     }
 }
@@ -678,6 +684,7 @@ impl FromStr for FlowPreset {
             "docs_change" => Ok(Self::DocsChange),
             "ci_improvement" => Ok(Self::CiImprovement),
             "minimal" => Ok(Self::Minimal),
+            "iterative_minimal" => Ok(Self::IterativeMinimal),
             _ => Err(AppError::InvalidFlowPreset {
                 flow_id: value.to_owned(),
             }),
@@ -1234,6 +1241,8 @@ pub struct WorkflowSettings {
     pub max_completion_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_change_action: Option<PromptChangeAction>,
+    #[serde(default, skip_serializing_if = "IterativeMinimalSettings::is_empty")]
+    pub iterative_minimal: IterativeMinimalSettings,
     #[serde(flatten)]
     pub extra: Table,
 }
@@ -1248,6 +1257,25 @@ impl WorkflowSettings {
             && self.max_review_iterations.is_none()
             && self.max_completion_rounds.is_none()
             && self.prompt_change_action.is_none()
+            && self.iterative_minimal.is_empty()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct IterativeMinimalSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_consecutive_implementer_rounds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_rounds_required: Option<u32>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl IterativeMinimalSettings {
+    pub fn is_empty(&self) -> bool {
+        self.max_consecutive_implementer_rounds.is_none()
+            && self.stable_rounds_required.is_none()
             && self.extra.is_empty()
     }
 }
@@ -1551,6 +1579,13 @@ pub struct EffectiveRunPolicy {
     pub max_review_iterations: u32,
     pub max_completion_rounds: u32,
     pub prompt_change_action: PromptChangeAction,
+    pub iterative_minimal: EffectiveIterativeMinimalPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveIterativeMinimalPolicy {
+    pub max_consecutive_implementer_rounds: u32,
+    pub stable_rounds_required: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

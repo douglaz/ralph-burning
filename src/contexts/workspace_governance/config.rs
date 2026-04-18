@@ -1,4 +1,6 @@
+use std::collections::BTreeSet;
 use std::fmt;
+use std::fs;
 use std::path::Path;
 
 use toml_edit::{value, Array, DocumentMut, Item};
@@ -7,10 +9,10 @@ use crate::adapters::fs::FileSystem;
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRoleModels, BackendRoleTimeouts,
     BackendRuntimeSettings, BackendSelection, EffectiveBackendPolicy, EffectiveCompletionPolicy,
-    EffectiveDaemonPrPolicy, EffectiveFinalReviewPolicy, EffectivePromptReviewPolicy,
-    EffectiveRebasePolicy, EffectiveRunPolicy, EffectiveValidationPolicy, ExecutionMode,
-    FlowPreset, PanelBackendSpec, PrPolicy, ProjectConfig, ProjectId, PromptChangeAction,
-    WorkspaceConfig,
+    EffectiveDaemonPrPolicy, EffectiveFinalReviewPolicy, EffectiveIterativeMinimalPolicy,
+    EffectivePromptReviewPolicy, EffectiveRebasePolicy, EffectiveRunPolicy,
+    EffectiveValidationPolicy, ExecutionMode, FlowPreset, PanelBackendSpec, PrPolicy,
+    ProjectConfig, ProjectId, PromptChangeAction, WorkspaceConfig,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -29,6 +31,8 @@ pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 25;
 pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 25;
+pub const DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS: u32 = 10;
+pub const DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED: u32 = 2;
 pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
 pub const DEFAULT_PR_NO_DIFF_ACTION: PrPolicy = PrPolicy::SkipOnNoDiff;
 pub const DEFAULT_REBASE_AGENT_RESOLUTION_ENABLED: bool = false;
@@ -170,6 +174,7 @@ impl EffectiveConfig {
             Some(project_id) => FileSystem::read_project_config(base_dir, project_id)?,
             None => ProjectConfig::default(),
         };
+        validate_iterative_minimal_settings(&workspace_config, &project_config)?;
 
         let run_policy = EffectiveRunPolicy {
             default_flow: resolve_scalar(
@@ -202,7 +207,34 @@ impl EffectiveConfig {
                 None,
                 PromptChangeAction::RestartCycle,
             ),
+            iterative_minimal: EffectiveIterativeMinimalPolicy {
+                max_consecutive_implementer_rounds: resolve_scalar(
+                    workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    project_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    None,
+                    DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS,
+                ),
+                stable_rounds_required: resolve_scalar(
+                    workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    project_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    None,
+                    DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED,
+                ),
+            },
         };
+        validate_effective_iterative_minimal_policy(&run_policy.iterative_minimal)?;
 
         let prompt_review_policy = EffectivePromptReviewPolicy {
             enabled: resolve_scalar(
@@ -535,7 +567,12 @@ impl EffectiveConfig {
         let raw = FileSystem::read_to_string(&config_path)?;
         let mut document = raw.parse::<DocumentMut>()?;
         apply_to_document(&mut document, key, value)?;
-        FileSystem::write_atomic(&config_path, &document.to_string())?;
+        let serialized = document.to_string();
+        let workspace_config: WorkspaceConfig = toml::from_str(&serialized)?;
+        if workspace_iterative_minimal_key(key) {
+            validate_workspace_iterative_minimal_settings(base_dir, &workspace_config)?;
+        }
+        FileSystem::write_atomic(&config_path, &serialized)?;
 
         Self::load(base_dir)?.get(key)
     }
@@ -555,11 +592,13 @@ impl EffectiveConfig {
         value: &str,
     ) -> AppResult<ConfigEntry> {
         let _ = Self::load_for_project(base_dir, Some(project_id), CliBackendOverrides::default())?;
-        let mut project_config = FileSystem::read_project_config(base_dir, project_id)?;
-        let raw = toml::to_string_pretty(&project_config)?;
+        let raw = toml::to_string_pretty(&FileSystem::read_project_config(base_dir, project_id)?)?;
         let mut document = raw.parse::<DocumentMut>()?;
         apply_to_document(&mut document, key, value)?;
-        project_config = toml::from_str(&document.to_string())?;
+        let serialized = document.to_string();
+        let project_config: ProjectConfig = toml::from_str(&serialized)?;
+        let workspace_config = load_workspace_config(base_dir)?;
+        validate_iterative_minimal_settings(&workspace_config, &project_config)?;
         FileSystem::write_project_config(base_dir, project_id, &project_config)?;
 
         Self::load_for_project(base_dir, Some(project_id), CliBackendOverrides::default())?.get(key)
@@ -853,6 +892,40 @@ impl EffectiveConfig {
                         .prompt_change_action
                         .map(|_| ()),
                     None::<()>,
+                ),
+            ),
+            ["workflow", "iterative_minimal", "max_consecutive_implementer_rounds"] => (
+                ConfigValue::Integer(
+                    self.run_policy
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds as u64,
+                ),
+                source_for_option(
+                    self.workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    self.project_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    None::<u32>,
+                ),
+            ),
+            ["workflow", "iterative_minimal", "stable_rounds_required"] => (
+                ConfigValue::Integer(
+                    self.run_policy.iterative_minimal.stable_rounds_required as u64,
+                ),
+                source_for_option(
+                    self.workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    self.project_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    None::<u32>,
                 ),
             ),
             ["completion", "backends"] => (
@@ -1656,6 +1729,8 @@ fn known_config_keys() -> Vec<String> {
         "workflow.max_review_iterations".to_owned(),
         "workflow.max_completion_rounds".to_owned(),
         "workflow.prompt_change_action".to_owned(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds".to_owned(),
+        "workflow.iterative_minimal.stable_rounds_required".to_owned(),
         "completion.backends".to_owned(),
         "completion.min_completers".to_owned(),
         "completion.consensus_threshold".to_owned(),
@@ -1784,6 +1859,24 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
                 document["workflow"]["prompt_change_action"] = value(parsed.as_str());
             }
         }
+        ["workflow", "iterative_minimal", "max_consecutive_implementer_rounds"] => {
+            apply_optional_positive_u64(
+                document,
+                &[
+                    "workflow",
+                    "iterative_minimal",
+                    "max_consecutive_implementer_rounds",
+                ],
+                key,
+                raw_value,
+            )?
+        }
+        ["workflow", "iterative_minimal", "stable_rounds_required"] => apply_optional_positive_u64(
+            document,
+            &["workflow", "iterative_minimal", "stable_rounds_required"],
+            key,
+            raw_value,
+        )?,
         ["completion", "backends"] => {
             apply_string_list(document, &["completion", "backends"], raw_value)?
         }
@@ -1968,6 +2061,22 @@ fn apply_optional_u64(
     Ok(())
 }
 
+fn apply_optional_positive_u64(
+    document: &mut DocumentMut,
+    path: &[&str],
+    key: &str,
+    raw_value: &str,
+) -> AppResult<()> {
+    if is_unset(raw_value) {
+        set_item(document, path, Item::None);
+        return Ok(());
+    }
+
+    let parsed = parse_positive_u64(key, raw_value)?;
+    set_item(document, path, value(parsed as i64));
+    Ok(())
+}
+
 fn apply_optional_float(
     document: &mut DocumentMut,
     path: &[&str],
@@ -2032,6 +2141,223 @@ fn parse_u64(key: &str, raw_value: &str) -> AppResult<u64> {
             value: raw_value.to_owned(),
             reason: "expected a non-negative integer".to_owned(),
         })
+}
+
+fn parse_positive_u64(key: &str, raw_value: &str) -> AppResult<u64> {
+    let parsed = parse_u64(key, raw_value)?;
+    if parsed == 0 {
+        return Err(AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+            reason: "expected a positive integer".to_owned(),
+        });
+    }
+
+    Ok(parsed)
+}
+
+fn validate_optional_positive_u32(key: &str, value: Option<u32>) -> AppResult<()> {
+    if value == Some(0) {
+        return Err(AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: "0".to_owned(),
+            reason: "expected a positive integer".to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_iterative_minimal_range(
+    max_key: &str,
+    max_rounds: u32,
+    stable_key: &str,
+    stable_rounds_required: u32,
+) -> AppResult<()> {
+    if stable_rounds_required > max_rounds {
+        return Err(AppError::InvalidConfigValue {
+            key: stable_key.to_owned(),
+            value: stable_rounds_required.to_string(),
+            reason: format!("must be less than or equal to {max_key} ({max_rounds})"),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_optional_iterative_minimal_range(
+    max_key: &str,
+    max_rounds: Option<u32>,
+    stable_key: &str,
+    stable_rounds_required: Option<u32>,
+) -> AppResult<()> {
+    if let (Some(max_rounds), Some(stable_rounds_required)) = (max_rounds, stable_rounds_required) {
+        validate_iterative_minimal_range(max_key, max_rounds, stable_key, stable_rounds_required)?;
+    }
+
+    Ok(())
+}
+
+fn validate_effective_iterative_minimal_policy(
+    policy: &EffectiveIterativeMinimalPolicy,
+) -> AppResult<()> {
+    validate_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        policy.max_consecutive_implementer_rounds,
+        "workflow.iterative_minimal.stable_rounds_required",
+        policy.stable_rounds_required,
+    )
+}
+
+fn validate_iterative_minimal_settings(
+    workspace_config: &WorkspaceConfig,
+    project_config: &ProjectConfig,
+) -> AppResult<()> {
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+    )?;
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        project_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+    )?;
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.stable_rounds_required",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.stable_rounds_required",
+        project_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+    validate_optional_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+        "workflow.iterative_minimal.stable_rounds_required",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+    validate_optional_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        project_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+        "workflow.iterative_minimal.stable_rounds_required",
+        project_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+    validate_effective_iterative_minimal_settings(workspace_config, project_config)?;
+
+    Ok(())
+}
+
+fn validate_effective_iterative_minimal_settings(
+    workspace_config: &WorkspaceConfig,
+    project_config: &ProjectConfig,
+) -> AppResult<()> {
+    validate_iterative_minimal_range(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        resolve_scalar(
+            workspace_config
+                .workflow
+                .iterative_minimal
+                .max_consecutive_implementer_rounds,
+            project_config
+                .workflow
+                .iterative_minimal
+                .max_consecutive_implementer_rounds,
+            None,
+            DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS,
+        ),
+        "workflow.iterative_minimal.stable_rounds_required",
+        resolve_scalar(
+            workspace_config
+                .workflow
+                .iterative_minimal
+                .stable_rounds_required,
+            project_config
+                .workflow
+                .iterative_minimal
+                .stable_rounds_required,
+            None,
+            DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED,
+        ),
+    )
+}
+
+fn validate_workspace_iterative_minimal_settings(
+    base_dir: &Path,
+    workspace_config: &WorkspaceConfig,
+) -> AppResult<()> {
+    validate_iterative_minimal_settings(workspace_config, &ProjectConfig::default())?;
+
+    for project_id in candidate_project_ids_for_iterative_validation(base_dir)? {
+        let project_config = FileSystem::read_project_config(base_dir, &project_id)?;
+        validate_iterative_minimal_settings(workspace_config, &project_config)?;
+    }
+
+    Ok(())
+}
+
+fn workspace_iterative_minimal_key(key: &str) -> bool {
+    matches!(
+        key,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds"
+            | "workflow.iterative_minimal.stable_rounds_required"
+    )
+}
+
+fn candidate_project_ids_for_iterative_validation(base_dir: &Path) -> AppResult<Vec<ProjectId>> {
+    let mut candidate_ids = BTreeSet::new();
+    for projects_dir in [
+        FileSystem::audit_workspace_root_path(base_dir).join("projects"),
+        FileSystem::live_workspace_root_path(base_dir).join("projects"),
+    ] {
+        if !projects_dir.is_dir() {
+            continue;
+        }
+
+        for entry in fs::read_dir(&projects_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+
+            if let Ok(project_id) = ProjectId::new(name.as_ref()) {
+                candidate_ids.insert(project_id.to_string());
+            }
+        }
+    }
+
+    candidate_ids
+        .into_iter()
+        .map(ProjectId::new)
+        .collect::<AppResult<Vec<_>>>()
 }
 
 fn parse_f64(key: &str, raw_value: &str) -> AppResult<f64> {

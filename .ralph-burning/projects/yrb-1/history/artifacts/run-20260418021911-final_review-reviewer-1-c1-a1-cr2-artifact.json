@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T03:48:38.456729333Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` with `.ralph-burning/` excluded. Found two fix-now correctness gaps in the new `iterative_minimal` loop: recovery can replay a completed iteration after a journal/snapshot split-brain, and the diff fingerprint misses chmod-only changes for untracked or non-git files.\n\n## Amendments\n\n1. finding_summary: `execute_iterative_plan_and_implement_stage` appends `implementer_iteration_completed` before it durably advances `active_run.iterative_implementer_state`, while `resume_iteration_counters` restores loop progress only from the interrupted snapshot. If the `run.json` write fails, or the process dies after the journal append succeeds, resuming the run will replay an already-completed implementer iteration and can duplicate code edits / journal entries.\naffected_files:\n- src/contexts/workflow_composition/engine.rs:6211-6249\n- src/contexts/workflow_composition/engine.rs:1113-1125\nremediation_hint: Reconstruct iterative loop progress from `ImplementerIterationCompleted` journal events on resume, or otherwise make the journal/snapshot update ordering crash-safe so a completed iteration cannot be replayed.\n   Rationale: This loop state is introduced by the new preset, and the current durability window breaks recovery semantics for a non-idempotent stage. A recoverable failure can cause the implementer to run one extra time against an already-mutated workspace.\n2. finding_summary: The custom diff fingerprint hashes file paths, sizes, contents, and symlink targets, but it never includes regular-file mode bits. In the filesystem fallback and in the untracked-file branch, a chmod-only change (for example, making a newly created script executable) produces the same fingerprint, so the loop can treat a real workspace change as 'stable' and exit early.\naffected_files:\n- src/contexts/workflow_composition/engine.rs:5894-5913\n- src/contexts/workflow_composition/engine.rs:5972-5988\nremediation_hint: Include permission/mode bits in the fallback and untracked-file hashes, or switch to a status representation that preserves executable-bit changes for those paths.\n   Rationale: The new preset's stop condition depends entirely on this fingerprint. Missing chmod-only changes means the loop can terminate even though the workspace still changed in a semantically important way.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

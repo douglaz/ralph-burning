@@ -785,14 +785,33 @@ async fn codex_command_construction_and_temp_files() {
     // Verify parsed payload
     assert_eq!(envelope.parsed_payload["problem_framing"], "test plan");
 
-    // Verify raw output preserves Codex stdout NDJSON, including usage.
-    assert!(matches!(
-        &envelope.raw_output_reference,
-        RawOutputReference::Inline(text)
-            if text.contains("\"turn.completed\"")
-                && text.contains("\"cached_input_tokens\":800")
-                && !text.contains("problem_framing")
-    ));
+    // Verify raw output preserves Codex stdout NDJSON and last-message JSON
+    // so terminal resume can recover without the parsed sidecar.
+    match &envelope.raw_output_reference {
+        RawOutputReference::Inline(text) => {
+            let raw_envelope: serde_json::Value =
+                serde_json::from_str(text).expect("parse codex raw transcript");
+            assert_eq!(raw_envelope["transport"], "rb_codex_process_v1");
+            assert!(raw_envelope["stdout"]
+                .as_str()
+                .expect("stdout transcript")
+                .contains("\"turn.completed\""));
+            assert!(raw_envelope["stdout"]
+                .as_str()
+                .expect("stdout transcript")
+                .contains("\"cached_input_tokens\":800"));
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(
+                    raw_envelope["last_message"]
+                        .as_str()
+                        .expect("last-message transcript"),
+                )
+                .expect("parse last-message transcript")["problem_framing"],
+                "test plan"
+            );
+        }
+        other => panic!("expected inline raw output, got {other:?}"),
+    }
 
     // Verify metadata
     assert_eq!(envelope.metadata.invocation_id, request.invocation_id);

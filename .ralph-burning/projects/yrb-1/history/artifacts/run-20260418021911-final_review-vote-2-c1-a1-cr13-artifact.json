@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-2-c1-a1-cr13-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-2-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T09:47:06.395877825Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify real defects verified against code. fr-13-944ad1cf: raw-output recovery path uses naive serde_json::from_str on the persisted raw stdout, but for real process backends (Claude) the raw is the full envelope while parsed_payload is extracted separately — recovery yields wrong shape, contract evaluation fails, and resume hard-fails via InvalidPayload. fr-13-eba9caaf: the new iterative_minimal engine/resume tests live in workflow_engine_test, which is gated behind the non-default test-stub feature, so plain `cargo test` (the acceptance command) does not exercise them.\n\n## Votes\n\n- `fr-13-944ad1cf`: Accept\n  Verified in code: engine.rs:6336 blindly parses the `.raw` file as JSON, but process_backend.rs:289 persists full stdout_text (Claude envelope) as the raw artifact while service.rs:339-340 returns parsed_payload without re-reading raw. The envelope is JSON, so serde_json succeeds but the recovered value is the envelope object (keys like `result`, `session_id`), which fails `evaluate_permissive` in recovered_iterative_bundle_from_payload. resume_terminal_iterative_stage_result (engine.rs:6572-6591) then propagates InvalidPayload, hard-failing resume. Coupled with persist_invocation_parsed_payload_best_effort (6260) explicitly continuing after sidecar write failure, this leaves iterative_minimal runs unrecoverable in precisely the sidecar-loss scenario the change is meant to handle for real backends. Legitimate correctness defect.\n- `fr-13-eba9caaf`: Accept\n  Verified: Cargo.toml:6-7 declares `test-stub = []` with no [features.default] wiring it on, and tests/unit.rs:73-75 gates `mod workflow_engine_test` behind `#[cfg(feature = \"test-stub\")]`. The bead's acceptance criteria lists `cargo test && cargo clippy -- -D warnings && cargo fmt --check` as the verification command, which compiles without test-stub and therefore skips the new implementer-loop and terminal-resume coverage at tests/unit/workflow_engine_test.rs:1729. The default gate can go green while the core iterative path regresses. Either the tests must move into always-compiled modules or the acceptance command must switch to `cargo test --features test-stub` (or make test-stub default).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 13
+}

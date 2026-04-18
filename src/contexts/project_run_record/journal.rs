@@ -448,6 +448,93 @@ pub fn reviewer_completed_event(
     }
 }
 
+/// Build an `implementer_iteration_started` journal event.
+#[allow(clippy::too_many_arguments)]
+pub fn implementer_iteration_started_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+    completion_round: u32,
+    iteration: u32,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::ImplementerIterationStarted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+            "completion_round": completion_round,
+            "iteration": iteration,
+        }),
+    }
+}
+
+/// Build an `implementer_iteration_completed` journal event.
+#[allow(clippy::too_many_arguments)]
+pub fn implementer_iteration_completed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+    completion_round: u32,
+    iteration: u32,
+    diff_changed: bool,
+    outcome: &str,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::ImplementerIterationCompleted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+            "completion_round": completion_round,
+            "iteration": iteration,
+            "diff_changed": diff_changed,
+            "outcome": outcome,
+        }),
+    }
+}
+
+/// Build an `implementer_loop_exited` journal event.
+#[allow(clippy::too_many_arguments)]
+pub fn implementer_loop_exited_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+    completion_round: u32,
+    reason: &str,
+    total_iterations: u32,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::ImplementerLoopExited,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+            "completion_round": completion_round,
+            "reason": reason,
+            "total_iterations": total_iterations,
+        }),
+    }
+}
+
 /// Build a `rollback_created` journal event.
 pub fn rollback_created_event(
     sequence: u64,

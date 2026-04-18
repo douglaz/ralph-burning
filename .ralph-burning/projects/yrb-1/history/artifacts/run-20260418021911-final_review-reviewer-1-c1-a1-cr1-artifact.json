@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T03:16:08.425149063Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now correctness issues in `iterative_minimal`: the diff detector only fingerprints porcelain status categories instead of real content changes, and the loop's iteration/stability state is not durable across retries or resume, so the configured round cap can be exceeded.\n\n## Amendments\n\n1. finding_summary: `git_diff_fingerprint` hashes `git status --porcelain` output instead of the actual diff, so further edits to a file that is already dirty leave the fingerprint unchanged (` M path` / `?? path`). In `iterative_minimal`, that makes `diff_changed` go false even while the implementer is still changing contents, so the loop can hit the stable exit early. affected_files: src/contexts/workflow_composition/engine.rs:5911-5946, src/contexts/workflow_composition/engine.rs:6079-6081. remediation_hint: fingerprint real content-level state (for example staged diff + unstaged diff + untracked file contents, or a full workspace content hash) instead of `git status` category lines.\n   Rationale: The stop-condition is supposed to answer whether the workspace actually changed across an iteration. Porcelain status only reports dirty-path categories, so it misses content changes to files that were already modified or untracked before the iteration began. That breaks the core stabilization signal for this flow.\n2. finding_summary: The iterative loop's `iteration` and `stable_count` live only in local variables, so they reset whenever the stage is retried or the run is resumed. `resume_iteration_counters` restores only QA/review counters, and `ActiveRun` has nowhere to persist iterative loop state. As a result, an interrupted or retryable `plan_and_implement` attempt can consume another full `max_consecutive_implementer_rounds` budget and restart from iteration 1, violating the configured cap and stable-window semantics. affected_files: src/contexts/project_run_record/model.rs:161-179, src/contexts/workflow_composition/engine.rs:1096-1108, src/contexts/workflow_composition/engine.rs:5551-5756, src/contexts/workflow_composition/engine.rs:5975-5988. remediation_hint: persist iterative loop state in `ActiveRun` (at least current iteration and current stable streak) and resume/retry from that state instead of reinitializing the loop.\n   Rationale: `max_consecutive_implementer_rounds` is the main safety guard for the new preset. Resetting the counters on retry/resume means the bound is not actually enforced in real failure scenarios, which can lead to unexpectedly long runs and inconsistent iteration telemetry.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

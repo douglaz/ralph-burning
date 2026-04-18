@@ -2,16 +2,20 @@ use std::fs;
 
 use chrono::TimeZone;
 use ralph_burning::adapters::fs::FileSystem;
+use ralph_burning::contexts::workspace_governance::config::{
+    DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS,
+    DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED,
+};
 use ralph_burning::contexts::workspace_governance::{
     ConfigValue, EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
 };
 use ralph_burning::shared::domain::{
-    FlowPreset, PromptReviewSettings, WorkspaceConfig, WorkspaceSettings,
+    FlowPreset, ProjectId, PromptReviewSettings, WorkspaceConfig, WorkspaceSettings,
 };
 use ralph_burning::shared::error::AppError;
 use tempfile::tempdir;
 
-use super::workspace_test::initialize_workspace_fixture;
+use super::workspace_test::{initialize_workspace_fixture, live_project_root};
 
 #[test]
 fn effective_config_loads_compiled_defaults() {
@@ -123,6 +127,20 @@ fn effective_config_loads_compiled_defaults() {
         config.get("default_flow").expect("default flow").source,
         ralph_burning::contexts::workspace_governance::ConfigValueSource::Default
     ));
+    assert_eq!(
+        ConfigValue::Integer(DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS as u64),
+        config
+            .get("workflow.iterative_minimal.max_consecutive_implementer_rounds")
+            .expect("iterative minimal max rounds")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Integer(DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED as u64),
+        config
+            .get("workflow.iterative_minimal.stable_rounds_required")
+            .expect("iterative minimal stable rounds")
+            .value
+    );
 }
 
 #[test]
@@ -231,6 +249,271 @@ mode = "repo_default"
     assert!(updated.contains("future_toggle = \"enabled\""));
     assert!(updated.contains("owner = \"ops\""));
     assert!(updated.contains("[routing]"));
+}
+
+#[test]
+fn config_set_updates_iterative_minimal_nested_values() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let max_entry = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "7",
+    )
+    .expect("set iterative max rounds");
+    assert_eq!(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        max_entry.key
+    );
+    assert_eq!("7", max_entry.value.display_value());
+
+    let stable_entry = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.stable_rounds_required",
+        "3",
+    )
+    .expect("set iterative stable rounds");
+    assert_eq!(
+        "workflow.iterative_minimal.stable_rounds_required",
+        stable_entry.key
+    );
+    assert_eq!("3", stable_entry.value.display_value());
+
+    let reloaded = EffectiveConfig::load(temp_dir.path()).expect("reload effective config");
+    assert_eq!(
+        ConfigValue::Integer(7),
+        reloaded
+            .get("workflow.iterative_minimal.max_consecutive_implementer_rounds")
+            .expect("reloaded iterative max rounds")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Integer(3),
+        reloaded
+            .get("workflow.iterative_minimal.stable_rounds_required")
+            .expect("reloaded iterative stable rounds")
+            .value
+    );
+}
+
+#[test]
+fn config_set_rejects_zero_iterative_minimal_values() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let error = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "0",
+    )
+    .expect_err("zero max rounds must be rejected");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(
+                key,
+                "workflow.iterative_minimal.max_consecutive_implementer_rounds"
+            );
+            assert_eq!(value, "0");
+            assert!(reason.contains("positive integer"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+
+    let error = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.stable_rounds_required",
+        "0",
+    )
+    .expect_err("zero stable rounds must be rejected");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+            assert_eq!(value, "0");
+            assert!(reason.contains("positive integer"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_set_rejects_iterative_minimal_stable_rounds_above_max_rounds() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "5",
+    )
+    .expect("seed iterative max rounds");
+
+    let error = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.stable_rounds_required",
+        "6",
+    )
+    .expect_err("stable rounds above max rounds must be rejected");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+            assert_eq!(value, "6");
+            assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_set_project_rejects_cross_scope_iterative_minimal_policy() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+    let project_id = ProjectId::new("cross-scope-project").expect("project id");
+
+    EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "5",
+    )
+    .expect("seed workspace iterative max rounds");
+
+    let error = EffectiveConfig::set_project(
+        temp_dir.path(),
+        &project_id,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "6",
+    )
+    .expect_err("project override should be rejected when it exceeds the workspace max rounds");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+            assert_eq!(value, "6");
+            assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_set_rejects_cross_scope_iterative_minimal_policy_against_existing_project_override() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+    let project_id = ProjectId::new("cross-scope-project").expect("project id");
+
+    EffectiveConfig::set_project(
+        temp_dir.path(),
+        &project_id,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "6",
+    )
+    .expect("seed project iterative stable rounds");
+
+    let error = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "5",
+    )
+    .expect_err(
+        "workspace edit should be rejected when it would invalidate an existing project override",
+    );
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+            assert_eq!(value, "6");
+            assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_set_allows_unrelated_workspace_edits_when_project_config_is_malformed() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+    let project_id = ProjectId::new("broken-project").expect("project id");
+
+    FileSystem::write_project_config(temp_dir.path(), &project_id, &Default::default())
+        .expect("seed project config");
+    let project_config_path =
+        live_project_root(temp_dir.path(), project_id.as_str()).join("config.toml");
+    fs::write(
+        &project_config_path,
+        "[workflow.iterative_minimal\nstable_rounds_required = 2\n",
+    )
+    .expect("write malformed project config");
+
+    let entry = EffectiveConfig::set(temp_dir.path(), "default_flow", "quick_dev")
+        .expect("unrelated workspace config edit should ignore malformed project configs");
+    assert_eq!("default_flow", entry.key);
+    assert_eq!("quick_dev", entry.value.display_value());
+
+    let reloaded = EffectiveConfig::load(temp_dir.path()).expect("reload workspace config");
+    assert_eq!(FlowPreset::QuickDev, reloaded.default_flow());
+}
+
+#[test]
+fn effective_config_load_rejects_zero_iterative_minimal_values_from_file() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let workspace_root = initialize_workspace_fixture(temp_dir.path());
+    EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "7",
+    )
+    .expect("seed iterative max rounds");
+    let config_path = workspace_root.join("workspace.toml");
+    let raw = fs::read_to_string(&config_path).expect("read workspace config");
+    let updated = raw.replace(
+        "max_consecutive_implementer_rounds = 7",
+        "max_consecutive_implementer_rounds = 0",
+    );
+    fs::write(&config_path, updated).expect("write invalid workspace config");
+
+    let error = EffectiveConfig::load(temp_dir.path()).expect_err("zero max rounds must fail");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(
+                key,
+                "workflow.iterative_minimal.max_consecutive_implementer_rounds"
+            );
+            assert_eq!(value, "0");
+            assert!(reason.contains("positive integer"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
+}
+
+#[test]
+fn effective_config_load_rejects_iterative_minimal_stable_rounds_above_max_rounds() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let workspace_root = initialize_workspace_fixture(temp_dir.path());
+    EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "5",
+    )
+    .expect("seed iterative max rounds");
+    EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.stable_rounds_required",
+        "4",
+    )
+    .expect("seed iterative stable rounds");
+    let config_path = workspace_root.join("workspace.toml");
+    let raw = fs::read_to_string(&config_path).expect("read workspace config");
+    let updated = raw.replace("stable_rounds_required = 4", "stable_rounds_required = 6");
+    fs::write(&config_path, updated).expect("write invalid workspace config");
+
+    let error = EffectiveConfig::load(temp_dir.path())
+        .expect_err("stable rounds above max rounds must fail");
+    match error {
+        AppError::InvalidConfigValue { key, value, reason } => {
+            assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+            assert_eq!(value, "6");
+            assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+        }
+        other => panic!("expected InvalidConfigValue, got {other:?}"),
+    }
 }
 
 #[test]

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T04:59:54.040210429Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the three amendments that identify real correctness and robustness defects in iterative_minimal resume/recovery and git fallback behavior. Rejected the test-gating amendment because the cited tests are intentionally stub-gated and are still exercised by the repository's authoritative acceptance path, since `nix build` enables `test-stub` in `flake.nix`.\n\n## Votes\n\n- `fr-4-f4be8338`: Reject\n  It is true that `tests/unit/workflow_engine_test.rs` is behind `#[cfg(feature = \"test-stub\")]`, so plain `cargo test` does not run those cases. But this repository intentionally splits stub-dependent tests out of the default build, and the authoritative acceptance gate is `nix build`, whose `flake.nix` sets `cargoTestFlags = [ \"--features\" \"test-stub\" ]`. That means the new iterative_minimal tests are still part of the actual acceptance path, so this is not a correctness defect in the submitted change.\n- `fr-4-d4dacaf1`: Accept\n  `implementer_loop_exited_event` records `run_id`, but `iterative_loop_exit_recorded` checks only `stage_id`, `cycle`, and `completion_round` via `event_matches_stage_cursor`. `resume_terminal_iterative_stage_result` reads the whole project journal, not per-run events, so a prior run's `implementer_loop_exited` record can satisfy the check and suppress the current run's event. That is a real per-run journaling bug on resume after an interruption before the current run durably wrote its own exit event.\n- `fr-4-3bcf030d`: Accept\n  The recovery path reconstructs the payload by calling `serde_json::from_str` on `{invocation_id}.raw`, but normal invocation handling does not guarantee that raw output is the contract payload. The Codex process backend stores raw stdout while `parsed_payload` comes from a separate last-message file, and OpenRouter stores the full API response while `parsed_payload` is extracted from nested message content. Recovery can therefore fail or validate the wrong JSON without re-invoking the backend. That is a concrete correctness bug, not just a theoretical protocol concern.\n- `fr-4-24fa94d8`: Accept\n  `git_repo_available` currently propagates `Command::output()` spawn errors, so environments without a usable `git` binary fail the stage instead of taking the existing filesystem fingerprint fallback. Since `workspace_diff_fingerprint` already exists specifically to handle non-git cases and ignores `.git` and `.ralph-burning`, treating spawn failure as `git unavailable` is the robust behavior. The current `?` creates an avoidable hard failure in minimal or restricted environments.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

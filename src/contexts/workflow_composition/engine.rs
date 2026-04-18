@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::adapters::fs::{
@@ -12,7 +16,10 @@ use crate::adapters::fs::{
     FsMilestoneSnapshotStore, FsPlannedElsewhereMappingStore, FsProjectStore, FsRollbackPointStore,
     FsTaskRunLineageStore, RunPidOwner,
 };
-use crate::adapters::process_backend::processed_contract_schema_value;
+use crate::adapters::openrouter_backend::recover_structured_payload_from_response_body;
+use crate::adapters::process_backend::{
+    processed_contract_schema_value, recover_structured_payload_from_process_stdout,
+};
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -31,9 +38,10 @@ use crate::contexts::milestone_record::model::{MilestoneId, PlannedElsewhereMapp
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
-    ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, JournalEventType, LogLevel,
-    PayloadRecord, ProjectRecord, QueuedAmendment, ResolvedTargetRecord, RollbackPoint,
-    RunSnapshot, RunStatus, RuntimeLogEntry, StageResolutionSnapshot,
+    ActiveRun, ArtifactRecord, CycleHistoryEntry, IterativeImplementerLoopPolicy,
+    IterativeImplementerState, JournalEvent, JournalEventType, LogLevel, PayloadRecord,
+    ProjectRecord, QueuedAmendment, ResolvedTargetRecord, RollbackPoint, RunSnapshot, RunStatus,
+    RuntimeLogEntry, StageResolutionSnapshot,
 };
 use crate::contexts::project_run_record::queries;
 use crate::contexts::project_run_record::service::{
@@ -234,6 +242,7 @@ fn inject_scope_guidance(rendered_prompt: &str, scope_guidance: &str) -> String 
 }
 
 /// Resolved target per stage for preflight.
+#[derive(Clone)]
 pub struct StagePlan {
     pub stage_id: StageId,
     pub role: BackendRole,
@@ -718,6 +727,7 @@ fn build_active_run(
     qa_iterations_current_cycle: u32,
     review_iterations_current_cycle: u32,
     final_review_restart_count: u32,
+    iterative_implementer_state: Option<IterativeImplementerState>,
     stage_resolution_snapshot: Option<StageResolutionSnapshot>,
 ) -> ActiveRun {
     ActiveRun {
@@ -729,8 +739,28 @@ fn build_active_run(
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
         final_review_restart_count,
+        iterative_implementer_state,
         stage_resolution_snapshot,
     }
+}
+
+fn carry_forward_iterative_state(
+    current: &ActiveRun,
+    next_cursor: &StageCursor,
+) -> Option<IterativeImplementerState> {
+    (iterative_state_carries_into_cursor(&current.stage_cursor, next_cursor))
+        .then(|| current.iterative_implementer_state.clone())
+        .flatten()
+}
+
+fn iterative_state_carries_into_cursor(
+    source_cursor: &StageCursor,
+    target_cursor: &StageCursor,
+) -> bool {
+    source_cursor.stage == target_cursor.stage
+        && source_cursor.cycle == target_cursor.cycle
+        && source_cursor.completion_round == target_cursor.completion_round
+        && source_cursor.attempt <= target_cursor.attempt
 }
 
 fn current_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
@@ -1006,13 +1036,14 @@ fn carry_forward_active_run(
     let current = current_active_run(snapshot)?;
     Ok(build_active_run(
         run_id,
-        stage_cursor,
+        stage_cursor.clone(),
         current.started_at,
         current.prompt_hash_at_cycle_start.clone(),
         prompt_hash_at_stage_start,
         current.qa_iterations_current_cycle,
         current.review_iterations_current_cycle,
         current.final_review_restart_count,
+        carry_forward_iterative_state(current, &stage_cursor),
         stage_resolution_snapshot,
     ))
 }
@@ -1038,6 +1069,7 @@ fn reset_cycle_active_run(
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
         final_review_restart_count,
+        None,
         stage_resolution_snapshot,
     ))
 }
@@ -1053,13 +1085,14 @@ fn advance_completion_round_active_run(
     let current = current_active_run(snapshot)?;
     Ok(build_active_run(
         run_id,
-        stage_cursor,
+        stage_cursor.clone(),
         current.started_at,
         current.prompt_hash_at_cycle_start.clone(),
         prompt_hash,
         current.qa_iterations_current_cycle,
         current.review_iterations_current_cycle,
         final_review_restart_count,
+        carry_forward_iterative_state(current, &stage_cursor),
         stage_resolution_snapshot,
     ))
 }
@@ -1091,19 +1124,199 @@ fn prompt_change_baseline(snapshot: &RunSnapshot) -> AppResult<String> {
         .clone())
 }
 
+fn event_type_label(event: &JournalEvent) -> String {
+    format!("{:?}", event.event_type)
+}
+
+fn event_detail_u32(event: &JournalEvent, key: &str) -> AppResult<u32> {
+    let value = event
+        .details
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event is missing numeric '{key}' detail",
+                event_type_label(event)
+            ),
+        })?;
+    u32::try_from(value).map_err(|_| AppError::CorruptRecord {
+        file: "journal.ndjson".to_owned(),
+        details: format!(
+            "{} event '{key}' detail is out of range for u32",
+            event_type_label(event)
+        ),
+    })
+}
+
+fn optional_event_detail_u32(event: &JournalEvent, key: &str) -> AppResult<Option<u32>> {
+    let Some(value) = event.details.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event is missing numeric '{key}' detail",
+                event_type_label(event)
+            ),
+        });
+    };
+
+    Ok(Some(u32::try_from(value).map_err(|_| {
+        AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event '{key}' detail is out of range for u32",
+                event_type_label(event)
+            ),
+        }
+    })?))
+}
+
+fn event_detail_bool(event: &JournalEvent, key: &str) -> AppResult<bool> {
+    event
+        .details
+        .get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event is missing boolean '{key}' detail",
+                event_type_label(event)
+            ),
+        })
+}
+
+fn event_matches_stage_cursor(event: &JournalEvent, cursor: &StageCursor) -> AppResult<bool> {
+    let Some(stage_id) = event.details.get("stage_id").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+
+    Ok(stage_id == cursor.stage.as_str()
+        && event_detail_u32(event, "cycle")? == cursor.cycle
+        && event_detail_u32(event, "completion_round")? == cursor.completion_round)
+}
+
+fn event_matches_stage_attempt(event: &JournalEvent, cursor: &StageCursor) -> AppResult<bool> {
+    match optional_event_detail_u32(event, "attempt")? {
+        Some(attempt) => Ok(attempt == cursor.attempt),
+        None => Ok(true),
+    }
+}
+
+fn event_matches_stage_attempt_up_to_cursor(
+    event: &JournalEvent,
+    cursor: &StageCursor,
+) -> AppResult<bool> {
+    match optional_event_detail_u32(event, "attempt")? {
+        Some(attempt) => Ok(attempt <= cursor.attempt),
+        None => Ok(true),
+    }
+}
+
+fn reconstruct_iterative_state_from_events(
+    events: &[JournalEvent],
+    run_id: &RunId,
+    cursor: &StageCursor,
+) -> AppResult<Option<IterativeImplementerState>> {
+    let mut completed_iterations = 0;
+    let mut stable_count = 0;
+    let mut found = false;
+
+    for event in events {
+        if event.event_type != JournalEventType::ImplementerIterationCompleted
+            || !event_matches_run(event, run_id)
+            || !event_matches_stage_cursor(event, cursor)?
+            || !event_matches_stage_attempt_up_to_cursor(event, cursor)?
+        {
+            continue;
+        }
+
+        let iteration = event_detail_u32(event, "iteration")?;
+        if iteration <= completed_iterations {
+            continue;
+        }
+
+        let diff_changed = event_detail_bool(event, "diff_changed")?;
+        completed_iterations = iteration;
+        stable_count = if diff_changed { 0 } else { stable_count + 1 };
+        found = true;
+    }
+
+    Ok(found.then_some(IterativeImplementerState {
+        completed_iterations,
+        stable_count,
+        loop_policy: None,
+        stage_target: None,
+    }))
+}
+
 fn resume_iteration_counters(
     snapshot: &RunSnapshot,
     resume_cursor: &StageCursor,
-) -> AppResult<(u32, u32)> {
+    resume_events: &[JournalEvent],
+) -> AppResult<(u32, u32, Option<IterativeImplementerState>)> {
     let interrupted = interrupted_active_run(snapshot)?;
     if interrupted.stage_cursor.cycle != resume_cursor.cycle {
-        return Ok((0, 0));
+        return Ok((0, 0, None));
+    }
+
+    let snapshot_state = (interrupted.stage_cursor.stage == resume_cursor.stage
+        && interrupted.stage_cursor.cycle == resume_cursor.cycle
+        && interrupted.stage_cursor.completion_round == resume_cursor.completion_round
+        && interrupted.stage_cursor.attempt <= resume_cursor.attempt)
+        .then(|| interrupted.iterative_implementer_state.clone())
+        .flatten();
+    let snapshot_loop_policy = snapshot_state
+        .as_ref()
+        .and_then(|state| state.loop_policy.clone());
+    let snapshot_stage_target = snapshot_state
+        .as_ref()
+        .and_then(|state| state.stage_target.clone())
+        .or_else(|| {
+            interrupted
+                .stage_resolution_snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.primary_target.clone())
+        });
+    let run_id = RunId::new(&interrupted.run_id)?;
+    let recovered_state =
+        reconstruct_iterative_state_from_events(resume_events, &run_id, resume_cursor)?;
+    let mut iterative_state = match (snapshot_state, recovered_state) {
+        (Some(snapshot_state), Some(recovered_state))
+            if recovered_state.completed_iterations >= snapshot_state.completed_iterations =>
+        {
+            Some(recovered_state)
+        }
+        (Some(snapshot_state), Some(_)) => Some(snapshot_state),
+        (Some(snapshot_state), None) => Some(snapshot_state),
+        (None, Some(recovered_state)) => Some(recovered_state),
+        (None, None) => None,
+    };
+    if let Some(state) = iterative_state.as_mut() {
+        if state.loop_policy.is_none() {
+            state.loop_policy = snapshot_loop_policy;
+        }
+        if state.stage_target.is_none() {
+            state.stage_target = snapshot_stage_target;
+        }
     }
 
     Ok((
         interrupted.qa_iterations_current_cycle,
         interrupted.review_iterations_current_cycle,
+        iterative_state,
     ))
+}
+
+fn iterative_state_matches_cursor<'a>(
+    active_run: &'a ActiveRun,
+    cursor: &StageCursor,
+) -> Option<&'a IterativeImplementerState> {
+    (iterative_state_carries_into_cursor(&active_run.stage_cursor, cursor))
+        .then_some(active_run.iterative_implementer_state.as_ref())
+        .flatten()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1355,6 +1568,7 @@ where
             0,
             0,
             None,
+            None,
         )),
         interrupted_run: None,
         status: RunStatus::Running,
@@ -1461,6 +1675,7 @@ where
         &mut seq,
         &mut current_snapshot,
         semantics,
+        preset,
         &stage_plan,
         0,
         initial_cursor,
@@ -1900,6 +2115,8 @@ where
                 (current_prompt_hash.clone(), current_prompt_hash)
             }
         };
+    let (qa_iterations_current_cycle, review_iterations_current_cycle, iterative_implementer_state) =
+        resume_iteration_counters(&snapshot, &resume_state.cursor, &resume_events)?;
 
     // ── Resume drift detection (runs BEFORE preflight) ────────────────────────
     // Re-resolve the current stage or panel, compare against the persisted
@@ -2080,6 +2297,12 @@ where
             _ => {
                 let target =
                     policy.resolve_stage_target(current_stage, resume_state.cursor.cycle)?;
+                let target = resolved_target_for_stage_attempt(
+                    preset,
+                    current_stage,
+                    &target,
+                    iterative_implementer_state.as_ref(),
+                )?;
                 build_single_target_snapshot(current_stage, &target)
             }
         };
@@ -2109,22 +2332,54 @@ where
         }
     }
 
-    preflight_check(
-        agent_service.adapter(),
-        effective_config,
-        resume_state.cursor.cycle,
-        &stage_plan[resume_state.stage_index..],
-    )
-    .await
-    .map_err(|error| AppError::ResumeFailed {
-        reason: error.to_string(),
-    })?;
+    let mut preflight_plan = stage_plan[resume_state.stage_index..].to_vec();
+    if preset == FlowPreset::IterativeMinimal
+        && resume_state.cursor.stage == StageId::PlanAndImplement
+        && !preflight_plan.is_empty()
+    {
+        preflight_plan[0].target = resolved_target_for_stage_attempt(
+            preset,
+            preflight_plan[0].stage_id,
+            &preflight_plan[0].target,
+            iterative_implementer_state.as_ref(),
+        )?;
+    }
+    let preflight_start_index = if preset == FlowPreset::IterativeMinimal
+        && resume_state.cursor.stage == StageId::PlanAndImplement
+        && resume_state.stage_index < stage_plan.len()
+        && iterative_resume_skips_current_stage_preflight(
+            &project_root,
+            &preflight_plan[0].target,
+            &resume_state.run_id,
+            &stage_plan[resume_state.stage_index],
+            &resume_state.cursor,
+            iterative_implementer_state.as_ref(),
+            effective_config,
+        )? {
+        resume_state.stage_index + 1
+    } else {
+        resume_state.stage_index
+    };
+    if preflight_start_index < stage_plan.len() {
+        preflight_check(
+            agent_service.adapter(),
+            effective_config,
+            resume_state.cursor.cycle,
+            if preflight_start_index == resume_state.stage_index {
+                &preflight_plan
+            } else {
+                &stage_plan[preflight_start_index..]
+            },
+        )
+        .await
+        .map_err(|error| AppError::ResumeFailed {
+            reason: error.to_string(),
+        })?;
+    }
 
     // Seed the resumed ActiveRun with the (potentially updated) resolution
     // snapshot from drift detection so the stage can compare against it later.
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
-    let (qa_iterations_current_cycle, review_iterations_current_cycle) =
-        resume_iteration_counters(&snapshot, &resume_state.cursor)?;
     let final_review_restart_count = resume_final_review_restart_count(&snapshot, &resume_events)?;
     let resumed_at = Utc::now();
     snapshot.status = RunStatus::Running;
@@ -2137,13 +2392,21 @@ where
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
         final_review_restart_count,
+        iterative_implementer_state,
         resumed_snapshot,
     ));
     snapshot.interrupted_run = None;
     snapshot.completion_rounds = snapshot
         .completion_rounds
         .max(resume_state.cursor.completion_round);
-    snapshot.status_summary = format!("running: {}", resume_state.cursor.stage.display_name());
+    snapshot.status_summary = stage_running_summary_for_active_run(
+        resume_state.cursor.stage,
+        snapshot.active_run.as_ref(),
+        effective_config
+            .run_policy()
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+    );
     snapshot.max_completion_rounds = Some(
         std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
             .ok()
@@ -2257,6 +2520,7 @@ where
         &mut seq,
         &mut snapshot,
         semantics,
+        preset,
         &stage_plan,
         resume_state.stage_index,
         resume_state.cursor,
@@ -2370,6 +2634,7 @@ async fn execute_run_internal<A, R, S>(
     seq: &mut u64,
     snapshot: &mut RunSnapshot,
     semantics: FlowSemantics,
+    preset: FlowPreset,
     stage_plan: &[StagePlan],
     start_stage_index: usize,
     start_cursor: StageCursor,
@@ -2484,6 +2749,7 @@ where
                         0,
                         0,
                         current_active_run(snapshot)?.final_review_restart_count,
+                        None,
                         None,
                     ));
                     snapshot.status_summary = format!(
@@ -4139,6 +4405,7 @@ where
             &project_root,
             prompt_reference,
             effective_config,
+            preset,
         )
         .await?;
 
@@ -5316,6 +5583,7 @@ async fn execute_stage_with_retry<A, R, S>(
     project_root: &Path,
     prompt_reference: &str,
     effective_config: &EffectiveConfig,
+    preset: FlowPreset,
 ) -> AppResult<(StageCursor, ValidatedBundle, RecordProducer)>
 where
     A: AgentExecutionPort,
@@ -5327,7 +5595,19 @@ where
     let policy = BackendPolicyService::new(effective_config);
 
     loop {
-        let resolved_target = match policy.resolve_stage_target(stage_id, cursor.cycle) {
+        let resolved_target = match policy
+            .resolve_stage_target(stage_id, cursor.cycle)
+            .and_then(|target| {
+                resolved_target_for_stage_attempt(
+                    preset,
+                    stage_id,
+                    &target,
+                    snapshot
+                        .active_run
+                        .as_ref()
+                        .and_then(|active_run| iterative_state_matches_cursor(active_run, &cursor)),
+                )
+            }) {
             Ok(target) => target,
             Err(error) => {
                 return fail_run_result(
@@ -5449,7 +5729,14 @@ where
             project_prompt_hash(project_root, prompt_reference)?,
             Some(resolution),
         )?);
-        snapshot.status_summary = format!("running: {}", stage_id.display_name());
+        snapshot.status_summary = stage_running_summary_for_active_run(
+            stage_id,
+            snapshot.active_run.as_ref(),
+            effective_config
+                .run_policy()
+                .iterative_minimal
+                .max_consecutive_implementer_rounds,
+        );
         if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot) {
             return fail_run_result(
                 &AppError::StageCommitFailed {
@@ -5490,22 +5777,50 @@ where
             },
         );
 
-        let result = invoke_stage_on_backend(
-            agent_service,
-            base_dir,
-            execution_cwd,
-            project_root,
-            run_id,
-            stage_entry,
-            &cursor,
-            prompt,
-            execution_context,
-            pending_amendments,
-            cancellation_token.clone(),
-            resolved_target.clone(),
-            timeout,
-        )
-        .await;
+        let result =
+            if preset == FlowPreset::IterativeMinimal && stage_id == StageId::PlanAndImplement {
+                execute_iterative_plan_and_implement_stage(
+                    agent_service,
+                    run_snapshot_write,
+                    journal_store,
+                    base_dir,
+                    execution_cwd,
+                    project_root,
+                    project_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    stage_entry,
+                    &cursor,
+                    prompt,
+                    execution_context,
+                    pending_amendments,
+                    cancellation_token.clone(),
+                    resolved_target.clone(),
+                    timeout,
+                    effective_config,
+                )
+                .await
+            } else {
+                invoke_stage_on_backend(
+                    agent_service,
+                    base_dir,
+                    execution_cwd,
+                    project_root,
+                    run_id,
+                    stage_entry,
+                    &cursor,
+                    prompt,
+                    execution_context,
+                    pending_amendments,
+                    cancellation_token.clone(),
+                    resolved_target.clone(),
+                    timeout,
+                    None,
+                    None,
+                )
+                .await
+            };
 
         match result {
             Ok((bundle, producer)) => return Ok((cursor.clone(), bundle, producer)),
@@ -5533,7 +5848,8 @@ where
                     && !cancellation_token.is_cancelled();
 
                 let error_display = error.to_string();
-                let failed_invocation_id = history_record_base_id(run_id, stage_id, &cursor, 0);
+                let failed_invocation_id =
+                    failed_invocation_id_for_stage(run_id, stage_id, &cursor, snapshot, preset);
 
                 *seq += 1;
                 let stage_failed = journal::stage_failed_event(
@@ -5732,6 +6048,1282 @@ where
     }
 }
 
+fn invocation_id_for_stage(
+    run_id: &RunId,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    suffix: Option<&str>,
+) -> String {
+    let base = history_record_base_id(run_id, stage_id, cursor, 0);
+    match suffix {
+        Some(suffix) => format!("{base}-{suffix}"),
+        None => base,
+    }
+}
+
+fn failed_invocation_id_for_stage(
+    run_id: &RunId,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    snapshot: &RunSnapshot,
+    preset: FlowPreset,
+) -> String {
+    if preset == FlowPreset::IterativeMinimal && stage_id == StageId::PlanAndImplement {
+        let next_iteration = snapshot
+            .active_run
+            .as_ref()
+            .filter(|active_run| {
+                active_run.stage_cursor.stage == cursor.stage
+                    && active_run.stage_cursor.cycle == cursor.cycle
+                    && active_run.stage_cursor.attempt == cursor.attempt
+                    && active_run.stage_cursor.completion_round == cursor.completion_round
+            })
+            .and_then(|active_run| active_run.iterative_implementer_state.as_ref())
+            .map(|state| state.completed_iterations.saturating_add(1))
+            .unwrap_or(1);
+        let suffix = format!("it{next_iteration}");
+        return invocation_id_for_stage(run_id, stage_id, cursor, Some(&suffix));
+    }
+
+    history_record_base_id(run_id, stage_id, cursor, 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IterativeLoopExitReason {
+    Stable,
+    MaxRounds,
+}
+
+impl IterativeLoopExitReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::MaxRounds => "max_rounds",
+        }
+    }
+}
+
+fn iterative_loop_exit_reason(
+    stable_count: u32,
+    iteration: u32,
+    stable_rounds_required: u32,
+    max_rounds: u32,
+) -> Option<IterativeLoopExitReason> {
+    if stable_count >= stable_rounds_required {
+        return Some(IterativeLoopExitReason::Stable);
+    }
+
+    if iteration >= max_rounds {
+        return Some(IterativeLoopExitReason::MaxRounds);
+    }
+
+    None
+}
+
+fn advance_iterative_loop_state(
+    stable_count: u32,
+    iteration: u32,
+    diff_changed: bool,
+    stable_rounds_required: u32,
+    max_rounds: u32,
+) -> (u32, Option<IterativeLoopExitReason>) {
+    let next_stable_count = if diff_changed {
+        0
+    } else {
+        stable_count.saturating_add(1)
+    };
+
+    (
+        next_stable_count,
+        iterative_loop_exit_reason(
+            next_stable_count,
+            iteration,
+            stable_rounds_required,
+            max_rounds,
+        ),
+    )
+}
+
+fn stage_running_summary(stage_id: StageId, iteration: Option<u32>, max_rounds: u32) -> String {
+    match iteration {
+        Some(iteration) if stage_id == StageId::PlanAndImplement => format!(
+            "running: {} (iteration {iteration}/{max_rounds})",
+            stage_id.display_name()
+        ),
+        _ => format!("running: {}", stage_id.display_name()),
+    }
+}
+
+fn iterative_iteration_summary_state(
+    stage_id: StageId,
+    active_run: Option<&ActiveRun>,
+) -> Option<&IterativeImplementerState> {
+    active_run.and_then(|active_run| {
+        (stage_id == StageId::PlanAndImplement
+            && active_run.stage_cursor.stage == StageId::PlanAndImplement)
+            .then_some(active_run.iterative_implementer_state.as_ref())
+            .flatten()
+    })
+}
+
+fn stage_running_summary_for_active_run(
+    stage_id: StageId,
+    active_run: Option<&ActiveRun>,
+    default_max_rounds: u32,
+) -> String {
+    let iterative_state = iterative_iteration_summary_state(stage_id, active_run);
+    let iteration = iterative_state
+        .and_then(|state| (state.completed_iterations > 0).then_some(state.completed_iterations));
+    let max_rounds = iterative_state
+        .and_then(|state| state.loop_policy.as_ref())
+        .map(|policy| policy.max_consecutive_implementer_rounds)
+        .unwrap_or(default_max_rounds);
+    stage_running_summary(stage_id, iteration, max_rounds)
+}
+
+fn iterative_iteration_outcome(bundle: &ValidatedBundle) -> String {
+    serde_json::to_value(&bundle.payload)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("outcome")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "completed".to_owned())
+}
+
+fn validate_iterative_minimal_loop_setting(key: &str, value: u32) -> AppResult<()> {
+    if value == 0 {
+        return Err(AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: value.to_string(),
+            reason: "expected a positive integer".to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_iterative_minimal_loop_settings(
+    max_rounds: u32,
+    stable_rounds_required: u32,
+) -> AppResult<()> {
+    validate_iterative_minimal_loop_setting(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        max_rounds,
+    )?;
+    validate_iterative_minimal_loop_setting(
+        "workflow.iterative_minimal.stable_rounds_required",
+        stable_rounds_required,
+    )?;
+    if stable_rounds_required > max_rounds {
+        return Err(AppError::InvalidConfigValue {
+            key: "workflow.iterative_minimal.stable_rounds_required".to_owned(),
+            value: stable_rounds_required.to_string(),
+            reason: format!(
+                "must be less than or equal to workflow.iterative_minimal.max_consecutive_implementer_rounds ({max_rounds})"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn iterative_loop_policy(
+    max_rounds: u32,
+    stable_rounds_required: u32,
+) -> IterativeImplementerLoopPolicy {
+    IterativeImplementerLoopPolicy {
+        max_consecutive_implementer_rounds: max_rounds,
+        stable_rounds_required,
+    }
+}
+
+fn iterative_loop_policy_for_attempt(
+    state: Option<&IterativeImplementerState>,
+    effective_config: &EffectiveConfig,
+) -> AppResult<IterativeImplementerLoopPolicy> {
+    let policy = state
+        .and_then(|state| state.loop_policy.clone())
+        .unwrap_or_else(|| {
+            iterative_loop_policy(
+                effective_config
+                    .run_policy()
+                    .iterative_minimal
+                    .max_consecutive_implementer_rounds,
+                effective_config
+                    .run_policy()
+                    .iterative_minimal
+                    .stable_rounds_required,
+            )
+        });
+    validate_iterative_minimal_loop_settings(
+        policy.max_consecutive_implementer_rounds,
+        policy.stable_rounds_required,
+    )?;
+    Ok(policy)
+}
+
+fn resolved_target_for_stage_attempt(
+    preset: FlowPreset,
+    stage_id: StageId,
+    fallback_target: &ResolvedBackendTarget,
+    iterative_state: Option<&IterativeImplementerState>,
+) -> AppResult<ResolvedBackendTarget> {
+    if preset == FlowPreset::IterativeMinimal && stage_id == StageId::PlanAndImplement {
+        return iterative_resume_target(iterative_state, fallback_target, stage_id);
+    }
+
+    Ok(fallback_target.clone())
+}
+
+fn iterative_resume_target(
+    state: Option<&IterativeImplementerState>,
+    fallback_target: &ResolvedBackendTarget,
+    stage_id: StageId,
+) -> AppResult<ResolvedBackendTarget> {
+    let Some(target) = state.and_then(|state| state.stage_target.as_ref()) else {
+        return Ok(fallback_target.clone());
+    };
+    let backend_family = target
+        .backend_family
+        .parse::<BackendFamily>()
+        .map_err(|error| AppError::StageCommitFailed {
+            stage_id,
+            details: format!(
+                "persisted iterative_minimal target backend `{}` is invalid during resume recovery: {error}",
+                target.backend_family
+            ),
+        })?;
+    Ok(ResolvedBackendTarget::new(
+        backend_family,
+        target.model_id.clone(),
+    ))
+}
+
+fn event_matches_run(event: &JournalEvent, run_id: &RunId) -> bool {
+    event.details.get("run_id").and_then(Value::as_str) == Some(run_id.as_str())
+}
+
+fn iterative_loop_exit_recorded(
+    events: &[JournalEvent],
+    run_id: &RunId,
+    cursor: &StageCursor,
+    reason: IterativeLoopExitReason,
+    total_iterations: u32,
+) -> AppResult<bool> {
+    for event in events {
+        if event.event_type == JournalEventType::ImplementerLoopExited
+            && event_matches_run(event, run_id)
+            && event_matches_stage_cursor(event, cursor)?
+            && event_matches_stage_attempt(event, cursor)?
+            && event.details.get("reason").and_then(Value::as_str) == Some(reason.as_str())
+            && event_detail_u32(event, "total_iterations")? == total_iterations
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_implementer_loop_exited_event(
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    reason: IterativeLoopExitReason,
+    total_iterations: u32,
+) -> AppResult<()> {
+    *seq += 1;
+    let exited = journal::implementer_loop_exited_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        cursor.cycle,
+        cursor.attempt,
+        cursor.completion_round,
+        reason.as_str(),
+        total_iterations,
+    );
+    let exited_line = journal::serialize_event(&exited)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &exited_line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!(
+                "failed to persist implementer_loop_exited event for iteration {total_iterations}: {error}"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn recovered_iterative_record_producer(resolved_target: &ResolvedBackendTarget) -> RecordProducer {
+    RecordProducer::Agent {
+        requested_backend_family: resolved_target.backend.family.to_string(),
+        requested_model_id: resolved_target.model.model_id.clone(),
+        actual_backend_family: resolved_target.backend.family.to_string(),
+        actual_model_id: resolved_target.model.model_id.clone(),
+    }
+}
+
+fn iterative_backend_raw_output_path(project_root: &Path, invocation_id: &str) -> PathBuf {
+    project_root
+        .join("runtime/backend")
+        .join(format!("{invocation_id}.raw"))
+}
+
+fn iterative_backend_parsed_output_path(project_root: &Path, invocation_id: &str) -> PathBuf {
+    project_root
+        .join("runtime/backend")
+        .join(format!("{invocation_id}.parsed.json"))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IterativeInvocationSidecar {
+    parsed_payload: Value,
+    producer: RecordProducer,
+}
+
+fn persist_invocation_parsed_payload(
+    project_root: &Path,
+    invocation_id: &str,
+    stage_id: StageId,
+    parsed_payload: &Value,
+    producer: &RecordProducer,
+) -> AppResult<()> {
+    let parsed_output_path = iterative_backend_parsed_output_path(project_root, invocation_id);
+    let serialized = serde_json::to_string_pretty(&IterativeInvocationSidecar {
+        parsed_payload: parsed_payload.clone(),
+        producer: producer.clone(),
+    })
+    .map_err(|error| {
+        AppError::StageCommitFailed {
+            stage_id,
+            details: format!(
+                "failed to serialize iterative parsed payload sidecar for invocation {invocation_id}: {error}"
+            ),
+        }
+    })?;
+    FileSystem::write_atomic(&parsed_output_path, &serialized).map_err(|error| {
+        AppError::StageCommitFailed {
+            stage_id,
+            details: format!(
+                "failed to persist iterative parsed payload sidecar for invocation {invocation_id} at {}: {error}",
+                parsed_output_path.display()
+            ),
+        }
+    })
+}
+
+fn persist_invocation_parsed_payload_best_effort(
+    project_root: &Path,
+    invocation_id: &str,
+    stage_id: StageId,
+    parsed_payload: &Value,
+    producer: &RecordProducer,
+) {
+    if let Err(first_error) = persist_invocation_parsed_payload(
+        project_root,
+        invocation_id,
+        stage_id,
+        parsed_payload,
+        producer,
+    ) {
+        tracing::warn!(
+            stage = %stage_id,
+            invocation_id,
+            error = %first_error,
+            "failed to persist iterative parsed payload sidecar; retrying once and continuing with in-memory result"
+        );
+        if let Err(retry_error) = persist_invocation_parsed_payload(
+            project_root,
+            invocation_id,
+            stage_id,
+            parsed_payload,
+            producer,
+        ) {
+            tracing::warn!(
+                stage = %stage_id,
+                invocation_id,
+                error = %retry_error,
+                "failed to persist iterative parsed payload sidecar on retry; resume may need to re-invoke this iteration"
+            );
+        }
+    }
+}
+
+enum IterativeIterationRecoveryFailure {
+    SidecarUnavailable { details: String },
+    InvalidPayload(AppError),
+}
+
+fn recovered_iterative_bundle_from_payload(
+    stage_entry: &StagePlan,
+    parsed_payload: &Value,
+    iteration: u32,
+    details_context: &str,
+) -> Result<ValidatedBundle, IterativeIterationRecoveryFailure> {
+    stage_entry
+        .contract
+        .evaluate_permissive(parsed_payload)
+        .map_err(|error| {
+            IterativeIterationRecoveryFailure::InvalidPayload(AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "recovered iterative_minimal parsed payload for iteration {iteration} did not satisfy the stage contract: {error}; inspect {details_context}"
+                ),
+            })
+        })
+}
+
+fn recover_iterative_payload_from_raw_output(
+    raw_output_path: &Path,
+    stage_entry: &StagePlan,
+    resolved_target: &ResolvedBackendTarget,
+    iteration: u32,
+    sidecar_error: &str,
+) -> Result<(ValidatedBundle, RecordProducer), IterativeIterationRecoveryFailure> {
+    let raw_output = fs::read_to_string(raw_output_path).map_err(|error| {
+        IterativeIterationRecoveryFailure::SidecarUnavailable {
+            details: format!(
+                "{sidecar_error}; failed to recover iterative_minimal raw output for iteration {iteration} from {}: {error}",
+                raw_output_path.display()
+            ),
+        }
+    })?;
+    let parsed_payload = match resolved_target.backend.family {
+        BackendFamily::OpenRouter => recover_structured_payload_from_response_body(&raw_output),
+        backend_family => {
+            recover_structured_payload_from_process_stdout(&raw_output, backend_family)
+        }
+    }
+    .map_err(|error| {
+        IterativeIterationRecoveryFailure::SidecarUnavailable {
+            details: format!(
+                "{sidecar_error}; failed to recover iterative_minimal parsed payload for iteration {iteration} from raw transcript {}: {error}",
+                raw_output_path.display()
+            ),
+        }
+    })?;
+    let details_context = raw_output_path.display().to_string();
+    let bundle = recovered_iterative_bundle_from_payload(
+        stage_entry,
+        &parsed_payload,
+        iteration,
+        details_context.as_str(),
+    )?;
+    Ok((bundle, recovered_iterative_record_producer(resolved_target)))
+}
+
+fn recover_iterative_iteration_result(
+    project_root: &Path,
+    run_id: &RunId,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    recovery_target: &ResolvedBackendTarget,
+    iteration: u32,
+) -> Result<(ValidatedBundle, RecordProducer), IterativeIterationRecoveryFailure> {
+    let invocation_id = invocation_id_for_stage(
+        run_id,
+        stage_entry.stage_id,
+        cursor,
+        Some(&format!("it{iteration}")),
+    );
+    let raw_output_path = iterative_backend_raw_output_path(project_root, &invocation_id);
+    let parsed_output_path = iterative_backend_parsed_output_path(project_root, &invocation_id);
+    let parsed_sidecar = match fs::read_to_string(&parsed_output_path) {
+        Ok(contents) => contents,
+        Err(error) => {
+            let sidecar_error = format!(
+                "failed to recover iterative_minimal parsed payload for iteration {iteration} from {}: {error}",
+                parsed_output_path.display()
+            );
+            return recover_iterative_payload_from_raw_output(
+                &raw_output_path,
+                stage_entry,
+                recovery_target,
+                iteration,
+                &sidecar_error,
+            );
+        }
+    };
+    let parsed_sidecar = match serde_json::from_str::<Value>(&parsed_sidecar) {
+        Ok(sidecar) => sidecar,
+        Err(error) => {
+            let sidecar_error = format!(
+                "failed to parse recovered iterative_minimal parsed payload sidecar for iteration {iteration} from {}: {error}",
+                parsed_output_path.display()
+            );
+            return recover_iterative_payload_from_raw_output(
+                &raw_output_path,
+                stage_entry,
+                recovery_target,
+                iteration,
+                &sidecar_error,
+            );
+        }
+    };
+    let (parsed_payload, producer) = match parsed_sidecar {
+        Value::Object(mut object)
+            if object.contains_key("parsed_payload") || object.contains_key("producer") =>
+        {
+            let parsed_payload = match object.remove("parsed_payload") {
+                Some(parsed_payload) => parsed_payload,
+                None => {
+                    let sidecar_error = format!(
+                        "recovered iterative_minimal parsed payload sidecar for iteration {iteration} at {} is missing `parsed_payload`",
+                        parsed_output_path.display()
+                    );
+                    return recover_iterative_payload_from_raw_output(
+                        &raw_output_path,
+                        stage_entry,
+                        recovery_target,
+                        iteration,
+                        &sidecar_error,
+                    );
+                }
+            };
+            let producer = match object.remove("producer") {
+                Some(producer) => producer,
+                None => {
+                    let sidecar_error = format!(
+                        "recovered iterative_minimal parsed payload sidecar for iteration {iteration} at {} is missing producer metadata",
+                        parsed_output_path.display()
+                    );
+                    return recover_iterative_payload_from_raw_output(
+                        &raw_output_path,
+                        stage_entry,
+                        recovery_target,
+                        iteration,
+                        &sidecar_error,
+                    );
+                }
+            };
+            let producer = match serde_json::from_value::<RecordProducer>(producer) {
+                Ok(producer) => producer,
+                Err(error) => {
+                    let sidecar_error = format!(
+                        "failed to parse producer metadata from iterative_minimal parsed payload sidecar for iteration {iteration} at {}: {error}",
+                        parsed_output_path.display()
+                    );
+                    return recover_iterative_payload_from_raw_output(
+                        &raw_output_path,
+                        stage_entry,
+                        recovery_target,
+                        iteration,
+                        &sidecar_error,
+                    );
+                }
+            };
+            (parsed_payload, producer)
+        }
+        legacy_payload => (
+            legacy_payload,
+            recovered_iterative_record_producer(recovery_target),
+        ),
+    };
+    let details_context = format!(
+        "{} and {}",
+        parsed_output_path.display(),
+        raw_output_path.display()
+    );
+    let bundle = recovered_iterative_bundle_from_payload(
+        stage_entry,
+        &parsed_payload,
+        iteration,
+        details_context.as_str(),
+    )?;
+
+    Ok((bundle, producer))
+}
+
+fn iterative_terminal_resume_ready(
+    project_root: &Path,
+    resolved_target: &ResolvedBackendTarget,
+    run_id: &RunId,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    state: &IterativeImplementerState,
+    effective_config: &EffectiveConfig,
+) -> AppResult<bool> {
+    let loop_policy = iterative_loop_policy_for_attempt(Some(state), effective_config)?;
+    let recovery_target =
+        iterative_resume_target(Some(state), resolved_target, stage_entry.stage_id)?;
+    let Some(_) = iterative_loop_exit_reason(
+        state.stable_count,
+        state.completed_iterations,
+        loop_policy.stable_rounds_required,
+        loop_policy.max_consecutive_implementer_rounds,
+    ) else {
+        return Ok(false);
+    };
+
+    match recover_iterative_iteration_result(
+        project_root,
+        run_id,
+        stage_entry,
+        cursor,
+        &recovery_target,
+        state.completed_iterations,
+    ) {
+        Ok(_) => Ok(true),
+        Err(IterativeIterationRecoveryFailure::SidecarUnavailable { .. })
+        | Err(IterativeIterationRecoveryFailure::InvalidPayload(_)) => Ok(false),
+    }
+}
+
+fn iterative_resume_skips_current_stage_preflight(
+    project_root: &Path,
+    resolved_target: &ResolvedBackendTarget,
+    run_id: &RunId,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    iterative_state: Option<&IterativeImplementerState>,
+    effective_config: &EffectiveConfig,
+) -> AppResult<bool> {
+    let Some(state) = iterative_state else {
+        return Ok(false);
+    };
+
+    iterative_terminal_resume_ready(
+        project_root,
+        resolved_target,
+        run_id,
+        stage_entry,
+        cursor,
+        state,
+        effective_config,
+    )
+}
+
+#[derive(Debug)]
+enum TerminalIterativeResumeResult {
+    NotTerminal,
+    Recovered(Box<(ValidatedBundle, RecordProducer)>),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resume_terminal_iterative_stage_result(
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_root: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    recovery_target: &ResolvedBackendTarget,
+    completed_iterations: u32,
+    stable_count: u32,
+    stable_rounds_required: u32,
+    max_rounds: u32,
+) -> AppResult<TerminalIterativeResumeResult> {
+    let Some(reason) = iterative_loop_exit_reason(
+        stable_count,
+        completed_iterations,
+        stable_rounds_required,
+        max_rounds,
+    ) else {
+        return Ok(TerminalIterativeResumeResult::NotTerminal);
+    };
+
+    let events = journal_store.read_journal(base_dir, project_id)?;
+    let recovered = match recover_iterative_iteration_result(
+        project_root,
+        run_id,
+        stage_entry,
+        cursor,
+        recovery_target,
+        completed_iterations,
+    ) {
+        Ok(recovered) => recovered,
+        Err(IterativeIterationRecoveryFailure::SidecarUnavailable { details }) => {
+            return Err(AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "unable to recover terminal iterative_minimal iteration {completed_iterations} safely during resume; refusing to re-invoke on the post-iteration workspace: {details}"
+                ),
+            });
+        }
+        Err(IterativeIterationRecoveryFailure::InvalidPayload(error)) => {
+            return Err(error);
+        }
+    };
+
+    if !iterative_loop_exit_recorded(&events, run_id, cursor, reason, completed_iterations)? {
+        append_implementer_loop_exited_event(
+            journal_store,
+            base_dir,
+            project_id,
+            run_id,
+            seq,
+            stage_entry.stage_id,
+            cursor,
+            reason,
+            completed_iterations,
+        )?;
+    }
+
+    Ok(TerminalIterativeResumeResult::Recovered(Box::new(
+        recovered,
+    )))
+}
+
+fn iterative_fingerprint_excludes_path(relative_path: &Path) -> bool {
+    let Some(first_component) = relative_path.components().next() else {
+        return false;
+    };
+    let first_component = first_component.as_os_str().to_string_lossy();
+    matches!(first_component.as_ref(), ".git" | ".ralph-burning")
+}
+
+fn iterative_fingerprint_git_pathspecs() -> Vec<&'static str> {
+    vec![
+        ".",
+        ":(top,exclude).ralph-burning",
+        ":(top,glob,exclude).ralph-burning/**",
+    ]
+}
+
+fn git_args_with_iterative_fingerprint_pathspecs<'a>(base_args: &'a [&'a str]) -> Vec<&'a str> {
+    base_args
+        .iter()
+        .copied()
+        .chain(iterative_fingerprint_git_pathspecs())
+        .collect()
+}
+
+fn hash_file_contents(path: &Path, hasher: &mut Sha256) -> AppResult<()> {
+    let mut file = fs::File::open(path)?;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(())
+}
+
+fn hash_workspace_entries(
+    workspace_root: &Path,
+    current: &Path,
+    hasher: &mut Sha256,
+) -> AppResult<()> {
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative_path = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
+        if iterative_fingerprint_excludes_path(relative_path) {
+            continue;
+        }
+        let relative = relative_path.to_string_lossy();
+
+        let metadata = fs::symlink_metadata(&path)?;
+        if iterative_workspace_build_artifact(relative_path, &metadata) {
+            continue;
+        }
+        if metadata.is_dir() {
+            hasher.update(b"dir\0");
+            hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
+            hash_workspace_entries(workspace_root, &path, hasher)?;
+            continue;
+        }
+
+        if metadata.file_type().is_symlink() {
+            hasher.update(b"symlink\0");
+            hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
+            hasher.update(fs::read_link(&path)?.to_string_lossy().as_bytes());
+            continue;
+        }
+
+        if metadata.is_file() {
+            hasher.update(b"file\0");
+            hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
+            hasher.update(metadata.len().to_le_bytes());
+            hash_file_contents(&path, hasher)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn workspace_diff_fingerprint(workspace_root: &Path) -> AppResult<String> {
+    let mut hasher = Sha256::new();
+    hash_workspace_entries(workspace_root, workspace_root, &mut hasher)?;
+    Ok(format!("fs:{:x}", hasher.finalize()))
+}
+
+fn git_command_for_program(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.env("LC_ALL", "C");
+    command.env("LANG", "C");
+    command.env_remove("LANGUAGE");
+    command
+}
+
+fn run_git_output(repo_root: &Path, args: &[&str]) -> AppResult<std::process::Output> {
+    run_git_output_with_program("git", repo_root, args)
+}
+
+fn run_git_output_with_program(
+    program: &str,
+    repo_root: &Path,
+    args: &[&str],
+) -> AppResult<std::process::Output> {
+    Ok(git_command_for_program(program)
+        .args(args)
+        .current_dir(repo_root)
+        .output()?)
+}
+
+fn git_repo_available(repo_root: &Path) -> AppResult<bool> {
+    git_repo_available_with_program(repo_root, "git")
+}
+
+fn git_repo_available_with_program(repo_root: &Path, program: &str) -> AppResult<bool> {
+    let output = match run_git_output_with_program(
+        program,
+        repo_root,
+        &["rev-parse", "--is-inside-work-tree"],
+    ) {
+        Ok(output) => output,
+        Err(AppError::Io(error)) => {
+            tracing::debug!(
+                repo_root = %repo_root.display(),
+                error = %error,
+                "git unavailable during iterative_minimal repo probe; falling back to filesystem fingerprint"
+            );
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
+}
+
+fn git_command_stdout(repo_root: &Path, args: &[&str], description: &str) -> AppResult<Vec<u8>> {
+    let output = run_git_output(repo_root, args)?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let details = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    };
+
+    Err(AppError::StageCommitFailed {
+        stage_id: StageId::PlanAndImplement,
+        details: format!(
+            "git {description} for iterative_minimal diff detection failed: {details}"
+        ),
+    })
+}
+
+fn hash_metadata_mode(metadata: &fs::Metadata, hasher: &mut Sha256) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        hasher.update(metadata.permissions().mode().to_le_bytes());
+    }
+
+    #[cfg(not(unix))]
+    {
+        hasher.update([u8::from(metadata.permissions().readonly())]);
+    }
+}
+
+fn hash_untracked_git_entry(
+    repo_root: &Path,
+    relative_path: &Path,
+    hasher: &mut Sha256,
+) -> AppResult<()> {
+    let absolute_path = repo_root.join(relative_path);
+    let metadata = fs::symlink_metadata(&absolute_path)?;
+    if iterative_fingerprint_excludes_path(relative_path)
+        || iterative_build_artifact_path(relative_path, &metadata)
+    {
+        return Ok(());
+    }
+    let display_path = relative_path.to_string_lossy();
+
+    if metadata.file_type().is_symlink() {
+        hasher.update(b"untracked-symlink\0");
+        hasher.update(display_path.as_bytes());
+        hash_metadata_mode(&metadata, hasher);
+        hasher.update(fs::read_link(&absolute_path)?.to_string_lossy().as_bytes());
+        return Ok(());
+    }
+
+    if metadata.is_file() {
+        hasher.update(b"untracked-file\0");
+        hasher.update(display_path.as_bytes());
+        hash_metadata_mode(&metadata, hasher);
+        hasher.update(metadata.len().to_le_bytes());
+        hash_file_contents(&absolute_path, hasher)?;
+        return Ok(());
+    }
+
+    if metadata.is_dir() {
+        let mut nested = Sha256::new();
+        hash_workspace_entries(repo_root, &absolute_path, &mut nested)?;
+        hasher.update(b"untracked-dir\0");
+        hasher.update(display_path.as_bytes());
+        hash_metadata_mode(&metadata, hasher);
+        hasher.update(nested.finalize());
+    }
+
+    Ok(())
+}
+
+fn iterative_build_artifact_path(relative_path: &Path, metadata: &fs::Metadata) -> bool {
+    let Some(first_component) = relative_path.components().next() else {
+        return false;
+    };
+    let first_component = first_component.as_os_str().to_string_lossy();
+    matches!(first_component.as_ref(), "target" | "target-final")
+        || ((first_component == "result" || first_component.starts_with("result-"))
+            && (metadata.file_type().is_symlink() || metadata.is_dir()))
+}
+
+fn iterative_workspace_build_artifact(relative_path: &Path, metadata: &fs::Metadata) -> bool {
+    iterative_build_artifact_path(relative_path, metadata)
+}
+
+fn git_head_fingerprint(repo_root: &Path) -> Vec<u8> {
+    match run_git_output(repo_root, &["rev-parse", "--verify", "HEAD"]) {
+        Ok(output) if output.status.success() => output.stdout,
+        _ => b"unborn".to_vec(),
+    }
+}
+
+fn hash_git_empty_directories(
+    workspace_root: &Path,
+    current: &Path,
+    hasher: &mut Sha256,
+) -> AppResult<()> {
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative_path = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
+        if iterative_fingerprint_excludes_path(relative_path) {
+            continue;
+        }
+
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || iterative_build_artifact_path(relative_path, &metadata) {
+            continue;
+        }
+
+        let child_count = fs::read_dir(&path)?.count();
+        if child_count == 0 {
+            hasher.update(b"empty-dir\0");
+            hasher.update(relative_path.to_string_lossy().as_bytes());
+            hash_metadata_mode(&metadata, hasher);
+            continue;
+        }
+
+        hash_git_empty_directories(workspace_root, &path, hasher)?;
+    }
+
+    Ok(())
+}
+
+fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
+    if !git_repo_available(repo_root)? {
+        return workspace_diff_fingerprint(repo_root);
+    }
+
+    let staged = git_command_stdout(
+        repo_root,
+        &git_args_with_iterative_fingerprint_pathspecs(&[
+            "diff",
+            "--binary",
+            "--cached",
+            "--no-ext-diff",
+            "--",
+        ]),
+        "diff --cached",
+    )?;
+    let unstaged = git_command_stdout(
+        repo_root,
+        &git_args_with_iterative_fingerprint_pathspecs(&[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--",
+        ]),
+        "diff",
+    )?;
+    let untracked_listing = git_command_stdout(
+        repo_root,
+        &git_args_with_iterative_fingerprint_pathspecs(&[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            "--",
+        ]),
+        "ls-files --others",
+    )?;
+
+    let untracked_paths: Vec<PathBuf> = untracked_listing
+        .split(|byte| *byte == b'\0')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| PathBuf::from(String::from_utf8_lossy(entry).into_owned()))
+        .collect();
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"head\0");
+    hasher.update(git_head_fingerprint(repo_root));
+    hasher.update(b"staged\0");
+    hasher.update(&staged);
+    hasher.update(b"unstaged\0");
+    hasher.update(&unstaged);
+    for path in &untracked_paths {
+        hash_untracked_git_entry(repo_root, path, &mut hasher)?;
+    }
+    hash_git_empty_directories(repo_root, repo_root, &mut hasher)?;
+
+    Ok(format!("git:{:x}", hasher.finalize()))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_iterative_plan_and_implement_stage<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    execution_cwd: Option<&Path>,
+    project_root: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    snapshot: &mut RunSnapshot,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    prompt: String,
+    execution_context: Option<&Value>,
+    pending_amendments: Option<&[QueuedAmendment]>,
+    cancellation_token: CancellationToken,
+    resolved_target: ResolvedBackendTarget,
+    timeout: Duration,
+    effective_config: &EffectiveConfig,
+) -> AppResult<(ValidatedBundle, RecordProducer)>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let repo_root = execution_cwd.unwrap_or(base_dir);
+    let persisted_state = current_active_run(snapshot)?
+        .iterative_implementer_state
+        .clone()
+        .unwrap_or(IterativeImplementerState {
+            completed_iterations: 0,
+            stable_count: 0,
+            loop_policy: None,
+            stage_target: None,
+        });
+    let loop_policy = iterative_loop_policy_for_attempt(Some(&persisted_state), effective_config)?;
+    let max_rounds = loop_policy.max_consecutive_implementer_rounds;
+    let stable_rounds_required = loop_policy.stable_rounds_required;
+    let recovery_target = iterative_resume_target(
+        Some(&persisted_state),
+        &resolved_target,
+        stage_entry.stage_id,
+    )?;
+    let mut stable_count = persisted_state.stable_count;
+    let mut iteration = persisted_state.completed_iterations;
+    loop {
+        if cancellation_token.is_cancelled() {
+            return Err(AppError::InvocationCancelled {
+                backend: resolved_target.backend.family.to_string(),
+                contract_id: stage_entry.stage_id.to_string(),
+            });
+        }
+
+        match resume_terminal_iterative_stage_result(
+            journal_store,
+            base_dir,
+            project_root,
+            project_id,
+            run_id,
+            seq,
+            stage_entry,
+            cursor,
+            &recovery_target,
+            iteration,
+            stable_count,
+            stable_rounds_required,
+            max_rounds,
+        )? {
+            TerminalIterativeResumeResult::Recovered(recovered) => return Ok(*recovered),
+            TerminalIterativeResumeResult::NotTerminal => {}
+        }
+
+        iteration += 1;
+        snapshot.status_summary =
+            stage_running_summary(stage_entry.stage_id, Some(iteration), max_rounds);
+        run_snapshot_write
+            .write_run_snapshot(base_dir, project_id, snapshot)
+            .map_err(|error| AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to update snapshot for iterative_minimal iteration {iteration}: {error}"
+                ),
+            })?;
+
+        *seq += 1;
+        let started = journal::implementer_iteration_started_event(
+            *seq,
+            Utc::now(),
+            run_id,
+            stage_entry.stage_id,
+            cursor.cycle,
+            cursor.attempt,
+            cursor.completion_round,
+            iteration,
+        );
+        let started_line = journal::serialize_event(&started)?;
+        if let Err(error) = journal_store.append_event(base_dir, project_id, &started_line) {
+            *seq -= 1;
+            return Err(AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to persist implementer_iteration_started event for iteration {iteration}: {error}"
+                ),
+            });
+        }
+
+        let diff_before = git_diff_fingerprint(repo_root)?;
+        let iterative_invocation_context = json!({
+            "iteration": iteration,
+            "iterative_minimal": {
+                "max_consecutive_implementer_rounds": max_rounds,
+                "stable_rounds_required": stable_rounds_required,
+            }
+        });
+        let iteration_result = invoke_stage_on_backend(
+            agent_service,
+            base_dir,
+            execution_cwd,
+            project_root,
+            run_id,
+            stage_entry,
+            cursor,
+            prompt.clone(),
+            execution_context,
+            pending_amendments,
+            cancellation_token.clone(),
+            recovery_target.clone(),
+            timeout,
+            Some(&format!("it{iteration}")),
+            Some(&iterative_invocation_context),
+        )
+        .await;
+
+        let (bundle, producer) = match iteration_result {
+            Ok(result) => result,
+            Err(error) => return Err(error),
+        };
+
+        let diff_after = git_diff_fingerprint(repo_root)?;
+        let diff_changed = diff_before != diff_after;
+        let outcome = iterative_iteration_outcome(&bundle);
+
+        *seq += 1;
+        let completed = journal::implementer_iteration_completed_event(
+            *seq,
+            Utc::now(),
+            run_id,
+            stage_entry.stage_id,
+            cursor.cycle,
+            cursor.attempt,
+            cursor.completion_round,
+            iteration,
+            diff_changed,
+            &outcome,
+        );
+        let completed_line = journal::serialize_event(&completed)?;
+        if let Err(error) = journal_store.append_event(base_dir, project_id, &completed_line) {
+            *seq -= 1;
+            return Err(AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to persist implementer_iteration_completed event for iteration {iteration}: {error}"
+                ),
+            });
+        }
+
+        let (next_stable_count, exit_reason) = advance_iterative_loop_state(
+            stable_count,
+            iteration,
+            diff_changed,
+            stable_rounds_required,
+            max_rounds,
+        );
+        stable_count = next_stable_count;
+        if let Some(active_run) = snapshot.active_run.as_mut() {
+            active_run.iterative_implementer_state = Some(IterativeImplementerState {
+                completed_iterations: iteration,
+                stable_count,
+                loop_policy: Some(loop_policy.clone()),
+                stage_target: Some(resolved_target_to_record(&recovery_target)),
+            });
+        }
+        run_snapshot_write
+            .write_run_snapshot(base_dir, project_id, snapshot)
+            .map_err(|error| AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to persist iterative_minimal state after iteration {iteration}: {error}"
+                ),
+            })?;
+
+        if let Some(reason) = exit_reason {
+            let events = journal_store.read_journal(base_dir, project_id)?;
+            if !iterative_loop_exit_recorded(&events, run_id, cursor, reason, iteration)? {
+                append_implementer_loop_exited_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    run_id,
+                    seq,
+                    stage_entry.stage_id,
+                    cursor,
+                    reason,
+                    iteration,
+                )?;
+            }
+            return Ok((bundle, producer));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn invoke_stage_on_backend<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
@@ -5747,14 +7339,18 @@ async fn invoke_stage_on_backend<A, R, S>(
     cancellation_token: CancellationToken,
     resolved_target: ResolvedBackendTarget,
     timeout: Duration,
+    invocation_suffix: Option<&str>,
+    additional_context: Option<&Value>,
 ) -> AppResult<(ValidatedBundle, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: RawOutputPort,
     S: SessionStorePort,
 {
+    let invocation_id =
+        invocation_id_for_stage(run_id, stage_entry.stage_id, cursor, invocation_suffix);
     let request = InvocationRequest {
-        invocation_id: history_record_base_id(run_id, stage_entry.stage_id, cursor, 0),
+        invocation_id: invocation_id.clone(),
         project_root: project_root.to_path_buf(),
         working_dir: execution_cwd.unwrap_or(base_dir).to_path_buf(),
         contract: InvocationContract::Stage(stage_entry.contract),
@@ -5762,7 +7358,12 @@ where
         resolved_target: resolved_target.clone(),
         payload: InvocationPayload {
             prompt,
-            context: invocation_context(cursor, execution_context, pending_amendments),
+            context: invocation_context(
+                cursor,
+                execution_context,
+                pending_amendments,
+                additional_context,
+            ),
         },
         timeout,
         cancellation_token,
@@ -5773,16 +7374,25 @@ where
 
     agent_service.invoke(request).await.and_then(|envelope| {
         let producer = agent_record_producer(&envelope.metadata);
-        stage_entry
+        let bundle = stage_entry
             .contract
             .evaluate_permissive(&envelope.parsed_payload)
-            .map(|bundle| (bundle, producer))
             .map_err(|contract_error| AppError::InvocationFailed {
                 backend: resolved_target.backend.family.to_string(),
                 contract_id: stage_entry.stage_id.to_string(),
                 failure_class: contract_error.failure_class(),
                 details: contract_error.to_string(),
-            })
+            })?;
+        if invocation_suffix.is_some() {
+            persist_invocation_parsed_payload_best_effort(
+                project_root,
+                &invocation_id,
+                stage_entry.stage_id,
+                &envelope.parsed_payload,
+                &producer,
+            );
+        }
+        Ok((bundle, producer))
     })
 }
 
@@ -6499,6 +8109,7 @@ fn invocation_context(
     cursor: &StageCursor,
     execution_context: Option<&Value>,
     pending_amendments: Option<&[QueuedAmendment]>,
+    additional_context: Option<&Value>,
 ) -> Value {
     let mut context = json!({
         "cycle": cursor.cycle,
@@ -6524,6 +8135,12 @@ fn invocation_context(
         if !amendments.is_empty() {
             let amendment_bodies: Vec<&str> = amendments.iter().map(|a| a.body.as_str()).collect();
             context["pending_amendments"] = json!(amendment_bodies);
+        }
+    }
+
+    if let Some(additional_context) = additional_context.and_then(Value::as_object) {
+        for (key, value) in additional_context {
+            context[key] = value.clone();
         }
     }
 
@@ -8542,10 +10159,14 @@ pub fn emit_resume_drift_warning(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
+    use std::process::Command;
 
     use chrono::Utc;
-    use serde_json::Value;
+    use serde_json::{json, Value};
     use tempfile::tempdir;
 
     use crate::adapters::fs::{
@@ -8568,27 +10189,37 @@ mod tests {
     use crate::contexts::milestone_record::service::{
         create_milestone, persist_plan, CreateMilestoneInput,
     };
+    use crate::contexts::project_run_record::journal;
     use crate::contexts::project_run_record::model::{
-        ActiveRun, JournalEventType, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus,
-        TaskOrigin, TaskSource,
+        ActiveRun, IterativeImplementerLoopPolicy, IterativeImplementerState, JournalEventType,
+        ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::{
         create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
+    use crate::contexts::workflow_composition::contracts;
+    use crate::contexts::workflow_composition::panel_contracts::RecordProducer;
+    use crate::contexts::workflow_composition::payloads::StagePayload;
     use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
-        BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageId,
+        BackendFamily, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId,
+        StageCursor, StageId,
     };
     use crate::shared::error::{AppError, AppResult};
 
     use super::{
-        build_final_review_snapshot, build_prompt_review_snapshot, complete_run,
-        drift_still_satisfies_requirements, mark_running_run_interrupted,
-        milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
-        resolution_has_drifted, resume_run_with_retry, sync_milestone_bead_start,
-        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate, QueuedAmendment,
-        RunningAttemptIdentity,
+        advance_iterative_loop_state, build_final_review_snapshot, build_prompt_review_snapshot,
+        complete_run, drift_still_satisfies_requirements, failed_invocation_id_for_stage,
+        git_diff_fingerprint, git_repo_available_with_program, invocation_id_for_stage,
+        iterative_loop_exit_reason, mark_running_run_interrupted, milestone_lineage_plan_hash,
+        partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
+        resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
+        role_for_stage, stage_running_summary_for_active_run, sync_milestone_bead_start,
+        validate_iterative_minimal_loop_settings, FinalReviewQueuedAmendment,
+        InterruptedRunContext, InterruptedRunUpdate, IterativeInvocationSidecar,
+        IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity, StagePlan,
+        TerminalIterativeResumeResult,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -8610,6 +10241,1545 @@ mod tests {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
         EffectiveConfig::load(temp_dir.path()).expect("load effective config")
+    }
+
+    fn run_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo(repo_root: &Path) {
+        run_git(repo_root, &["init"]);
+        run_git(repo_root, &["config", "user.name", "Test User"]);
+        run_git(repo_root, &["config", "user.email", "test@example.com"]);
+        fs::write(repo_root.join("tracked.txt"), "baseline\n").expect("write tracked file");
+        run_git(repo_root, &["add", "tracked.txt"]);
+        run_git(repo_root, &["commit", "-m", "initial"]);
+    }
+
+    #[test]
+    fn iterative_loop_state_stops_on_stability_or_max_rounds() {
+        assert_eq!(advance_iterative_loop_state(0, 1, false, 2, 10), (1, None));
+        assert_eq!(
+            advance_iterative_loop_state(1, 2, false, 2, 10),
+            (2, Some(IterativeLoopExitReason::Stable))
+        );
+        assert_eq!(
+            advance_iterative_loop_state(0, 10, true, 2, 10),
+            (0, Some(IterativeLoopExitReason::MaxRounds))
+        );
+        assert_eq!(advance_iterative_loop_state(1, 3, true, 2, 10), (0, None));
+    }
+
+    #[test]
+    fn iterative_loop_exit_reason_detects_terminal_resume_state() {
+        assert_eq!(
+            iterative_loop_exit_reason(2, 2, 2, 10),
+            Some(IterativeLoopExitReason::Stable)
+        );
+        assert_eq!(
+            iterative_loop_exit_reason(0, 10, 2, 10),
+            Some(IterativeLoopExitReason::MaxRounds)
+        );
+        assert_eq!(iterative_loop_exit_reason(1, 2, 2, 10), None);
+    }
+
+    #[test]
+    fn iterative_loop_settings_reject_unreachable_stability_threshold() {
+        let error = validate_iterative_minimal_loop_settings(5, 6)
+            .expect_err("stable rounds above max rounds must be rejected");
+        match error {
+            AppError::InvalidConfigValue { key, value, reason } => {
+                assert_eq!(key, "workflow.iterative_minimal.stable_rounds_required");
+                assert_eq!(value, "6");
+                assert!(reason.contains("max_consecutive_implementer_rounds (5)"));
+            }
+            other => panic!("expected InvalidConfigValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_last_iteration_output() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let parsed_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.parsed.json"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from the terminal iteration",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from persisted parsed payload"],
+            "outstanding_risks": []
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&payload).expect("serialize raw payload"),
+        )
+        .expect("write raw output");
+        fs::write(
+            &parsed_output_path,
+            serde_json::to_string(&payload).expect("serialize parsed payload"),
+        )
+        .expect("write parsed output");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, _producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+
+        let events = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read journal");
+        let exited_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .collect();
+        assert_eq!(exited_events.len(), 1);
+        assert_eq!(exited_events[0].details["reason"], "stable");
+        assert_eq!(exited_events[0].details["total_iterations"], 2);
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_original_producer_metadata() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-producer").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery producer metadata".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-producer").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let parsed_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.parsed.json"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from the terminal iteration",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered producer metadata"],
+            "outstanding_risks": []
+        });
+        let producer = RecordProducer::Agent {
+            requested_backend_family: "codex".to_owned(),
+            requested_model_id: "gpt-5.4".to_owned(),
+            actual_backend_family: "openrouter".to_owned(),
+            actual_model_id: "openai/gpt-4.1".to_owned(),
+        };
+        let sidecar = IterativeInvocationSidecar {
+            parsed_payload: payload.clone(),
+            producer: producer.clone(),
+        };
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&payload).expect("serialize raw payload"),
+        )
+        .expect("write raw output");
+        fs::write(
+            &parsed_output_path,
+            serde_json::to_string(&sidecar).expect("serialize parsed sidecar"),
+        )
+        .expect("write parsed sidecar");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-7"),
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (_bundle, recovered_producer) = *recovered;
+                assert_eq!(recovered_producer, producer);
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_from_raw_output_when_sidecar_is_missing() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-raw-fallback").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery raw fallback".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-raw-fallback").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output from raw",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from the terminal iteration raw payload",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from raw output"],
+            "outstanding_risks": []
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&payload).expect("serialize raw payload"),
+        )
+        .expect("write raw output");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result from raw output");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output from raw"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+                assert_eq!(
+                    producer,
+                    RecordProducer::Agent {
+                        requested_backend_family: "codex".to_owned(),
+                        requested_model_id: "gpt-5.4".to_owned(),
+                        actual_backend_family: "codex".to_owned(),
+                        actual_model_id: "gpt-5.4".to_owned(),
+                    }
+                );
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_from_claude_raw_envelope_when_sidecar_is_missing(
+    ) {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-claude-raw").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery Claude raw fallback".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-claude-raw").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output from Claude envelope",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from Claude structured output",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from raw Claude transcript"],
+            "outstanding_risks": []
+        });
+        let raw_transcript = json!({
+            "type": "result",
+            "result": "assistant prose that is not the payload",
+            "session_id": "sess-terminal",
+            "structured_output": {
+                "data": payload
+            }
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&raw_transcript).expect("serialize raw transcript"),
+        )
+        .expect("write raw output");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result from Claude raw transcript");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output from Claude envelope"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+                assert_eq!(
+                    producer,
+                    RecordProducer::Agent {
+                        requested_backend_family: "claude".to_owned(),
+                        requested_model_id: "claude-opus".to_owned(),
+                        actual_backend_family: "claude".to_owned(),
+                        actual_model_id: "claude-opus".to_owned(),
+                    }
+                );
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_from_codex_raw_envelope_when_sidecar_is_missing(
+    ) {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-codex-raw").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery from Codex raw transcript".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-codex-raw").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output from Codex transcript",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from Codex last-message transcript",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from raw Codex transcript"],
+            "outstanding_risks": []
+        });
+        let raw_transcript = json!({
+            "transport": "rb_codex_process_v1",
+            "stdout": "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":12}}",
+            "last_message": payload.to_string(),
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&raw_transcript).expect("serialize raw transcript"),
+        )
+        .expect("write raw output");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result from Codex raw transcript");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output from Codex transcript"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+                assert_eq!(
+                    producer,
+                    RecordProducer::Agent {
+                        requested_backend_family: "codex".to_owned(),
+                        requested_model_id: "gpt-5.4".to_owned(),
+                        actual_backend_family: "codex".to_owned(),
+                        actual_model_id: "gpt-5.4".to_owned(),
+                    }
+                );
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_records_exit_for_current_run_only() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-run-scope").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery run scope".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let old_run_id = RunId::new("run-iter-old").expect("old run id");
+        let run_id = RunId::new("run-iter-new").expect("new run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        seq += 1;
+        let prior_exit = journal::implementer_loop_exited_event(
+            seq,
+            Utc::now(),
+            &old_run_id,
+            StageId::PlanAndImplement,
+            cursor.cycle,
+            cursor.attempt,
+            cursor.completion_round,
+            "stable",
+            2,
+        );
+        let prior_exit_line = journal::serialize_event(&prior_exit).expect("serialize prior exit");
+        FsJournalStore
+            .append_event(temp_dir.path(), &project_id, &prior_exit_line)
+            .expect("append prior exit");
+
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let parsed_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.parsed.json"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from the terminal iteration",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered for current run"],
+            "outstanding_risks": []
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&payload).expect("serialize raw payload"),
+        )
+        .expect("write raw output");
+        fs::write(
+            &parsed_output_path,
+            serde_json::to_string(&payload).expect("serialize parsed payload"),
+        )
+        .expect("write parsed output");
+
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, _producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+
+        let events = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read journal");
+        let exited_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .collect();
+        assert_eq!(exited_events.len(), 2);
+        assert_eq!(exited_events[0].details["run_id"], old_run_id.as_str());
+        assert_eq!(exited_events[1].details["run_id"], run_id.as_str());
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_fails_when_terminal_output_is_not_recoverable() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-missing-output").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery missing output".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-rewind").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target,
+        };
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        for (iteration, diff_changed) in [(1, true), (2, false)] {
+            seq += 1;
+            let completed = journal::implementer_iteration_completed_event(
+                seq,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                cursor.cycle,
+                cursor.attempt,
+                cursor.completion_round,
+                iteration,
+                diff_changed,
+                "completed",
+            );
+            let line = journal::serialize_event(&completed).expect("serialize completed event");
+            FsJournalStore
+                .append_event(temp_dir.path(), &project_id, &line)
+                .expect("append completed event");
+        }
+
+        let result = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &FileSystem::project_root(temp_dir.path(), &project_id),
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
+            2,
+            1,
+            1,
+            10,
+        )
+        .expect_err("resume should fail when terminal output cannot be recovered safely");
+
+        match result {
+            AppError::StageCommitFailed { stage_id, details } => {
+                assert_eq!(stage_id, StageId::PlanAndImplement);
+                assert!(
+                    details.contains(
+                        "unable to recover terminal iterative_minimal iteration 2 safely during resume"
+                    ),
+                    "error should explain why replay is refused: {details}"
+                );
+                assert!(
+                    details.contains("refusing to re-invoke on the post-iteration workspace"),
+                    "error should make the safety guard explicit: {details}"
+                );
+            }
+            other => panic!("expected StageCommitFailed, got {other:?}"),
+        }
+
+        let events = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read journal");
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != JournalEventType::ImplementerLoopExited),
+            "resume fallback must not append a clean loop exit event before recovery is possible"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_ignores_ralph_burning_state_but_detects_repo_changes() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.starts_with("git:"),
+            "repo fingerprint should be hashed"
+        );
+
+        fs::create_dir_all(temp_dir.path().join(".ralph-burning/projects/demo"))
+            .expect("create .ralph-burning");
+        fs::write(
+            temp_dir
+                .path()
+                .join(".ralph-burning/projects/demo/run.json"),
+            "{}\n",
+        )
+        .expect("write runtime state");
+        let ignored = git_diff_fingerprint(temp_dir.path()).expect("ignored fingerprint");
+        assert_eq!(baseline, ignored, ".ralph-burning changes must be ignored");
+
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\nchanged\n")
+            .expect("modify tracked file");
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "tracked repo changes must change the fingerprint"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_ignores_untracked_build_artifact_paths_in_repo() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let store_dir = tempdir().expect("create store dir");
+        init_git_repo(temp_dir.path());
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.starts_with("git:"),
+            "repo fingerprint should be hashed"
+        );
+
+        fs::create_dir_all(temp_dir.path().join("target/debug")).expect("create target dir");
+        fs::write(temp_dir.path().join("target/debug/build.log"), "artifact\n")
+            .expect("write build artifact");
+        let ignored_target = git_diff_fingerprint(temp_dir.path()).expect("target fingerprint");
+        assert_eq!(
+            baseline, ignored_target,
+            "target/ build artifacts must be ignored"
+        );
+
+        let result_path = temp_dir.path().join("result");
+        let store_a = store_dir.path().join("store-a");
+        fs::create_dir_all(&store_a).expect("create store-a");
+        std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
+        let ignored_result = git_diff_fingerprint(temp_dir.path()).expect("result fingerprint");
+        assert_eq!(
+            baseline, ignored_result,
+            "untracked result symlink churn must be ignored"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_detects_tracked_result_symlink_changes() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let store_dir = tempdir().expect("create store dir");
+        init_git_repo(temp_dir.path());
+
+        let result_path = temp_dir.path().join("result");
+        let store_a = store_dir.path().join("store-a");
+        let store_b = store_dir.path().join("store-b");
+        fs::create_dir_all(&store_a).expect("create store-a");
+        fs::create_dir_all(&store_b).expect("create store-b");
+        std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
+        run_git(temp_dir.path(), &["add", "result"]);
+        run_git(temp_dir.path(), &["commit", "-m", "track result symlink"]);
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        fs::remove_file(&result_path).expect("remove result symlink");
+        std::os::unix::fs::symlink(&store_b, &result_path).expect("recreate result symlink");
+
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "tracked result symlink changes must remain visible"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_changes_when_dirty_tracked_content_changes_again() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "baseline\nchanged once\n",
+        )
+        .expect("modify tracked file");
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "baseline\nchanged twice\n",
+        )
+        .expect("modify tracked file again");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "tracked content changes on an already-dirty file must change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_changes_when_dirty_untracked_content_changes_again() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        fs::write(temp_dir.path().join("scratch.txt"), "draft one\n").expect("write untracked");
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        fs::write(temp_dir.path().join("scratch.txt"), "draft two\n").expect("rewrite untracked");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "untracked content changes on an already-dirty file must change the fingerprint"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_changes_when_untracked_file_mode_changes() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        let script_path = temp_dir.path().join("script.sh");
+        fs::write(&script_path, "#!/bin/sh\necho hi\n").expect("write script");
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod script");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "untracked chmod-only changes must change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_falls_back_outside_git_repo_and_ignores_runtime_state() {
+        let temp_dir = tempdir().expect("create temp dir");
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\n").expect("write tracked file");
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.starts_with("fs:"),
+            "non-git workspaces should use the filesystem fallback"
+        );
+
+        fs::create_dir_all(temp_dir.path().join(".ralph-burning/projects/demo"))
+            .expect("create .ralph-burning");
+        fs::write(
+            temp_dir
+                .path()
+                .join(".ralph-burning/projects/demo/run.json"),
+            "{}\n",
+        )
+        .expect("write runtime state");
+        let ignored = git_diff_fingerprint(temp_dir.path()).expect("ignored fingerprint");
+        assert_eq!(baseline, ignored, ".ralph-burning changes must be ignored");
+
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\nchanged\n")
+            .expect("modify tracked file");
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "non-runtime workspace changes must change the fallback fingerprint"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_fallback_ignores_build_artifact_named_paths() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let store_dir = tempdir().expect("create store dir");
+
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\n").expect("write tracked file");
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.starts_with("fs:"),
+            "non-git workspaces should use the filesystem fallback"
+        );
+
+        fs::create_dir_all(temp_dir.path().join("target/debug")).expect("create target dir");
+        fs::write(temp_dir.path().join("target/debug/build.log"), "artifact\n")
+            .expect("write build artifact");
+
+        let result_path = temp_dir.path().join("result");
+        let store_a = store_dir.path().join("store-a");
+        fs::create_dir_all(&store_a).expect("create store-a");
+        std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
+
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_eq!(
+            baseline, changed,
+            "filesystem fallback must ignore top-level target/result build artifacts"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_changes_when_head_commit_changes_without_worktree_diff() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\ncommitted\n")
+            .expect("update tracked file");
+        run_git(temp_dir.path(), &["commit", "-am", "commit change"]);
+
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "HEAD movement without a remaining worktree diff must change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_changes_when_empty_directory_is_created_or_removed() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+
+        let empty_dir = temp_dir.path().join("scratch");
+        fs::create_dir(&empty_dir).expect("create empty dir");
+        let created = git_diff_fingerprint(temp_dir.path()).expect("created fingerprint");
+        assert_ne!(
+            baseline, created,
+            "empty directory creation must change the repo fingerprint"
+        );
+
+        fs::remove_dir(&empty_dir).expect("remove empty dir");
+        let removed = git_diff_fingerprint(temp_dir.path()).expect("removed fingerprint");
+        assert_eq!(
+            baseline, removed,
+            "removing the empty directory should restore the original fingerprint"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_fallback_changes_when_file_mode_changes() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let script_path = temp_dir.path().join("script.sh");
+        fs::write(&script_path, "#!/bin/sh\necho hi\n").expect("write script");
+
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod script");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "filesystem fallback must detect chmod-only changes"
+        );
+    }
+
+    #[test]
+    fn git_repo_available_returns_false_when_git_binary_is_unavailable() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        assert!(
+            !git_repo_available_with_program(temp_dir.path(), "git-does-not-exist")
+                .expect("repo probe should fall back cleanly"),
+            "missing git binary should be treated as a non-git workspace probe result"
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_restore_iterative_loop_state_for_same_stage_round() {
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-iter".to_owned(),
+                stage_cursor: cursor.clone(),
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 6,
+                    stable_count: 1,
+                    loop_policy: None,
+                    stage_target: None,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let (qa, review, iterative_state) =
+            resume_iteration_counters(&snapshot, &cursor, &[]).expect("resume counters");
+
+        assert_eq!(qa, 4);
+        assert_eq!(review, 5);
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 6,
+                stable_count: 1,
+                loop_policy: None,
+                stage_target: None,
+            })
+        );
+    }
+
+    #[test]
+    fn stage_running_summary_for_active_run_preserves_iterative_progress() {
+        let active_run = ActiveRun {
+            run_id: "run-iter".to_owned(),
+            stage_cursor: StageCursor::new(StageId::PlanAndImplement, 2, 2, 3).expect("cursor"),
+            started_at: Utc::now(),
+            prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+            prompt_hash_at_stage_start: "stage-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
+            iterative_implementer_state: Some(IterativeImplementerState {
+                completed_iterations: 3,
+                stable_count: 1,
+                loop_policy: Some(IterativeImplementerLoopPolicy {
+                    max_consecutive_implementer_rounds: 7,
+                    stable_rounds_required: 2,
+                }),
+                stage_target: None,
+            }),
+            stage_resolution_snapshot: None,
+        };
+
+        let summary =
+            stage_running_summary_for_active_run(StageId::PlanAndImplement, Some(&active_run), 10);
+
+        assert_eq!(
+            summary, "running: Plan and Implement (iteration 3/7)",
+            "resume and retry boundaries must preserve the durable iterative progress summary"
+        );
+    }
+
+    #[test]
+    fn failed_invocation_id_for_iterative_minimal_uses_next_iteration_suffix() {
+        let run_id = RunId::new("run-iter-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: cursor.clone(),
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 2,
+                    stable_count: 0,
+                    loop_policy: None,
+                    stage_target: None,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            interrupted_run: None,
+            status: RunStatus::Running,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "running".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let invocation_id = failed_invocation_id_for_stage(
+            &run_id,
+            StageId::PlanAndImplement,
+            &cursor,
+            &snapshot,
+            FlowPreset::IterativeMinimal,
+        );
+
+        assert_eq!(
+            invocation_id,
+            format!("{}-plan_and_implement-c2-a1-cr3-it3", run_id.as_str())
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_reconstruct_iterative_loop_state_from_journal() {
+        let run_id = RunId::new("run-iter").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: cursor.clone(),
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 1,
+                    stable_count: 0,
+                    loop_policy: None,
+                    stage_target: None,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let resume_events = vec![
+            journal::implementer_iteration_completed_event(
+                1,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                3,
+                2,
+                true,
+                "completed",
+            ),
+            journal::implementer_iteration_completed_event(
+                2,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                3,
+                3,
+                false,
+                "completed",
+            ),
+        ];
+
+        let (qa, review, iterative_state) =
+            resume_iteration_counters(&snapshot, &cursor, &resume_events).expect("resume counters");
+
+        assert_eq!(qa, 4);
+        assert_eq!(review, 5);
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 3,
+                stable_count: 1,
+                loop_policy: None,
+                stage_target: None,
+            })
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_preserve_iterative_loop_state_when_attempt_changes() {
+        let run_id = RunId::new("run-iter").expect("run id");
+        let interrupted_cursor =
+            StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let resume_cursor = StageCursor::new(StageId::PlanAndImplement, 2, 2, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: interrupted_cursor,
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 6,
+                    stable_count: 1,
+                    loop_policy: None,
+                    stage_target: None,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let (_, _, iterative_state) =
+            resume_iteration_counters(&snapshot, &resume_cursor, &[]).expect("resume counters");
+
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 6,
+                stable_count: 1,
+                loop_policy: None,
+                stage_target: None,
+            }),
+            "retry attempts must preserve the completed iterative budget and stability streak"
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_reconstruct_iterative_loop_state_across_retry_attempts() {
+        let run_id = RunId::new("run-iter").expect("run id");
+        let interrupted_cursor =
+            StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let resume_cursor = StageCursor::new(StageId::PlanAndImplement, 2, 2, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: interrupted_cursor,
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: None,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let resume_events = vec![
+            journal::stage_entered_event(1, Utc::now(), &run_id, StageId::PlanAndImplement, 2, 1),
+            journal::implementer_iteration_completed_event(
+                2,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                3,
+                1,
+                true,
+                "completed",
+            ),
+            journal::implementer_iteration_completed_event(
+                3,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                3,
+                2,
+                false,
+                "completed",
+            ),
+            journal::stage_failed_event(
+                4,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                FailureClass::TransportFailure,
+                "retry me",
+                true,
+                "inv-1",
+            ),
+            journal::stage_entered_event(5, Utc::now(), &run_id, StageId::PlanAndImplement, 2, 2),
+            journal::implementer_iteration_completed_event(
+                6,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                2,
+                3,
+                3,
+                false,
+                "completed",
+            ),
+        ];
+
+        let (_, _, iterative_state) =
+            resume_iteration_counters(&snapshot, &resume_cursor, &resume_events)
+                .expect("resume counters");
+
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 3,
+                stable_count: 2,
+                loop_policy: None,
+                stage_target: None,
+            }),
+            "resume must accumulate iterative progress across retry attempts in the same stage round"
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_clear_iterative_loop_state_for_new_round() {
+        let interrupted_cursor =
+            StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let resume_cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 4).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: "run-iter".to_owned(),
+                stage_cursor: interrupted_cursor,
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 1,
+                review_iterations_current_cycle: 2,
+                final_review_restart_count: 0,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 3,
+                    stable_count: 1,
+                    loop_policy: None,
+                    stage_target: None,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 4,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+
+        let (qa, review, iterative_state) =
+            resume_iteration_counters(&snapshot, &resume_cursor, &[]).expect("resume counters");
+
+        assert_eq!(qa, 1);
+        assert_eq!(review, 2);
+        assert_eq!(iterative_state, None);
     }
 
     #[test]
@@ -9365,6 +12535,7 @@ mod tests {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             }),
             interrupted_run: None,

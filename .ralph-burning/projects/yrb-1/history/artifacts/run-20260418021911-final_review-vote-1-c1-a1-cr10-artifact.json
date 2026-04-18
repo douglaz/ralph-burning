@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T08:22:41.523489840Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real correctness or operability problems. The resume path currently loses original producer identity for recovered iterative results, the non-git fingerprint path diverges from the git path in a way that can create false-positive churn from generated artifacts, and workspace config writes are over-coupled to unrelated project config readability.\n\n## Votes\n\n- `fr-10-488bdb64`: Accept\n  The issue is real. `invoke_stage_on_backend` records `RecordProducer` from adapter metadata, but iterative recovery persists only `*.parsed.json` and `recover_iterative_iteration_result` reconstructs producer data from the current `resolved_target`. On resume, that can misattribute the recovered payload/artifact if the configured target changed or if the adapter originally reported a different actual backend/model. Producer metadata is supposed to describe the invocation that produced the record, so it needs to be persisted and restored, not synthesized later.\n- `fr-10-936c7269`: Accept\n  The filesystem fallback currently hashes `target/`, `target-final`, and top-level `result*` paths, while the git-backed path explicitly treats those as ignorable generated artifacts when they are untracked. That asymmetry means the iterative-minimal stability check can report `diff_changed=true` because of build/test byproducts rather than meaningful source edits whenever git is unavailable or the workspace is non-git. Matching the fallback exclusions to the git path is the more robust behavior for the stop-condition logic.\n- `fr-10-0a37a422`: Accept\n  `Config::set` unconditionally runs `validate_workspace_iterative_minimal_settings`, and that validator walks every project and reads each `project.toml`. As a result, an unreadable or corrupt project config can block unrelated workspace-level writes such as backend selection or iteration limits, which is an unnecessary coupling and a poor recovery story. This cross-project validation should be limited to iterative-minimal keys or made tolerant of unrelated project read failures; otherwise a single broken project prevents operators from updating unrelated workspace settings.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

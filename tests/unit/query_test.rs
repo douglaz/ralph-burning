@@ -79,6 +79,7 @@ fn status_view_reports_running_with_cursor() {
             qa_iterations_current_cycle: 0,
             review_iterations_current_cycle: 0,
             final_review_restart_count: 0,
+            iterative_implementer_state: None,
             stage_resolution_snapshot: None,
         }),
         interrupted_run: None,

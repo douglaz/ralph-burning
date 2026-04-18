@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-plan_and_implement-c1-a1-cr14-artifact",
+  "payload_id": "run-20260418021911-plan_and_implement-c1-a1-cr14",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T10:03:06.831977302Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened `iterative_minimal` terminal-resume recovery for missing parsed sidecars by teaching the engine to recover structured payloads from backend-specific raw transcripts instead of blindly `serde_json`-parsing the `.raw` file. `src/contexts/workflow_composition/engine.rs` now routes raw recovery through new adapter helpers for Claude/process stdout and OpenRouter response bodies, while preserving the existing safety check that refuses to replay an unrecoverable terminal iteration on an already-mutated workspace. Added regressions at both the engine and workflow levels covering Claude-style raw envelopes, and kept `.ralph-burning/` out of scope.\n\n## Steps\n\n1. [Completed] Patch iterative terminal raw-output recovery to use backend-aware structured-payload extraction instead of assuming `.raw` artifacts are plain JSON payloads.\n2. [Completed] Expose additive recovery helpers in the process and OpenRouter adapters so resume can reconstruct parsed payloads from Claude envelopes, extracted result text, and OpenRouter response bodies.\n3. [Completed] Add regression coverage for Claude-envelope terminal recovery in both engine unit tests and iterative workflow resume tests, then rerun formatting and Rust validation.\n4. [Skipped] Confirm the final tree with `nix build`.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- Targeted engine regression passed: `cargo test --lib resume_terminal_iterative_stage_result_recovers_from_claude_raw_envelope_when_sidecar_is_missing -- --nocapture`.\n- Targeted workflow regression passed: `cargo test --test unit --features test-stub iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing -- --nocapture`.\n- `cargo test` passed on the final tree.\n- `cargo clippy -- -D warnings` passed on the final tree.\n- `nix build` was attempted, but it remained active in the musl/static derivation without a completion result and was interrupted after prolonged inactivity.\n\n## Outstanding Risks\n\n- `nix build` was started on the final tree, but it stayed in the musl/static derivation's `cargo test` phase without producing a success result; I interrupted it after prolonged inactivity, so the required nix gate remains unconfirmed.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 14
+}

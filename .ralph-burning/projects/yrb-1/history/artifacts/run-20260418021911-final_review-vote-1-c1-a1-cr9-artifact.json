@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T07:51:37.740128542Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real defects. The config and journal findings are concrete correctness/persistence bugs, and the iteration-context finding is a real robustness gap because iterative passes lack explicit per-pass metadata and therefore depend on backend/session behavior.\n\n## Votes\n\n- `fr-9-884f8134`: Accept\n  `EffectiveConfig::load_for_project()` validates the merged iterative-minimal policy after resolving workspace and project overrides, but `set()` and `set_project()` only call `validate_iterative_minimal_settings()`, which validates each TOML document in isolation. That misses cross-scope combinations like workspace `max_consecutive_implementer_rounds` plus project `stable_rounds_required`. `set()` never checks existing project overrides at all, and `set_project()` writes the project config before its final merged reload, so an invalid effective policy can be persisted even if the command later returns an error. This is a real correctness and durability bug.\n- `fr-9-5a90e87a`: Accept\n  The iterative loop increments a local `iteration`, but the backend request built in `invoke_stage_on_backend()` does not include that value: the context only carries `cycle`, `attempt`, `completion_round`, optional remediation data, and pending amendments, while `attempt_number` remains `cursor.attempt` for the whole stage attempt. So the controller does not provide any explicit per-pass signal to the implementer. Backends that do not reuse sessions get indistinguishable stabilization requests, and even session-reusing backends are forced to infer progress from conversational state rather than durable structured context. That is a real robustness defect in the iterative flow.\n- `fr-9-2345ceea`: Accept\n  This is a concrete journaling bug. A terminal iterative pass can legitimately leave the parsed sidecar missing because sidecar persistence is best-effort, yet the loop still appends `ImplementerLoopExited` before returning. On resume, a missing sidecar triggers `Reinvoke`, but the old exit event is left in place; later, `iterative_loop_exit_recorded()` suppresses a new exit event by matching only run/cursor/attempt and ignoring whether the recorded `reason` and `total_iterations` still match the rerun. That lets stale terminal metadata mask the real exit record after recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

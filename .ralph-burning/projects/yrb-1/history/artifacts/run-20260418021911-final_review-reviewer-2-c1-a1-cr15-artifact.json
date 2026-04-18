@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr15-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T10:43:50.561109899Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the iterative_minimal workflow implementation end-to-end against the project prompt's acceptance criteria. FlowPreset::IterativeMinimal is correctly wired through domain.rs, workflow_composition (stages + flow_semantics), and workspace_governance config (defaults 10/2, range validation stable ≤ max). The loop in execute_iterative_plan_and_implement_stage correctly implements both stop conditions (stable_count ≥ stable_rounds_required, and iteration ≥ max_rounds) via iterative_loop_exit_reason/advance_iterative_loop_state, with diff_changed resetting stable_count to 0. Git-based diff fingerprinting (git diff --binary [--cached]) with SHA-256 filesystem fallback correctly excludes .git, .ralph-burning, and build artifacts (target, target-final, result, result-*). Journal events (implementer_iteration_started/completed with diff_changed+outcome, implementer_loop_exited with reason+total_iterations) are emitted at the right points and surfaced through cli/run.rs summarize_event. Resume recovery via recover_iterative_iteration_result handles terminal-crash scenarios by falling back from parsed sidecar to raw stdout. Failed invocation IDs use 'it{next_iteration}' suffix to avoid collisions across iterations. Existing flows (Minimal, Standard, DocsChange, CiImprovement, PlanOnly) remain untouched — the change is purely additive. No blocking correctness, safety, or maintainability issues warranting amendments were identified.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 15
+}

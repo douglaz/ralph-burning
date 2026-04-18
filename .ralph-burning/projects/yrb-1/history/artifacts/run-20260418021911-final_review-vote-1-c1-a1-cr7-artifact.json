@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T06:57:26.729442528Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nfr-7-13e645ad identifies a real durability and resume bug in the iterative backend path. fr-7-656cf9e6 raises a real performance concern, but the proposed blanket exclusion would hide legitimate workspace changes in non-git mode and would weaken the current conservative fallback semantics.\n\n## Votes\n\n- `fr-7-656cf9e6`: Reject\n  `hash_workspace_entries` is the non-git fallback, where the engine no longer has a tracked-versus-untracked distinction. Reusing `iterative_untracked_build_artifact` there would convert a conservative whole-workspace fingerprint into a heuristic filter that can miss real edits under top-level `target/`, `target-final/`, or `result*`. The code already has an explicit test for the opposite contract (`git_diff_fingerprint_fallback_detects_build_artifact_named_paths`), so this amendment is not a clear correctness fix; it trades correctness for performance. If fallback hashing cost needs to be reduced, it needs a narrower design than blanket exclusion.\n- `fr-7-13e645ad`: Accept\n  The failure mode is present in the current control flow. `invoke_stage_on_backend` first gets a valid backend envelope and evaluates the contract, then `persist_invocation_parsed_payload` can still fail and turn that successful invocation into `StageCommitFailed`. By that point `implementer_iteration_started` has already been journaled, but `implementer_iteration_completed` is never appended, and the parsed sidecar needed by `recover_iterative_iteration_result` was never written. Resume reconstruction only advances from completed-iteration events, so iteration N is retried and the backend can be called and billed again for work that already succeeded once. That is a real robustness and cost bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

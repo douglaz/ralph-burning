@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T09:47:35.600946666Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne amendment identifies a real resume-recovery defect in `iterative_minimal`; the other points out an intentional test split, but not a correctness or gate-coverage bug in the implemented change.\n\n## Votes\n\n- `fr-13-944ad1cf`: Accept\n  `recover_iterative_payload_from_raw_output` only reads the `.raw` artifact and feeds it directly to `serde_json::from_str`, then validates that value as the stage payload. That is not equivalent to normal execution for process-backed runs: `AgentExecutionService` explicitly returns `parsed_payload` when the adapter supplied one, and `process_backend` persists full `stdout_text` as raw output while extracting the structured payload separately. If the parsed sidecar is missing after a successful terminal iteration, resume can therefore fail even though the original invocation succeeded, because the raw artifact may be an envelope/transcript rather than the contract payload. Given that parsed-sidecar persistence is already treated as best-effort, this is a real recovery hole in exactly the crash window the change is meant to handle.\n- `fr-13-eba9caaf`: Reject\n  The cited tests are feature-gated, but that is an intentional split for stub-backed end-to-end coverage, not a defect in the amendment itself. The repository’s authoritative gate is `nix build`, and `flake.nix` runs cargo tests with `--features test-stub`, so the new `workflow_engine_test` coverage is exercised in the required verification path. Core loop logic also has default-build unit coverage in `engine.rs`. Plain `cargo test` not including stub-only integration tests is a local ergonomics tradeoff, not evidence that the implementation is insufficiently verified or that the shipped behavior can regress undetected in the actual gate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T08:44:41.111165295Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the amendment against engine.rs: iterative implementer iterations invoke the backend with a `-it{iteration}` suffix and persist raw output/parsed sidecars under that suffixed id, but the top-level retry loop records `stage_failed.invocation_id` using the un-suffixed base id. This genuinely mis-points failure forensics to an artifact that doesn't exist for the failing iteration. The remediation (threading the actual invocation id back to the failure event) is well-scoped.\n\n## Votes\n\n- `fr-11-2824764e`: Accept\n  Confirmed real defect: engine.rs:5782 records `history_record_base_id(...)` as `failed_invocation_id`, while iterative iterations at engine.rs:6973 and invoke_stage_on_backend at engine.rs:7103 produce ids suffixed with `-it{iteration}`, and artifacts persist under the suffixed id (engine.rs:7139-7147; recovery at 6281-6288 reads from the suffixed path). On iteration failure, the `stage_failed` event and runtime log point to an id that has no raw-output artifact, breaking forensics for the exact case (iteration failure) the invocation id is most needed. Safety/maintainability concern is legitimate and the fix is a localized plumbing change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 11
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T12:21:24.253154859Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne amendment identifies a real user-visible status regression across resume/retry boundaries. The other conflates loop-convergence events with stage failure handling; current failure signaling already goes through `stage_failed`/`run_failed`, and the cited inner-loop return paths cannot safely emit a terminal loop-exit event because outer retry logic may continue the loop.\n\n## Votes\n\n- `fr-17-7e353f47`: Reject\n  `execute_iterative_plan_and_implement_stage` returns errors to `execute_stage_with_retry`, which then decides whether the failure is retryable and records `stage_failed`/`run_failed`. Emitting `implementer_loop_exited(reason=\"error\")` from the cited inner-loop paths would be incorrect for retryable failures, because the implementer loop may continue on the next attempt. The current semantics keep `implementer_loop_exited` for actual loop terminal conditions (`stable`/`max_rounds`) and use stage/run failure events for errors, so the omission is not a correctness bug in itself.\n- `fr-17-8d762a4a`: Accept\n  The code restores `iterative_implementer_state` on resume/retry, but then overwrites `snapshot.status_summary` with a generic stage summary at `engine.rs:2402` and again at `engine.rs:5725-5732`. Since `RunStatusView`/`RunStatusJsonView` in `project_run_record/queries.rs` simply echo `snapshot.status_summary`, `run status` drops the persisted iteration progress until a later write updates it inside the loop. That is a real user-visible regression in resumability/observability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

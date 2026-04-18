@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +35,7 @@ use ralph_burning::contexts::project_run_record::service::{
 };
 use ralph_burning::contexts::project_run_record::ArtifactStorePort;
 use ralph_burning::contexts::workflow_composition::engine;
-use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
+use ralph_burning::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
 use ralph_burning::shared::domain::{
@@ -219,6 +220,31 @@ impl Drop for ScopedMaxCompletionRounds {
     fn drop(&mut self) {
         std::env::remove_var(MAX_COMPLETION_ROUNDS_ENV);
     }
+}
+
+fn run_git(repo_root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: stdout={} stderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn init_git_repo(repo_root: &Path) {
+    run_git(repo_root, &["init"]);
+    run_git(repo_root, &["config", "user.name", "Test User"]);
+    run_git(repo_root, &["config", "user.email", "test@example.com"]);
+    fs::write(repo_root.join("tracked.txt"), "baseline\n").expect("write tracked file");
+    run_git(repo_root, &["add", "tracked.txt"]);
+    run_git(repo_root, &["commit", "-m", "initial"]);
 }
 
 // ── Stage plan tests ────────────────────────────────────────────────────────
@@ -1699,6 +1725,1576 @@ async fn quick_dev_final_review_conditionally_approved_triggers_completion_round
     );
 }
 
+#[tokio::test]
+async fn iterative_minimal_loops_plan_and_implement_until_stable_then_runs_final_review() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-min", FlowPreset::IterativeMinimal);
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "iterative_minimal run should complete: {result:?}"
+    );
+    assert_eq!(adapter_handle.plan_calls(), 3);
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read final snapshot");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(
+            &events,
+            JournalEventType::StageEntered,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement stage should still be entered once"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerIterationStarted)
+            .count(),
+        3
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+            .count(),
+        3
+    );
+    let exited = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .expect("implementer_loop_exited event");
+    assert_eq!(exited.details["reason"], "stable");
+    assert_eq!(exited.details["total_iterations"], 3);
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "final_review").len(),
+        1,
+        "final_review should still run after the loop exits"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_continues_when_terminal_parsed_payload_sidecar_persist_fails() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-sidecar-persist-warning",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "iterative_minimal should continue with the in-memory terminal bundle when parsed payload persistence fails: {result:?}"
+    );
+    assert_eq!(adapter_handle.plan_calls(), 3);
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read final snapshot");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+            .count(),
+        3,
+        "terminal iteration completion should still be recorded"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "the loop should exit cleanly instead of erroring on sidecar persistence"
+    );
+    assert_eq!(
+        stage_events(
+            &events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement should still complete after the warning"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_invocations_include_iteration_context() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-context", FlowPreset::IterativeMinimal);
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let loop_policy = config.run_policy().iterative_minimal.clone();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let contexts = adapter_handle.plan_contexts();
+    assert_eq!(contexts.len(), 3);
+    for (index, context) in contexts.iter().enumerate() {
+        let iteration = (index + 1) as u64;
+        assert_eq!(context["iteration"], iteration);
+        assert_eq!(
+            context["iterative_minimal"]["max_consecutive_implementer_rounds"],
+            loop_policy.max_consecutive_implementer_rounds
+        );
+        assert_eq!(
+            context["iterative_minimal"]["stable_rounds_required"],
+            loop_policy.stable_rounds_required
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn iterative_minimal_stage_failed_records_iteration_invocation_id() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-stage-failed-id",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::PlanAndImplement, 1),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let stage_failed = events
+        .iter()
+        .find(|event| {
+            event.event_type == JournalEventType::StageFailed
+                && event.details["stage_id"] == "plan_and_implement"
+        })
+        .expect("plan_and_implement stage_failed event");
+    let run_id = stage_failed.details["run_id"].as_str().expect("run_id");
+    let invocation_id = stage_failed.details["invocation_id"]
+        .as_str()
+        .expect("invocation_id");
+    let expected_invocation_id = format!("{run_id}-plan_and_implement-c1-a1-cr1-it1");
+    assert_eq!(invocation_id, expected_invocation_id);
+
+    let runtime_log_path =
+        project_root(base_dir, "iter-stage-failed-id").join("runtime/logs/run.ndjson");
+    let runtime_logs = fs::read_to_string(&runtime_log_path).expect("runtime log should exist");
+    let stage_failed_line = runtime_logs
+        .lines()
+        .find(|line| line.contains("stage_failed: plan_and_implement"))
+        .expect("stage_failed runtime log entry");
+    assert!(
+        stage_failed_line.contains(&format!("invocation_id={expected_invocation_id}")),
+        "runtime log should reference the iterative invocation id: {stage_failed_line}"
+    );
+    assert!(
+        events.iter().all(|event| {
+            event.event_type != JournalEventType::ImplementerLoopExited
+                || event.details["reason"] != "error"
+        }),
+        "iterative failures should rely on stage_failed instead of emitting misleading implementer_loop_exited error events"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_recovers_terminal_raw_output_when_sidecar_is_missing() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-missing-sidecar",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "initial run should stop after the terminal iteration completes"
+    );
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read interrupted snapshot");
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        failed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "the interrupted run should already have one durable loop-exit event"
+    );
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover the terminal raw output instead of replaying the last implementer iteration: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should not re-run the terminal implementer iteration when raw output is recoverable"
+    );
+
+    let resumed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read resumed snapshot");
+    assert_eq!(resumed_snapshot.status, RunStatus::Completed);
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        resumed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "resume should reuse the existing loop-exit record while recovering the terminal iteration output"
+    );
+    assert_eq!(
+        stage_events(
+            &resumed_events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement should complete successfully after the resume fallback"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_uses_persisted_loop_policy_when_config_changes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-policy-drift",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "10",
+    )
+    .unwrap();
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "10",
+    )
+    .unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+
+    assert!(
+        resume_result.is_ok(),
+        "resume should honor the interrupted attempt's loop policy instead of the edited config: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should not re-enter the implementer loop after a terminal iteration when only the config changed"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_uses_persisted_target_for_in_progress_loop() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-target-in-progress",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 5);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt the in-progress iterative loop before the terminal iteration commits"
+        );
+    }
+
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.backends", r#"["codex"]"#).unwrap();
+    EffectiveConfig::set(base_dir, "final_review.arbiter_backend", "codex").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.min_reviewers", "1").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(
+        UnavailableModelOnResumeAdapter::new(adapter_handle.clone(), BackendFamily::Claude),
+    );
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+
+    assert!(
+        resume_result.is_ok(),
+        "resume should continue the interrupted iterative loop on the persisted implementer target instead of the edited config target: {resume_result:?}"
+    );
+    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).unwrap();
+    let plan_payload = payloads
+        .iter()
+        .find(|record| {
+            record.stage_id == StageId::PlanAndImplement
+                && record.record_kind == RecordKind::StagePrimary
+        })
+        .expect("plan_and_implement payload");
+    match plan_payload.producer.clone() {
+        Some(RecordProducer::Agent {
+            requested_backend_family,
+            actual_backend_family,
+            ..
+        }) => {
+            assert_eq!(requested_backend_family, "codex");
+            assert_eq!(actual_backend_family, "codex");
+        }
+        other => panic!("expected codex producer metadata, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_seed_preserves_iteration_summary_in_snapshot() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-summary",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 5);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt the iterative stage after one completed iteration"
+        );
+    }
+
+    let resume_snapshot_writes = RecordingSnapshotWriteStore::new();
+    let resume_result = engine::resume_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &resume_snapshot_writes,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let resume_seed = resume_snapshot_writes
+        .writes()
+        .into_iter()
+        .next()
+        .expect("resume should persist a running snapshot before invoking the next iteration");
+    let active_run = resume_seed
+        .active_run
+        .expect("resume seed snapshot should include active run metadata");
+    let iterative_state = active_run
+        .iterative_implementer_state
+        .expect("resume seed snapshot should preserve iterative loop state");
+
+    assert_eq!(active_run.stage_cursor.stage, StageId::PlanAndImplement);
+    assert_eq!(iterative_state.completed_iterations, 1);
+    assert_eq!(
+        resume_seed.status_summary,
+        "running: Plan and Implement (iteration 1/10)"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-missing-sidecar-claude-raw",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "initial run should stop after the terminal iteration completes"
+    );
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_id = failed_events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunStarted)
+        .and_then(|event| event.details["run_id"].as_str())
+        .expect("run_started run_id");
+    let raw_output_path = project_root(base_dir, pid.as_str())
+        .join("runtime/backend")
+        .join(format!("{run_id}-plan_and_implement-c1-a1-cr1-it3.raw"));
+    let payload: Value =
+        serde_json::from_str(&fs::read_to_string(&raw_output_path).expect("read raw payload"))
+            .expect("parse raw payload");
+    let raw_transcript = json!({
+        "type": "result",
+        "result": "assistant prose that is not the structured payload",
+        "session_id": "sess-terminal",
+        "structured_output": {
+            "data": payload
+        }
+    });
+    fs::write(&raw_output_path, raw_transcript.to_string()).expect("rewrite raw output");
+
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover the terminal Claude raw transcript instead of replaying the last implementer iteration: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should not re-run the terminal implementer iteration when the rewritten Claude raw transcript is recoverable under the persisted target metadata"
+    );
+
+    let resumed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read resumed snapshot");
+    assert_eq!(resumed_snapshot.status, RunStatus::Completed);
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(
+            &resumed_events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement should complete after recovering the Claude raw transcript"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn iterative_minimal_retries_preserve_loop_budget_and_stability_state() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-retry-carry", FlowPreset::IterativeMinimal);
+
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "3",
+    )
+    .unwrap();
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "2",
+    )
+    .unwrap();
+    let adapter = IterativeRetryCarryAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "iterative_minimal should complete after a retryable implementer failure by preserving prior loop progress: {result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        4,
+        "retry should resume from iteration 3 instead of restarting the loop budget from iteration 1"
+    );
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read run snapshot");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let iteration_events: Vec<&JournalEvent> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+        .collect();
+    let iterations: Vec<u64> = iteration_events
+        .iter()
+        .map(|event| {
+            event.details["iteration"]
+                .as_u64()
+                .expect("iteration should be recorded")
+        })
+        .collect();
+    let attempts: Vec<u64> = iteration_events
+        .iter()
+        .map(|event| {
+            event.details["attempt"]
+                .as_u64()
+                .expect("attempt should be recorded")
+        })
+        .collect();
+    assert_eq!(iterations, vec![1, 2, 3]);
+    assert_eq!(attempts, vec![1, 1, 2]);
+
+    let stage_failed = stage_events(&events, JournalEventType::StageFailed, "plan_and_implement");
+    assert_eq!(stage_failed.len(), 1);
+    assert_eq!(stage_failed[0].details["will_retry"], true);
+
+    let loop_exits: Vec<&JournalEvent> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .collect();
+    assert_eq!(loop_exits.len(), 1);
+    assert_eq!(loop_exits[0].details["total_iterations"], 3);
+    assert_eq!(loop_exits[0].details["attempt"], 2);
+}
+
+#[tokio::test]
+async fn iterative_minimal_retry_stage_reentry_preserves_iteration_summary_in_snapshot() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid =
+        create_project_with_flow(base_dir, "iter-retry-summary", FlowPreset::IterativeMinimal);
+
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "3",
+    )
+    .unwrap();
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "2",
+    )
+    .unwrap();
+    let adapter = IterativeRetryCarryAdapter::new();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let snapshot_writes = RecordingSnapshotWriteStore::new();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &snapshot_writes,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let retry_reentry_snapshot = snapshot_writes
+        .writes()
+        .into_iter()
+        .find(|snapshot| {
+            snapshot.status == RunStatus::Running
+                && snapshot.active_run.as_ref().is_some_and(|active_run| {
+                    active_run.stage_cursor.stage == StageId::PlanAndImplement
+                        && active_run.stage_cursor.attempt == 2
+                        && active_run
+                            .iterative_implementer_state
+                            .as_ref()
+                            .is_some_and(|state| state.completed_iterations == 2)
+                })
+        })
+        .expect("retry re-entry snapshot should preserve the prior iterative loop state");
+
+    assert_eq!(
+        retry_reentry_snapshot.status_summary,
+        "running: Plan and Implement (iteration 2/3)"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_recovers_terminal_codex_raw_output_when_sidecar_is_missing() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-missing-sidecar-codex-raw",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_id = failed_events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunStarted)
+        .and_then(|event| event.details["run_id"].as_str())
+        .expect("run_started run_id");
+    let raw_output_path = project_root(base_dir, pid.as_str())
+        .join("runtime/backend")
+        .join(format!("{run_id}-plan_and_implement-c1-a1-cr1-it3.raw"));
+    let payload: Value =
+        serde_json::from_str(&fs::read_to_string(&raw_output_path).expect("read raw payload"))
+            .expect("parse raw payload");
+    let raw_transcript = json!({
+        "transport": "rb_codex_process_v1",
+        "stdout": "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":99}}",
+        "last_message": payload.to_string(),
+    });
+    fs::write(&raw_output_path, raw_transcript.to_string()).expect("rewrite raw output");
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover the terminal Codex raw transcript instead of replaying the last implementer iteration: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should not re-run the terminal implementer iteration when the rewritten Codex raw transcript is recoverable"
+    );
+
+    let resumed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read resumed snapshot");
+    assert_eq!(resumed_snapshot.status, RunStatus::Completed);
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_recovers_terminal_raw_output_with_original_target_metadata() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-target-drift",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_id = failed_events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunStarted)
+        .and_then(|event| event.details["run_id"].as_str())
+        .expect("run_started run_id");
+    let raw_output_path = project_root(base_dir, pid.as_str())
+        .join("runtime/backend")
+        .join(format!("{run_id}-plan_and_implement-c1-a1-cr1-it3.raw"));
+    let payload: Value =
+        serde_json::from_str(&fs::read_to_string(&raw_output_path).expect("read raw payload"))
+            .expect("parse raw payload");
+    let raw_transcript = json!({
+        "type": "result",
+        "result": "assistant prose that is not the structured payload",
+        "session_id": "sess-terminal",
+        "structured_output": {
+            "data": payload
+        }
+    });
+    fs::write(&raw_output_path, raw_transcript.to_string()).expect("rewrite raw output");
+
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover terminal raw output with the original implementer target even when the current backend drifts: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume must not re-run the implementer when raw output is recoverable under the original target metadata"
+    );
+
+    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).unwrap();
+    let plan_payload = payloads
+        .iter()
+        .find(|record| {
+            record.stage_id == StageId::PlanAndImplement
+                && record.record_kind == RecordKind::StagePrimary
+        })
+        .expect("plan_and_implement payload");
+    match plan_payload.producer.clone() {
+        Some(RecordProducer::Agent {
+            requested_backend_family,
+            actual_backend_family,
+            ..
+        }) => {
+            assert_eq!(requested_backend_family, "claude");
+            assert_eq!(actual_backend_family, "claude");
+        }
+        other => panic!("expected claude producer metadata, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_appends_fresh_loop_exit_when_stale_exit_event_mismatches() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-stale-exit",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    let journal_path = project_root(base_dir, pid.as_str()).join("journal.ndjson");
+    let raw_journal = fs::read_to_string(&journal_path).expect("read journal");
+    let mut journal_events = journal::parse_journal(&raw_journal).expect("parse journal");
+    let stale_exit = journal_events
+        .iter_mut()
+        .find(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .expect("durable loop exit event");
+    stale_exit.details["reason"] = json!("max_rounds");
+    stale_exit.details["total_iterations"] = json!(2);
+    let rewritten = journal_events
+        .iter()
+        .map(journal::serialize_event)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("serialize journal")
+        .join("\n");
+    fs::write(&journal_path, format!("{rewritten}\n")).expect("rewrite journal");
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should recover the terminal iteration output instead of re-running it"
+    );
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let exited_events: Vec<_> = resumed_events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .collect();
+    assert_eq!(
+        exited_events.len(),
+        2,
+        "resume should append a fresh loop-exit event when the durable one no longer matches the recovered terminal state"
+    );
+    assert_eq!(exited_events[0].details["reason"], "max_rounds");
+    assert_eq!(exited_events[0].details["total_iterations"], 2);
+    assert_eq!(exited_events[1].details["reason"], "stable");
+    assert_eq!(exited_events[1].details["total_iterations"], 3);
+}
+
+#[tokio::test]
+async fn iterative_minimal_falls_back_to_workspace_diff_when_no_git_repo_exists() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-no-git", FlowPreset::IterativeMinimal);
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "iterative_minimal run should complete outside git repos: {result:?}"
+    );
+    assert_eq!(adapter_handle.plan_calls(), 3);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let exited = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .expect("implementer_loop_exited event");
+    assert_eq!(exited.details["reason"], "stable");
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "final_review").len(),
+        1,
+        "final_review should still run after the filesystem fallback loop exits"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_detects_changes_to_already_dirty_files() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    init_git_repo(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-dirty", FlowPreset::IterativeMinimal);
+
+    let adapter = DirtyFileIterativePlanAdapter::new();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let completed: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+        .collect();
+    assert!(
+        completed.len() >= 2,
+        "expected at least two completed implementer iterations"
+    );
+    assert_eq!(completed[0].details["diff_changed"], true);
+    assert_eq!(
+        completed[1].details["diff_changed"], true,
+        "rewriting an already-dirty file must still count as a diff change"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_after_terminal_loop_does_not_reinvoke_implementer() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-terminal",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit"
+        );
+    }
+
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "initial run should stop after the stable loop finishes"
+    );
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        failed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "terminal loop exit must already be durable before resume"
+    );
+    assert_eq!(
+        stage_events(
+            &failed_events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        0,
+        "stage commit should not have completed under the failpoint"
+    );
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should reuse the terminal iteration output instead of invoking the implementer again"
+    );
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        resumed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "resume should not append a duplicate loop exit event when one is already durable"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_resume_skips_plan_preflight_when_terminal_output_is_recoverable() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-preflight-skip",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.backends", r#"["codex"]"#).unwrap();
+    EffectiveConfig::set(base_dir, "final_review.arbiter_backend", "codex").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.min_reviewers", "1").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(
+        UnavailableModelOnResumeAdapter::new(adapter_handle.clone(), BackendFamily::Claude),
+    );
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover the terminal iterative output without requiring the implementer backend: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume must not re-invoke the implementer after terminal loop recovery"
+    );
+
+    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).unwrap();
+    let plan_payload = payloads
+        .iter()
+        .find(|record| {
+            record.stage_id == StageId::PlanAndImplement
+                && record.record_kind == RecordKind::StagePrimary
+        })
+        .expect("plan_and_implement payload");
+    match plan_payload.producer.clone() {
+        Some(RecordProducer::Agent {
+            requested_backend_family,
+            requested_model_id,
+            actual_backend_family,
+            actual_model_id,
+        }) => {
+            assert_eq!(requested_backend_family, "codex");
+            assert_eq!(actual_backend_family, "codex");
+            assert_eq!(requested_model_id, actual_model_id);
+            assert_ne!(requested_backend_family, "claude");
+        }
+        other => panic!("expected agent producer metadata, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn minimal_flow_remains_single_pass_without_iteration_events() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let project_name = "minimal-plain";
+    let pid = create_project_with_flow(base_dir, project_name, FlowPreset::Minimal);
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::Minimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert!(
+        events.iter().all(|event| {
+            !matches!(
+                event.event_type,
+                JournalEventType::ImplementerIterationStarted
+                    | JournalEventType::ImplementerIterationCompleted
+                    | JournalEventType::ImplementerLoopExited
+            )
+        }),
+        "legacy minimal flow must not emit iterative_minimal journal events"
+    );
+    assert_eq!(
+        stage_events(
+            &events,
+            JournalEventType::StageEntered,
+            "plan_and_implement"
+        )
+        .len(),
+        1
+    );
+
+    let backend_dir = project_root(base_dir, project_name).join("runtime/backend");
+    let parsed_sidecars: Vec<_> = fs::read_dir(&backend_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".parsed.json"))
+        .collect();
+    assert!(
+        parsed_sidecars.is_empty(),
+        "non-iterative minimal flow must not persist parsed payload sidecars: {parsed_sidecars:?}"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn resume_from_failed_quick_dev_run_skips_completed_stages() {
     let tmp = tempdir().unwrap();
@@ -1848,6 +3444,7 @@ async fn run_start_rejects_already_running() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -2525,6 +4122,7 @@ async fn bead_backed_run_resumed_failure_does_not_open_milestone_lineage() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -3082,6 +4680,303 @@ impl AgentExecutionPort for RecordingAdapter {
                 context: request.payload.context.clone(),
                 invocation_id: request.invocation_id.clone(),
             });
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct IterativePlanAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+    plan_contexts: Arc<Mutex<Vec<Value>>>,
+}
+
+impl IterativePlanAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+            plan_contexts: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn plan_calls(&self) -> u32 {
+        self.plan_calls.load(Ordering::SeqCst)
+    }
+
+    fn plan_contexts(&self) -> Vec<Value> {
+        self.plan_contexts
+            .lock()
+            .expect("iterative plan contexts lock poisoned")
+            .clone()
+    }
+}
+
+impl AgentExecutionPort for IterativePlanAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            self.plan_contexts
+                .lock()
+                .expect("iterative plan contexts lock poisoned")
+                .push(request.payload.context.clone());
+            let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 1 {
+                fs::write(
+                    request.working_dir.join("iterative-output.txt"),
+                    "changed once\n",
+                )
+                .expect("write iterative output");
+            }
+        }
+
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct DirtyFileIterativePlanAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+}
+
+impl DirtyFileIterativePlanAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+}
+
+impl AgentExecutionPort for DirtyFileIterativePlanAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let path = request.working_dir.join("iterative-output.txt");
+            match call {
+                1 => fs::write(&path, "changed once\n").expect("write first iterative output"),
+                2 => fs::write(&path, "changed twice\n").expect("write second iterative output"),
+                _ => {}
+            }
+        }
+
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct ParsedPayloadPersistenceFailureAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+}
+
+impl ParsedPayloadPersistenceFailureAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn plan_calls(&self) -> u32 {
+        self.plan_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl AgentExecutionPort for ParsedPayloadPersistenceFailureAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        let is_plan = request.contract.stage_id() == Some(StageId::PlanAndImplement);
+        let invocation_id = request.invocation_id.clone();
+        let project_root = request.project_root.clone();
+        let working_dir = request.working_dir.clone();
+
+        let call = is_plan
+            .then(|| self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1)
+            .unwrap_or(0);
+        if call == 1 {
+            fs::write(working_dir.join("iterative-output.txt"), "changed once\n")
+                .expect("write iterative output");
+        }
+
+        let envelope = self.inner.invoke(request).await?;
+
+        if call == 3 {
+            fs::create_dir_all(
+                project_root
+                    .join("runtime/backend")
+                    .join(format!("{invocation_id}.parsed.json")),
+            )
+            .expect("block parsed payload sidecar path");
+        }
+
+        Ok(envelope)
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct UnavailableModelOnResumeAdapter {
+    inner: IterativePlanAdapter,
+    unavailable_backend: BackendFamily,
+}
+
+impl UnavailableModelOnResumeAdapter {
+    fn new(inner: IterativePlanAdapter, unavailable_backend: BackendFamily) -> Self {
+        Self {
+            inner,
+            unavailable_backend,
+        }
+    }
+}
+
+impl AgentExecutionPort for UnavailableModelOnResumeAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        if backend.backend.family == self.unavailable_backend {
+            return Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.to_string(),
+                details: format!("backend {} is unavailable", backend.backend.family),
+                failure_class: Some(FailureClass::BinaryNotFound),
+            });
+        }
+
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct IterativeRetryCarryAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+}
+
+impl IterativeRetryCarryAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn plan_calls(&self) -> u32 {
+        self.plan_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl AgentExecutionPort for IterativeRetryCarryAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 1 {
+                fs::write(
+                    request.working_dir.join("iterative-output.txt"),
+                    "changed once\n",
+                )
+                .expect("write iterative output");
+            }
+            if call == 3 {
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: StageId::PlanAndImplement.to_string(),
+                    failure_class: FailureClass::TransportFailure,
+                    details: "transient iterative transport failure".to_owned(),
+                });
+            }
+        }
+
         self.inner.invoke(request).await
     }
 
@@ -3843,6 +5738,7 @@ async fn resume_uses_interrupted_cycle_prompt_baseline_instead_of_project_record
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -3989,6 +5885,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_for_later_resumes(
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -4200,6 +6097,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_after_completion_r
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -4729,6 +6627,7 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -6305,6 +8204,7 @@ async fn resume_uses_current_cycle_review_counter_instead_of_prior_cycles() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -6932,6 +8832,7 @@ async fn resume_reconciles_stale_running_snapshot_with_journal_run_failed() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7042,6 +8943,7 @@ async fn resume_recovers_stale_running_snapshot_when_pid_file_is_missing() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7140,6 +9042,7 @@ async fn resume_recovers_stale_running_snapshot_without_run_started_event() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7222,6 +9125,7 @@ async fn resume_recovers_unjournaled_resumed_attempt_without_inheriting_previous
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7330,6 +9234,7 @@ async fn resume_recovers_stale_running_snapshot_without_binding_to_old_run_histo
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7415,6 +9320,7 @@ fn status_reconciles_stale_running_snapshot_with_journal_run_failed() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7521,6 +9427,7 @@ fn status_reconciles_stale_running_snapshot_with_journal_run_completed() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7573,6 +9480,7 @@ fn status_reconciliation_ignores_terminal_events_before_latest_resume_boundary()
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7641,6 +9549,7 @@ fn status_reconciliation_ignores_terminal_events_before_unjournaled_resume_snaps
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -7701,6 +9610,7 @@ fn status_reconciliation_repairs_terminal_snapshot_without_run_started_event() {
                 qa_iterations_current_cycle: 0,
                 review_iterations_current_cycle: 0,
                 final_review_restart_count: 0,
+                iterative_implementer_state: None,
                 stage_resolution_snapshot: None,
             },
         ),

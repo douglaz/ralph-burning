@@ -336,3 +336,61 @@ fn reviewer_completed_event_builder_serializes_timing_metadata() {
     assert_eq!(event.details["outcome"], "proposed_amendments");
     assert_eq!(event.details["amendment_count"], 2);
 }
+
+#[test]
+fn implementer_iteration_events_serialize_iteration_metadata() {
+    let run_id = RunId::new("run-1").expect("run id");
+    let started = journal::implementer_iteration_started_event(
+        7,
+        test_timestamp(),
+        &run_id,
+        StageId::PlanAndImplement,
+        2,
+        1,
+        3,
+        4,
+    );
+    assert_eq!(
+        started.event_type,
+        JournalEventType::ImplementerIterationStarted
+    );
+    assert_eq!(started.details["stage_id"], "plan_and_implement");
+    assert_eq!(started.details["cycle"], 2);
+    assert_eq!(started.details["attempt"], 1);
+    assert_eq!(started.details["completion_round"], 3);
+    assert_eq!(started.details["iteration"], 4);
+
+    let completed = journal::implementer_iteration_completed_event(
+        8,
+        test_timestamp(),
+        &run_id,
+        StageId::PlanAndImplement,
+        2,
+        1,
+        3,
+        4,
+        true,
+        "completed",
+    );
+    assert_eq!(
+        completed.event_type,
+        JournalEventType::ImplementerIterationCompleted
+    );
+    assert_eq!(completed.details["diff_changed"], true);
+    assert_eq!(completed.details["outcome"], "completed");
+
+    let exited = journal::implementer_loop_exited_event(
+        9,
+        test_timestamp(),
+        &run_id,
+        StageId::PlanAndImplement,
+        2,
+        1,
+        3,
+        "stable",
+        4,
+    );
+    assert_eq!(exited.event_type, JournalEventType::ImplementerLoopExited);
+    assert_eq!(exited.details["reason"], "stable");
+    assert_eq!(exited.details["total_iterations"], 4);
+}

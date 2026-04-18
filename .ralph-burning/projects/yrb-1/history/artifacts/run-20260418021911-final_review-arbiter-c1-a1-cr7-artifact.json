@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-arbiter-c1-a1-cr7-artifact",
+  "payload_id": "run-20260418021911-final_review-arbiter-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T06:58:21.897725434Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected fr-7-656cf9e6. The current non-git fallback is intentionally conservative: it hashes those top-level artifact-named paths because, without git metadata, it cannot safely distinguish ignorable build output from real workspace changes. An existing unit test directly codifies that contract, so the proposed blanket exclusion would trade away correctness rather than fix a clear defect.\n\n## Rulings\n\n- `fr-7-656cf9e6`: Reject\n  The performance concern is plausible, but the proposed fix is not a clear correctness amendment because it changes the documented fallback semantics. In the git-backed path, `iterative_untracked_build_artifact` is only applied inside `hash_untracked_git_entry` after Git has already classified a path as untracked via `git ls-files --others --exclude-standard`; tracked edits under `target`, `target-final`, or `result*` are still visible through the normal git diff inputs. The filesystem fallback in `workspace_diff_fingerprint` has no tracked-versus-untracked signal, so applying the same top-level filter in `hash_workspace_entries` would hide all changes under those paths, including legitimate workspace content. The decisive evidence is the existing unit test `git_diff_fingerprint_fallback_detects_build_artifact_named_paths`, which explicitly asserts that, in a non-git workspace, creating `target/debug/build.log` and a `result` symlink must change the fallback fingerprint. That test shows the current conservative behavior is intentional, not an accidental omission. The cited no-git iterative test does miss the performance case, but that is a coverage gap for performance characterization, not proof that the current fingerprinting semantics are wrong.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T08:19:12.798574706Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the iterative_minimal changes against the branch diff and key implementation files. I found two medium-severity fix-now issues: terminal-iteration recovery loses the original producer identity on resume, and the non-git diff fallback counts build artifacts so stabilization cannot converge outside git.\n\n## Amendments\n\n1. src/contexts/workflow_composition/engine.rs:5652-5669, 6172-6178, 6252-6301, and 6408-6440 recover a terminal iterative result from only the `*.parsed.json` sidecar and then fabricate `RecordProducer` from the current `resolved_target`. If the implementer backend/model drifts before `resume` (the new preflight-skip path explicitly allows that), or if the adapter reported a different actual model on the original invocation, the persisted `plan_and_implement` payload/artifact will be attributed to a backend/model that never actually ran. Persist the original producer metadata alongside the sidecar and restore it during recovery instead of synthesizing it from the current target.\n   Rationale: This does not just affect display text: it corrupts the durable run history and producer metadata for recovered iterations, which makes later debugging and audit trails unreliable.\n2. src/contexts/workflow_composition/engine.rs:6484-6556 falls back to a raw filesystem hash outside git, but that path excludes only `.git` and `.ralph-burning`. Unlike the git-specific path in src/contexts/workflow_composition/engine.rs:6687-6707, it does not ignore `target/`, `target-final`, or `result*`, so any build/test side effects in a non-git workspace will keep `diff_changed=true` and prevent the loop from ever reaching the intended \"stable\" stop condition. Apply the same build-artifact exclusions to the filesystem fallback hash.\n   Rationale: The new non-git fallback is part of this change, and in its current form it will routinely burn through `max_consecutive_implementer_rounds` even when source edits have stabilized, which defeats the feature's stop-condition logic outside git repos.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

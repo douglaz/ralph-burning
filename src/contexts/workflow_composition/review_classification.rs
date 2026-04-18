@@ -456,6 +456,8 @@ pub fn render_classification_guidance(
         "\n\
          ### Decision guide\n\
          \n\
+         Ignore files under `.ralph-burning/`; they are live orchestration state and are out of review scope.\n\
+         \n\
          1. Is the finding within the current bead's scope? \u{2192} **fix-now**\n\
          2. Is it covered by a bead listed in \"Already Planned Elsewhere\"? \
          \u{2192} **planned-elsewhere**\n",

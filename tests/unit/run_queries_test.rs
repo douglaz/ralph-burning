@@ -453,6 +453,7 @@ fn reconcile_snapshot_status_repairs_terminal_run_without_run_started_event() {
             qa_iterations_current_cycle: 0,
             review_iterations_current_cycle: 0,
             final_review_restart_count: 0,
+            iterative_implementer_state: None,
             stage_resolution_snapshot: None,
         }),
         interrupted_run: None,

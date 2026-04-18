@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260418021911-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T05:49:58.096939235Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the remaining iterative_minimal regressions additively. The iterative stability fingerprint now filters non-source/build artifacts in both git and filesystem fallback modes, excluding `.ralph-burning/`, `target/`, `target-final/`, and top-level `result`/`result-*` paths so normal build churn no longer prevents stable-loop exit. Parsed payload sidecars are now persisted only for iterative implementer iterations, and those writes use `FileSystem::write_atomic` so resumed recovery reads an atomic file. Added regression coverage for ignored build-artifact churn and for keeping non-iterative minimal runs free of `runtime/backend/*.parsed.json` sidecars.\n\n## Steps\n\n1. [Completed] Inspect the iterative_minimal fingerprinting and parsed-payload persistence paths to isolate the two additive regressions from the latest remediation round.\n2. [Completed] Patch workflow composition engine behavior so iterative diff detection ignores build-artifact churn and parsed payload sidecars are written atomically only for iterative implementer iterations.\n3. [Completed] Add regression coverage for repo/non-repo build-artifact ignores and for non-iterative minimal flows not emitting parsed sidecars.\n4. [Completed] Run repository validation for formatting, tests, clippy, conformance, and nix build on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- Targeted fingerprint regressions passed: `cargo test --lib git_diff_fingerprint_ignores_build_artifact_paths_in_repo` and `cargo test --lib git_diff_fingerprint_fallback_ignores_build_artifact_paths`.\n- Targeted non-iterative regression passed: `cargo test --test unit minimal_flow_remains_single_pass_without_iteration_events --features test-stub`.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo run --features test-stub -- conformance run --filter SC-START-017` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 6
+}

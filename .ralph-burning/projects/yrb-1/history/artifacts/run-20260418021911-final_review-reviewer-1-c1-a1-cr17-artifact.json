@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T12:03:09.873809201Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nTwo fix-now issues found in the new iterative_minimal path: failure exits do not emit the promised `implementer_loop_exited(reason=\"error\")` journal event, and `run status` drops iteration progress after resume/retry because the snapshot summary is reset to a generic stage string.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/engine.rs:6084-6113` only defines `stable` and `max_rounds` as loop-exit reasons, and the failure paths in `execute_iterative_plan_and_implement_stage` return directly at `src/contexts/workflow_composition/engine.rs:7178-7185` and `src/contexts/workflow_composition/engine.rs:7215-7218` without appending `implementer_loop_exited`. That means an iterative-minimal run that aborts inside the implementer loop never records the `reason:\"error\"` event described by the new journal contract, so `run tail` and any journal-based tooling cannot distinguish a failed loop from one that is merely incomplete. `tests/unit/workflow_engine_test.rs:1988-1993` currently codifies the omission.\n   Rationale: Emit `implementer_loop_exited` with `reason = \"error\"` before bubbling loop failures/cancellations, and update the test to expect the failure exit record instead of forbidding it.\n2. `run status` still loses iteration progress across resume/retry boundaries. The iterative-minimal resume path overwrites the restored loop state with a generic summary at `src/contexts/workflow_composition/engine.rs:2402`, and stage re-entry does the same at `src/contexts/workflow_composition/engine.rs:5725-5732` even when `iterative_implementer_state` is already present. Because `src/contexts/project_run_record/queries.rs:320-328` and `src/contexts/project_run_record/queries.rs:357-380` just echo `snapshot.status_summary`, a resumed or retried implementer loop shows `running: Plan and Implement` instead of `running: Plan and Implement (iteration N/M)` until the next iteration write lands.\n   Rationale: Derive the summary from `active_run.iterative_implementer_state.completed_iterations` whenever the active stage is iterative `plan_and_implement`, rather than depending on whichever summary string happened to be persisted last.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

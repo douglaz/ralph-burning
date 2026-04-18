@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T04:18:21.402177567Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAll four amendments identify real defects or legitimate robustness improvements in execute_iterative_plan_and_implement_stage. fr-3-68b23572 and fr-3-ffd697a2 target the same resume bug (no exit-check after persisted terminal state) with the second supplying an implementation approach; fr-3-2de75dec fixes a genuine asymmetry in seq-counter rollback on serialize_event failure; fr-3-fdb3f000 replaces silent clamping with explicit validation, which improves diagnosability and composes well with the resume fixes.\n\n## Votes\n\n- `fr-3-68b23572`: Accept\n  Confirmed real defect: reconstruct_iterative_state_from_events only replays ImplementerIterationCompleted events (engine.rs:1162-1191) and ignores ImplementerLoopExited, while the loop unconditionally does iteration += 1 before any exit check (engine.rs:6236-6244). A crash after the loop_exited event but before stage_completed will cause a duplicate implementer invocation on resume, which can exceed max_consecutive_implementer_rounds and mutate an already-stable workspace. Safety and idempotency-sensitive; worth fixing.\n- `fr-3-ffd697a2`: Accept\n  Concrete, minimal fix for the resume-with-terminal-state gap described in fr-3-68b23572: probe advance_iterative_loop_state (or equivalent) against the restored (iteration, stable_count) at the top of the loop, emit implementer_loop_exited if terminal, and return without re-invoking the backend. Adding a unit test covering stable_count == stable_rounds_required on resume directly closes the regression window. Complementary to the sibling amendment; both can be accepted together.\n- `fr-3-2de75dec`: Accept\n  Real asymmetry: the append_event error branch decrements *seq (engine.rs:6268, 6314, 6344, 6390), but the preceding journal::serialize_event(&...)? returns early on error without rolling back the pre-incremented counter. Although serde_json::to_string on these known-shape structs is unlikely to fail, stage-level retry logic would replay with a counter that skips a sequence number, corrupting the journal invariant. Fix is cheap (serialize before increment, or save/restore on any error) and preserves journal monotonicity.\n- `fr-3-fdb3f000`: Accept\n  Silent .max(1) on max_consecutive_implementer_rounds and stable_rounds_required (engine.rs:6216-6225) hides user configuration errors and gives behavior that does not match the declared config. Validating at config ingestion (returning a clear AppError) or at minimum emitting a DurableWarning makes the discrepancy observable and composes with the resume-state fixes above. This is a legitimate correctness and UX improvement, not merely a style change.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}

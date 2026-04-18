@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-arbiter-c1-a1-cr4-artifact",
+  "payload_id": "run-20260418021911-final_review-arbiter-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T05:00:24.987297531Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. While plain `cargo test` omits the new iterative_minimal tests, the repository’s required acceptance path is `nix build`, and that path enables `test-stub`, so the added coverage is not missing from actual project verification.\n\n## Rulings\n\n- `fr-4-f4be8338`: Reject\n  The cited mechanics are real: `tests/unit.rs` gates `workflow_engine_test` behind `#[cfg(feature = \"test-stub\")]`, and `Cargo.toml` declares `test-stub` as an opt-in feature, so plain `cargo test` does not run those cases. But the amendment overreaches when it calls that the \"default acceptance command.\" In this repository, `AGENTS.md` explicitly makes `nix build` the authoritative verification/acceptance gate, and `flake.nix` sets `cargoTestFlags = [ \"--features\" \"test-stub\" ]` for both package builds. That means the new iterative_minimal engine tests are exercised by the required acceptance path, so this is not a substantive defect in the change under review.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

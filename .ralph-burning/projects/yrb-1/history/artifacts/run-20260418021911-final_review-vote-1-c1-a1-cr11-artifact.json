@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T08:45:09.758220039Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1 amendment. The cited mismatch is real: iterative implementer invocations run under suffixed ids, but failure journaling/logging records the unsuffixed base id, so failure metadata can point at the wrong artifact.\n\n## Votes\n\n- `fr-11-2824764e`: Accept\n  `execute_stage_with_retry()` records `stage_failed.details.invocation_id` from `history_record_base_id(...)`, but iterative `PlanAndImplement` executions call `invoke_stage_on_backend()` with `invocation_suffix = Some(\"it{iteration}\")`, which produces the actual backend `request.invocation_id` via `invocation_id_for_stage(...)`. Backends key failure artifacts off that real invocation id, for example `runtime/failed/<invocation_id>.failed.raw` in `process_backend.rs`. As a result, when an iterative implementer iteration fails, the journal event and runtime log can reference an id that does not match the preserved failure output. That is a concrete diagnostics/forensics bug and can break tooling or operator workflows that follow the recorded invocation id to inspect the failed backend run. Threading the real invocation id back into failure reporting is the right remediation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}
