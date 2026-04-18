@@ -1110,19 +1110,119 @@ fn prompt_change_baseline(snapshot: &RunSnapshot) -> AppResult<String> {
         .clone())
 }
 
+fn event_type_label(event: &JournalEvent) -> String {
+    format!("{:?}", event.event_type)
+}
+
+fn event_detail_u32(event: &JournalEvent, key: &str) -> AppResult<u32> {
+    let value = event
+        .details
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event is missing numeric '{key}' detail",
+                event_type_label(event)
+            ),
+        })?;
+    u32::try_from(value).map_err(|_| AppError::CorruptRecord {
+        file: "journal.ndjson".to_owned(),
+        details: format!(
+            "{} event '{key}' detail is out of range for u32",
+            event_type_label(event)
+        ),
+    })
+}
+
+fn event_detail_bool(event: &JournalEvent, key: &str) -> AppResult<bool> {
+    event
+        .details
+        .get(key)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event is missing boolean '{key}' detail",
+                event_type_label(event)
+            ),
+        })
+}
+
+fn event_matches_stage_cursor(event: &JournalEvent, cursor: &StageCursor) -> AppResult<bool> {
+    let Some(stage_id) = event.details.get("stage_id").and_then(Value::as_str) else {
+        return Ok(false);
+    };
+
+    Ok(stage_id == cursor.stage.as_str()
+        && event_detail_u32(event, "cycle")? == cursor.cycle
+        && event_detail_u32(event, "completion_round")? == cursor.completion_round)
+}
+
+fn reconstruct_iterative_state_from_events(
+    events: &[JournalEvent],
+    cursor: &StageCursor,
+) -> AppResult<Option<IterativeImplementerState>> {
+    let mut completed_iterations = 0;
+    let mut stable_count = 0;
+    let mut found = false;
+
+    for event in events {
+        if event.event_type != JournalEventType::ImplementerIterationCompleted
+            || !event_matches_stage_cursor(event, cursor)?
+        {
+            continue;
+        }
+
+        let iteration = event_detail_u32(event, "iteration")?;
+        if iteration <= completed_iterations {
+            continue;
+        }
+
+        let diff_changed = event_detail_bool(event, "diff_changed")?;
+        completed_iterations = iteration;
+        stable_count = if diff_changed { 0 } else { stable_count + 1 };
+        found = true;
+    }
+
+    Ok(found.then_some(IterativeImplementerState {
+        completed_iterations,
+        stable_count,
+    }))
+}
+
 fn resume_iteration_counters(
     snapshot: &RunSnapshot,
     resume_cursor: &StageCursor,
+    resume_events: &[JournalEvent],
 ) -> AppResult<(u32, u32, Option<IterativeImplementerState>)> {
     let interrupted = interrupted_active_run(snapshot)?;
     if interrupted.stage_cursor.cycle != resume_cursor.cycle {
         return Ok((0, 0, None));
     }
 
+    let snapshot_state = (interrupted.stage_cursor.stage == resume_cursor.stage
+        && interrupted.stage_cursor.cycle == resume_cursor.cycle
+        && interrupted.stage_cursor.completion_round == resume_cursor.completion_round)
+        .then(|| interrupted.iterative_implementer_state.clone())
+        .flatten();
+    let recovered_state = reconstruct_iterative_state_from_events(resume_events, resume_cursor)?;
+    let iterative_state = match (snapshot_state, recovered_state) {
+        (Some(snapshot_state), Some(recovered_state))
+            if recovered_state.completed_iterations >= snapshot_state.completed_iterations =>
+        {
+            Some(recovered_state)
+        }
+        (Some(snapshot_state), Some(_)) => Some(snapshot_state),
+        (Some(snapshot_state), None) => Some(snapshot_state),
+        (None, Some(recovered_state)) => Some(recovered_state),
+        (None, None) => None,
+    };
+
     Ok((
         interrupted.qa_iterations_current_cycle,
         interrupted.review_iterations_current_cycle,
-        carry_forward_iterative_state(interrupted, resume_cursor),
+        iterative_state,
     ))
 }
 
@@ -2146,7 +2246,7 @@ where
     // snapshot from drift detection so the stage can compare against it later.
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
     let (qa_iterations_current_cycle, review_iterations_current_cycle, iterative_implementer_state) =
-        resume_iteration_counters(&snapshot, &resume_state.cursor)?;
+        resume_iteration_counters(&snapshot, &resume_state.cursor, &resume_events)?;
     let final_review_restart_count = resume_final_review_restart_count(&snapshot, &resume_events)?;
     let resumed_at = Utc::now();
     snapshot.status = RunStatus::Running;
@@ -5895,6 +5995,7 @@ fn hash_workspace_entries(
         if metadata.is_dir() {
             hasher.update(b"dir\0");
             hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
             hash_workspace_entries(workspace_root, &path, hasher)?;
             continue;
         }
@@ -5902,6 +6003,7 @@ fn hash_workspace_entries(
         if metadata.file_type().is_symlink() {
             hasher.update(b"symlink\0");
             hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
             hasher.update(fs::read_link(&path)?.to_string_lossy().as_bytes());
             continue;
         }
@@ -5909,6 +6011,7 @@ fn hash_workspace_entries(
         if metadata.is_file() {
             hasher.update(b"file\0");
             hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
             hasher.update(metadata.len().to_le_bytes());
             hasher.update(fs::read(&path)?);
         }
@@ -5964,6 +6067,20 @@ fn git_command_stdout(repo_root: &Path, args: &[&str], description: &str) -> App
     })
 }
 
+fn hash_metadata_mode(metadata: &fs::Metadata, hasher: &mut Sha256) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        hasher.update(metadata.permissions().mode().to_le_bytes());
+    }
+
+    #[cfg(not(unix))]
+    {
+        hasher.update([u8::from(metadata.permissions().readonly())]);
+    }
+}
+
 fn hash_untracked_git_entry(
     repo_root: &Path,
     relative_path: &Path,
@@ -5976,6 +6093,7 @@ fn hash_untracked_git_entry(
     if metadata.file_type().is_symlink() {
         hasher.update(b"untracked-symlink\0");
         hasher.update(display_path.as_bytes());
+        hash_metadata_mode(&metadata, hasher);
         hasher.update(fs::read_link(&absolute_path)?.to_string_lossy().as_bytes());
         return Ok(());
     }
@@ -5983,6 +6101,7 @@ fn hash_untracked_git_entry(
     if metadata.is_file() {
         hasher.update(b"untracked-file\0");
         hasher.update(display_path.as_bytes());
+        hash_metadata_mode(&metadata, hasher);
         hasher.update(metadata.len().to_le_bytes());
         hasher.update(fs::read(&absolute_path)?);
         return Ok(());
@@ -5993,6 +6112,7 @@ fn hash_untracked_git_entry(
         hash_workspace_entries(repo_root, &absolute_path, &mut nested)?;
         hasher.update(b"untracked-dir\0");
         hasher.update(display_path.as_bytes());
+        hash_metadata_mode(&metadata, hasher);
         hasher.update(nested.finalize());
     }
 
@@ -9097,6 +9217,8 @@ pub fn emit_resume_drift_warning(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::Command;
 
@@ -9124,6 +9246,7 @@ mod tests {
     use crate::contexts::milestone_record::service::{
         create_milestone, persist_plan, CreateMilestoneInput,
     };
+    use crate::contexts::project_run_record::journal;
     use crate::contexts::project_run_record::model::{
         ActiveRun, IterativeImplementerState, JournalEventType, ProjectRecord,
         ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
@@ -9134,7 +9257,7 @@ mod tests {
     use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
-        BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageCursor, StageId,
+        BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, RunId, StageCursor, StageId,
     };
     use crate::shared::error::{AppError, AppResult};
 
@@ -9281,6 +9404,27 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_changes_when_untracked_file_mode_changes() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        let script_path = temp_dir.path().join("script.sh");
+        fs::write(&script_path, "#!/bin/sh\necho hi\n").expect("write script");
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod script");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "untracked chmod-only changes must change the fingerprint"
+        );
+    }
+
     #[test]
     fn git_diff_fingerprint_falls_back_outside_git_repo_and_ignores_runtime_state() {
         let temp_dir = tempdir().expect("create temp dir");
@@ -9310,6 +9454,26 @@ mod tests {
         assert_ne!(
             baseline, changed,
             "non-runtime workspace changes must change the fallback fingerprint"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_fallback_changes_when_file_mode_changes() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let script_path = temp_dir.path().join("script.sh");
+        fs::write(&script_path, "#!/bin/sh\necho hi\n").expect("write script");
+
+        let first = git_diff_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).expect("chmod script");
+        let second = git_diff_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "filesystem fallback must detect chmod-only changes"
         );
     }
 
@@ -9344,7 +9508,7 @@ mod tests {
         };
 
         let (qa, review, iterative_state) =
-            resume_iteration_counters(&snapshot, &cursor).expect("resume counters");
+            resume_iteration_counters(&snapshot, &cursor, &[]).expect("resume counters");
 
         assert_eq!(qa, 4);
         assert_eq!(review, 5);
@@ -9352,6 +9516,75 @@ mod tests {
             iterative_state,
             Some(IterativeImplementerState {
                 completed_iterations: 6,
+                stable_count: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_reconstruct_iterative_loop_state_from_journal() {
+        let run_id = RunId::new("run-iter").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: cursor.clone(),
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 1,
+                    stable_count: 0,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let resume_events = vec![
+            journal::implementer_iteration_completed_event(
+                1,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                3,
+                2,
+                true,
+                "completed",
+            ),
+            journal::implementer_iteration_completed_event(
+                2,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                3,
+                3,
+                false,
+                "completed",
+            ),
+        ];
+
+        let (qa, review, iterative_state) =
+            resume_iteration_counters(&snapshot, &cursor, &resume_events).expect("resume counters");
+
+        assert_eq!(qa, 4);
+        assert_eq!(review, 5);
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 3,
                 stable_count: 1,
             })
         );
@@ -9390,7 +9623,7 @@ mod tests {
         };
 
         let (qa, review, iterative_state) =
-            resume_iteration_counters(&snapshot, &resume_cursor).expect("resume counters");
+            resume_iteration_counters(&snapshot, &resume_cursor, &[]).expect("resume counters");
 
         assert_eq!(qa, 1);
         assert_eq!(review, 2);

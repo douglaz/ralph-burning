@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 3
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-2-df55f35e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: `execute_iterative_plan_and_implement_stage` appends `implementer_iteration_completed` before it durably advances `active_run.iterative_implementer_state`, while `resume_iteration_counters` restores loop progress only from the interrupted snapshot. If the `run.json` write fails, or the process dies after the journal append succeeds, resuming the run will replay an already-completed implementer iteration and can duplicate code edits / journal entries.\naffected_files:\n- src/contexts/workflow_composition/engine.rs:6211-6249\n- src/contexts/workflow_composition/engine.rs:1113-1125\nremediation_hint: Reconstruct iterative loop progress from `ImplementerIterationCompleted` journal events on resume, or otherwise make the journal/snapshot update ordering crash-safe so a completed iteration cannot be replayed.",
-        "created_at": "2026-04-18T03:50:59.995594678Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "1f5c0930db05023223ef1b16cb662d2190a1a080d9af226cc4de863ee1f436d3"
-      },
-      {
-        "amendment_id": "fr-2-38752dd9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 2,
-        "body": "finding_summary: The custom diff fingerprint hashes file paths, sizes, contents, and symlink targets, but it never includes regular-file mode bits. In the filesystem fallback and in the untracked-file branch, a chmod-only change (for example, making a newly created script executable) produces the same fingerprint, so the loop can treat a real workspace change as 'stable' and exit early.\naffected_files:\n- src/contexts/workflow_composition/engine.rs:5894-5913\n- src/contexts/workflow_composition/engine.rs:5972-5988\nremediation_hint: Include permission/mode bits in the fallback and untracked-file hashes, or switch to a status representation that preserves executable-bit changes for those paths.",
-        "created_at": "2026-04-18T03:50:59.995599427Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "8d9dbba53ea1ca1f50949b435e2e59c1e008afe3d0ff5c55751f46bd2c265d93"
-      }
-    ],
-    "processed_count": 4
+    "pending": [],
+    "processed_count": 6
   },
-  "status_summary": "running: final review restart round 3 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T03:38:55.170297542Z",
