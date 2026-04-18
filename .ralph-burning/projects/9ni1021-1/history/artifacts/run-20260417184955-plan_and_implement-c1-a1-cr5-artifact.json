@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T21:32:51.480150396Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAmended the E2E milestone scenario fixture so its returned `mock_br` is no longer a single FIFO script. `MockBrAdapter` now has an additive dispatch mode, and `build_e2e_milestone_scenario_fixture()` uses a scenario-specific stateful dispatcher that serves `list`/`show`/`create`/`close`/`sync` responses in any reasonable order while tracking the follow-up bead lifecycle. The fixture’s `br show` payloads now derive reverse-edge `dependents` from the staged bead graph, and the smoke test was expanded to verify repeated/out-of-order reads plus dependent status transitions before and after create/close.\n\n## Steps\n\n1. [Completed] Inspected the pending remediation against the current `src/test_support/br.rs` and `src/test_support/e2e_fixtures.rs` implementation to confirm the reusable-mock sequencing bug and the missing reverse-edge `dependents` data in mocked `br show` output.\n2. [Completed] Added an additive dispatch path to `MockBrAdapter` and rewired the E2E scenario fixture to use a command-aware, stateful `br` mock that supports repeated and out-of-order `list`/`show` calls while keeping `create`/`close`/`sync` behavior aligned with the staged follow-up bead lifecycle.\n3. [Completed] Updated the fixture’s mocked `br show` serialization to derive `dependents` from reverse dependencies in the scenario graph and expanded the smoke test to assert dependent edges and status changes across repeated and reordered calls.\n4. [Completed] Ran the requested validation stack; formatting, targeted tests, full `cargo test`, and `cargo clippy -- -D warnings` completed successfully, while the final `nix build` attempt did not return a success result before the turn ended.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo test mock_br_adapter_can_dispatch_by_command --lib` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build --option eval-cache false` was started and reached `/nix/store/7xmsk1fq1ihf4sbnwvzlkd2gnd4nkb32-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, but the local `nix` client remained blocked waiting on the daemon so no passing completion result was captured.\n\n## Outstanding Risks\n\n- `nix build --option eval-cache false` was attempted after the code changes and reached the musl derivation build, but the local `nix` client remained blocked waiting on the daemon after compilation and no successful completion was captured in this turn. I did not mark the tree as fully Nix-validated.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 5
+}

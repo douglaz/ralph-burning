@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T00:16:31.367093326Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real, independent regressions in the new E2E fixture path. `src/test_support/mod.rs` currently omits `e2e_fixtures`, so that file is not compiled and its smoke test is absent from the library test list. Restoring the module export then exposes additional breakage: `e2e_fixtures.rs` still depends on mock-adapter and fixture helpers that no longer exist, so the fixture remains uncompilable and cannot provide the intended filesystem-synchronized mock behavior.\n\n## Votes\n\n- `fr-13-7572e372`: Accept\n  `src/test_support/mod.rs` exports `br`, `bv`, `env`, `fixtures`, and `logging`, but not `e2e_fixtures`. In this crate layout that means `src/test_support/e2e_fixtures.rs` is not compiled through `crate::test_support`, so the requested builder is unreachable. `cargo test --lib -- --list` confirms the reported smoke test is missing from the test inventory, which makes this a real high-severity regression rather than a theoretical concern.\n- `fr-13-ead6ae56`: Accept\n  This is also correct and distinct from the missing module export. After re-adding `pub mod e2e_fixtures;` in an isolated copy, the crate still fails to compile because `e2e_fixtures.rs` imports or calls APIs that are no longer present: `write_bead_graph_issues`, `MockBrAdapter::from_dispatch`, `MockBvAdapter::from_dispatch`, and both adapters' `set_default_working_dir` methods. Those missing pieces are exactly what the fixture uses to keep mocked `br`/`bv` behavior aligned with `.beads/issues.jsonl` mutations, so without them the fixture is both uncompilable and unable to model the intended live filesystem-backed scenario.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

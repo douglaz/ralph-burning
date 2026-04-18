@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T21:45:05.062612993Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-e1a464cb`\n- `fr-5-bfa320c9`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-5-14998f88`\n\n## Final Accepted Amendments\n\n### `fr-5-e1a464cb`\n\nfinding_summary: `build_mock_bv_adapter()` seeds only one `--robot-next` response in `src/test_support/e2e_fixtures.rs:331-336`. Because `MockBvAdapter` consumes queued responses and then panics when the queue is empty (`src/test_support/bv.rs:163-169`), a second `robot-next` call against the same fixture fails even though the workspace state is unchanged.\naffected_files: src/test_support/e2e_fixtures.rs; src/test_support/bv.rs\nremediation_hint: Make the BV fixture repeatable, either by adding dispatch-based matching or by preloading enough identical responses for repeated `robot-next` reads.\n\n### `fr-5-bfa320c9`\n\nfinding_summary: The synthetic `br create` path always returns the hard-coded id `ms-e2e-scenario.task-follow-up-validation` (`src/test_support/e2e_fixtures.rs:36,339-374,490-503`). If code under test creates two follow-up beads or retries the create path after a partial failure, the fixture aliases both operations to the same bead instead of allocating a fresh id, which does not match real `br create` behavior.\naffected_files: src/test_support/e2e_fixtures.rs\nremediation_hint: Track a create counter and generate unique ids per created bead, or reject duplicate creates explicitly so tests cannot silently pass against aliased state.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

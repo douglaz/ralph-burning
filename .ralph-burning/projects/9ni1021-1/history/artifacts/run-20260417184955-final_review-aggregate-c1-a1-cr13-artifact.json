@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T00:17:50.670952196Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 13/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-13-7572e372`\n- `fr-13-ead6ae56`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-13-7572e372`\n\nfinding_summary: The new E2E fixture module is not part of `crate::test_support`, so the requested builder is unreachable and its smoke test never runs.\nseverity: high\naffected_files:\n- src/test_support/mod.rs\n- src/test_support/e2e_fixtures.rs\nline_refs:\n- src/test_support/mod.rs:6-10\n- src/test_support/e2e_fixtures.rs:63-113\n- src/test_support/e2e_fixtures.rs:1106-1115\nremediation_hint: Re-add `pub mod e2e_fixtures;` and confirm `cargo test --lib -- --list` includes `test_support::e2e_fixtures::tests::build_e2e_milestone_scenario_fixture_smoke_test` so the builder and its smoke test are actually compiled.\n\n### `fr-13-ead6ae56`\n\nfinding_summary: The shared test-support reverts removed the APIs that `e2e_fixtures.rs` depends on, so restoring the module export would still leave the new fixture uncompilable and unable to keep mock responses synchronized with the on-disk bead graph.\nseverity: high\naffected_files:\n- src/test_support/br.rs\n- src/test_support/bv.rs\n- src/test_support/fixtures.rs\n- src/test_support/e2e_fixtures.rs\nline_refs:\n- src/test_support/e2e_fixtures.rs:27-30\n- src/test_support/e2e_fixtures.rs:99-103\n- src/test_support/e2e_fixtures.rs:423-428\n- src/test_support/e2e_fixtures.rs:595\n- src/test_support/br.rs:113-150\n- src/test_support/br.rs:154-177\n- src/test_support/bv.rs:122-143\n- src/test_support/bv.rs:146-169\n- src/test_support/fixtures.rs:379-388\nremediation_hint: Restore the dispatch-based mock constructors and default-working-dir support in `MockBrAdapter`/`MockBvAdapter`, plus the shared `write_bead_graph_issues` helper, so the fixture can compile and model `list`/`show`/`create`/`close`/`sync` against live filesystem mutations.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

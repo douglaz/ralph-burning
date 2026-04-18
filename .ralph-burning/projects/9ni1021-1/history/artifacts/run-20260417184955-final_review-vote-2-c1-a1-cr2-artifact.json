@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T19:44:50.325770115Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the double-materialization bug. The seed MilestoneFixtureBuilder materializes a full plan/journal for `bead-1`/`bead-2`/`bead-3`, then the scenario's `materialize_bundle` overlays the real scenario plan. The resulting journal carries stale PlanPersisted events for the seed plan alongside the scenario plan, so the fixture's `journal` field is not a faithful history of the advertised scenario. The current smoke test only inspects plan.json and the bead graph, masking the defect, but any future e2e test that asserts on journal contents or lifecycle transitions would observe the stale events. Remediation (either skipping the pre-seed or materializing the scenario bundle exactly once) is sound.\n\n## Votes\n\n- `fr-2-adcef5e2`: Accept\n  Confirmed by reading e2e_fixtures.rs:57-91, fixtures.rs:585-709, and service.rs:1352-1451. The default `MilestoneFixtureBuilder::write_into` path takes the `Ready` branch and calls `materialize_bundle` with a seed bundle containing `ms-e2e-scenario.bead-{1,2,3}`, persisting plan.json and emitting journal events for that plan. The scenario's subsequent `materialize_bundle` call refreshes plan.json (hash mismatch) but appends to the existing journal rather than replacing it, so `load_materialized_fixture` returns a journal containing seed-plan events that reference bead IDs which do not exist in the advertised scenario bundle or bead graph. This is a genuine semantic defect: the fixture's self-description (workspace + bead graph + journal for the scenario bundle) does not match what's on disk. The remediation hint (build the workspace without pre-seeding, or provide a builder path that materializes the scenario exactly once) is straightforward and avoids growing divergence between fixture slots.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}

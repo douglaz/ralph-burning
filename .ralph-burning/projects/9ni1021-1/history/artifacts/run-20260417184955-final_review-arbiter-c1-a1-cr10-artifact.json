@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-arbiter-c1-a1-cr10-artifact",
+  "payload_id": "run-20260417184955-final_review-arbiter-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:15:43.758990118Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment because the authoritative bead text does not require sub-second fixture creation; it explicitly warns against brittle real-time budgets, so the existing 10-second pathological-slowdown guard is consistent with the stated acceptance criteria.\n\n## Rulings\n\n- `fr-10-7dee4424`: Reject\n  The finding depends on a documented \"<1 second\" contract that is not present in the authoritative bead. The active bead entry in `.beads/issues.jsonl` for `ralph-burning-9ni.10.2.1` says fixture creation should stay cheap, but explicitly adds: \"do not rely on brittle sub-second wall-clock assertions in CI,\" \"prefer functional completeness assertions over hard timing budgets,\" and the acceptance criteria require a smoke test \"without relying on a flaky hard real-time budget.\" Against that requirement, the assertion in `src/test_support/e2e_fixtures.rs:1058-1061` is framed as a pathological-slowdown guard (`elapsed < Duration::from_secs(10)`) rather than a strict performance SLA, which matches the bead’s anti-flakiness guidance. A tighter bound might be a product choice, but it is not a defect against the current documented contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

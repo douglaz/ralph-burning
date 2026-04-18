@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr12",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T23:38:02.887701921Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/test_support/e2e_fixtures.rs` to handle dangling `.beads/issues.jsonl` dependencies deterministically. `next_ready_issue()` now requires every referenced dependency bead to exist before considering a task ready, so `bv --robot-next` no longer treats missing `blocks` targets as satisfied. `br_show_json()` now returns `Result<String, String>` and surfaces the same dangling-dependency error instead of panicking on `expect(...)`, with the mock `br show` path converting that into a stable mock exit failure. The smoke test was expanded to corrupt the on-disk graph by removing a prerequisite bead, then assert both `br show` and `bv --robot-next` fail with a clear dangling-dependency message before the scenario restores the graph and continues.\n\n## Steps\n\n1. [Completed] Inspected the current E2E fixture readiness and `br show` serialization logic to confirm that missing dependency targets were being treated as satisfied for `bv --robot-next` and could still panic the mock `br show` path.\n2. [Completed] Patched `src/test_support/e2e_fixtures.rs` so dependency lookups now fail deterministically through a shared dangling-dependency error message, and updated the mock `br show` response path to return exit failures instead of panicking when the graph is inconsistent.\n3. [Completed] Extended the smoke test to remove a prerequisite bead from `.beads/issues.jsonl`, verify deterministic failures from both adapters, restore the graph, and rerun the requested validation stack.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` produced `result -> /nix/store/q6w9fjvjz5mn0557jzs1z0jb14ncyfhj-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`, and `result/bin/ralph-burning` exists on the final tree.\n\n## Outstanding Risks\n\n- `nix build` was started on the final tree and produced a usable `result` symlink with `result/bin/ralph-burning`, but the local `nix build` client never emitted a clean completion line before observation ended, so the Nix pass is inferred from the produced output path rather than a captured successful process exit.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 12
+}

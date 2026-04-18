@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T22:26:06.963417328Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed both amendments against the code in src/test_support/e2e_fixtures.rs and src/test_support/fixtures.rs. The duplication between SerializedScenarioIssue/SerializedBeadGraphIssue (and their Dependency and serialize_acceptance_criteria counterparts) is real and creates a silent drift risk since both paths write the same .beads/issues.jsonl file — accept. The smoke-test timing assertion uses a 10x budget (10s vs <1s stated) that won't catch meaningful regressions — accept.\n\n## Votes\n\n- `fr-7-d2619344`: Accept\n  The duplication is verbatim: SerializedScenarioIssue (e2e_fixtures.rs:873-899) mirrors SerializedBeadGraphIssue (fixtures.rs:211-237), SerializedScenarioDependency mirrors SerializedBeadGraphDependency (fixtures.rs:239-249), the From impls match (fixtures.rs:251-291 vs e2e_fixtures.rs:913-953), and serialize_acceptance_criteria is duplicated byte-for-byte (fixtures.rs:66-79 vs e2e_fixtures.rs:857-871). Both paths write to the same .beads/issues.jsonl (BeadGraphFixtureBuilder::write_into initial + ScenarioState::persist mutations), so divergence would cause silent data-shape drift that only surfaces as hard-to-debug test failures. The proposed fix — a shared pub(crate) helper or pub(crate) visibility on the Serialized* structs — is minimal, keeps a single source of truth, and avoids new abstractions.\n- `fr-7-eaeaf7d2`: Accept\n  The mismatch is concrete: the acceptance criterion in the bead says <1 second, but the assertion at e2e_fixtures.rs:997-1000 uses Duration::from_secs(10) — a 10x slack that will pass even if fixture creation regresses by an order of magnitude, defeating the smoke-test's purpose. Either tightening to 2-3s (enough for CI jitter while still catching real regressions) or splitting into a hard bound plus a soft warn at 1s would make the assertion reflect its stated intent. The fix is low-risk and improves signal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 7
+}

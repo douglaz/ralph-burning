@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T00:38:19.337411374Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments are technically valid. Two findings catch fixture behavior that diverges from real production contracts, and the third correctly notes that the smoke test's 10-second ceiling does not enforce the stated sub-second performance requirement.\n\n## Votes\n\n- `fr-14-991f1a3c`: Accept\n  `scenario_bv_response` currently turns an exhausted `bv --robot-next` into a non-zero exit, but `capture_next_step_hint` only treats the real no-work case as `NoRecommendation` when bv exits successfully and returns message-only JSON. The code explicitly keeps `BvExitError` on the failure path, so this fixture models the wrong branch and can hide bugs in stale-hint clearing when the graph is exhausted.\n- `fr-14-7ed43a28`: Accept\n  The fixture builds `proposal:` labels from the fully qualified bead id, while production derives that identity label from `canonical_export_proposal_id`, which strips the `milestone_id.` prefix first. That mismatch is real even for explicit fully qualified bead ids, and proposal-label identity is used for reuse and matching logic, so the fixture is producing label sets that production would not emit.\n- `fr-14-9c0cba88`: Accept\n  If the contract is that fixture creation stays under 1 second, asserting only `< 10s` does not protect that requirement; a full order-of-magnitude regression would still pass. The current test is only guarding against catastrophic slowdown, not the stated budget, so tightening the ceiling is warranted to make the acceptance criterion meaningful.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

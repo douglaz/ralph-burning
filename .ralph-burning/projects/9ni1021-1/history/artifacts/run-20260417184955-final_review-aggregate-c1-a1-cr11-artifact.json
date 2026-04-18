@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:34:09.681820636Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 11/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-11-11ed2696`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-11-7b77d92e`\n\n## Final Accepted Amendments\n\n### `fr-11-11ed2696`\n\nfinding_summary: `src/test_support/e2e_fixtures.rs:546-565` and `src/test_support/e2e_fixtures.rs:951-968` assume every dependency target exists. `next_ready_issue()` treats a missing `blocks` dependency as satisfied via `is_none_or(...)`, so `bv --robot-next` can advance downstream work when a prerequisite row has been dropped from `.beads/issues.jsonl`. On the `br show` path, the same dangling dependency trips `expect(\"dependency issue must exist\")` and panics the test process instead of returning a deterministic mock failure. Because this fixture intentionally reloads on-disk graph rewrites, a slightly inconsistent rewrite can now either unblock the wrong bead or crash the mock adapter.\naffected_files:\n- src/test_support/e2e_fixtures.rs\nremediation_hint: Require every dependency lookup to succeed before a bead is considered ready, and replace the `expect(...)` in `br_show_json()` with error propagation or a mock exit failure so dangling dependencies are handled deterministically.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 11
+}

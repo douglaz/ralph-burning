@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T21:39:24.569559460Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `origin/master` excluding `.ralph-burning/`, then read the new fixture and mock-support code end-to-end and ran the targeted new unit tests. I found three fix-now issues, all in the new test-support fixture behavior and coverage rather than in production runtime code.\n\n## Amendments\n\n1. finding_summary: `build_mock_bv_adapter()` seeds only one `--robot-next` response in `src/test_support/e2e_fixtures.rs:331-336`. Because `MockBvAdapter` consumes queued responses and then panics when the queue is empty (`src/test_support/bv.rs:163-169`), a second `robot-next` call against the same fixture fails even though the workspace state is unchanged.\naffected_files: src/test_support/e2e_fixtures.rs; src/test_support/bv.rs\nremediation_hint: Make the BV fixture repeatable, either by adding dispatch-based matching or by preloading enough identical responses for repeated `robot-next` reads.\n   Rationale: This fixture is meant for integration-style tests, and repeated read-only `bv --robot-next` queries are a normal pattern. The current one-shot mock introduces fixture-only failures that do not reflect product behavior.\n2. finding_summary: The synthetic `br create` path always returns the hard-coded id `ms-e2e-scenario.task-follow-up-validation` (`src/test_support/e2e_fixtures.rs:36,339-374,490-503`). If code under test creates two follow-up beads or retries the create path after a partial failure, the fixture aliases both operations to the same bead instead of allocating a fresh id, which does not match real `br create` behavior.\naffected_files: src/test_support/e2e_fixtures.rs\nremediation_hint: Track a create counter and generate unique ids per created bead, or reject duplicate creates explicitly so tests cannot silently pass against aliased state.\n   Rationale: The prompt calls for realistic mock responses. Reusing one fixed bead id can hide retry and multi-create bugs in the integration tests that are supposed to exercise this fixture.\n3. finding_summary: The smoke test allows fixture construction to take up to 10 seconds (`src/test_support/e2e_fixtures.rs:573-576`), but this bead’s acceptance criteria require the builder to stay under 1 second. A multi-second regression would still pass, so the advertised performance contract is currently unverified.\naffected_files: src/test_support/e2e_fixtures.rs\nremediation_hint: Tighten the assertion to the promised budget or add a dedicated fast-path timing test that enforces the sub-second target.\n   Rationale: This change is adding test infrastructure specifically meant to be fast. With the current threshold, CI will not catch the class of slowdown the bead is supposed to guard against.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

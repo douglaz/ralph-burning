@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr13-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T00:17:50.652151282Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nConfirmed both amendments describe real defects. The uncommitted diff removes `pub mod e2e_fixtures;` from src/test_support/mod.rs, making the new builder and its smoke test unreachable (fr-13-7572e372). Simultaneously, the reverts delete APIs that e2e_fixtures.rs still imports and calls: `set_default_working_dir` (lines 102-103), `write_bead_graph_issues` (lines 28, 595, 1364+), and the dispatch-based mock constructors (fr-13-ead6ae56). Re-enabling the module alone would break compilation; both fixes are needed together.\n\n## Votes\n\n- `fr-13-7572e372`: Accept\n  Verified: `pub mod e2e_fixtures;` was removed from src/test_support/mod.rs (confirmed via `git diff` on the uncommitted change), and `cargo test --lib -- --list` does not report `build_e2e_milestone_scenario_fixture_smoke_test`. The 1706-line e2e_fixtures.rs file and its tokio smoke test at lines 1106-1115 are currently orphaned from the crate's compilation graph, so the requested builder is unreachable and the smoke test never runs. Re-adding the module declaration is a correct remediation.\n- `fr-13-ead6ae56`: Accept\n  Verified: the uncommitted diffs on src/test_support/br.rs, bv.rs, and fixtures.rs remove the exact APIs that e2e_fixtures.rs depends on — `MockBrAdapter::set_default_working_dir` / `from_dispatch` / `set_dispatch`, the matching methods on `MockBvAdapter`, and the top-level `write_bead_graph_issues` helper. e2e_fixtures.rs still imports `write_bead_graph_issues` at line 28 and calls `set_default_working_dir` at lines 102-103, plus `write_bead_graph_issues` at lines 595, 1364, 1405, 1432, and 1464. Simply re-exporting the module (fr-13-7572e372) would leave the crate uncompilable, so this second amendment is necessary; restoring the dispatch-based constructors and `write_bead_graph_issues` is the correct fix to let the fixture model live `list/show/create/close/sync` against the on-disk bead graph.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 13
+}

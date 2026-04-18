@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T21:44:13.661777510Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nI accepted the two fixture-fidelity findings because they describe real mismatches between the synthetic e2e adapters and real `br`/`bv` behavior that can either panic on harmless repeated reads or silently alias distinct creates. I rejected the timing finding because its premise is not supported by the current bead contract, which explicitly avoids brittle sub-second wall-clock assertions.\n\n## Votes\n\n- `fr-5-e1a464cb`: Accept\n  `build_mock_bv_adapter()` currently preloads exactly one `--robot-next` response, and `MockBvAdapter` always consumes from a FIFO queue and panics when it is empty. That makes a read-only `bv --robot-next` query artificially one-shot in this fixture even though the underlying workspace state has not changed. This is a real robustness defect in the fixture because downstream tests can fail for mock exhaustion rather than product behavior, and it diverges from how the real `bv` command behaves when queried repeatedly.\n- `fr-5-bfa320c9`: Accept\n  The synthetic `br create` path is hard-wired to one bead id and one follow-up state machine, so repeated creates alias to the same logical bead instead of producing a distinct result or failing explicitly. That is not faithful to real `br create` semantics, which allocate a new id, and it can mask duplicate-create or retry bugs by letting multiple create attempts collapse onto one synthetic bead. The fixture should either generate unique ids or reject duplicate creates deterministically.\n- `fr-5-14998f88`: Reject\n  The finding depends on a claimed sub-second acceptance contract that is not the current project contract. The active bead for this fixture explicitly says to keep creation cheap but to avoid brittle sub-second wall-clock assertions in CI, and its acceptance criteria call for a smoke test 'without relying on a flaky hard real-time budget.' The existing `< 10s` assertion is a coarse pathological-slowdown guard, not evidence that an advertised 1-second guarantee is untested.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

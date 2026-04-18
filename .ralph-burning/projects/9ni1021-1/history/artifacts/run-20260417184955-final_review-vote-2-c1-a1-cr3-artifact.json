@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T20:14:14.405382864Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nEvaluated two amendments targeting the new e2e scenario fixture. Rejected the mock-adapter critique because the queue-based mock is working as designed for the scripted smoke test and tests needing other flows can `push_response`. Accepted the timing-assertion critique because a hard 1s wall-clock bound around real filesystem work is a known source of CI flakiness.\n\n## Votes\n\n- `fr-3-ab07ff12`: Reject\n  The `MockBrAdapter` is explicitly a FIFO queue-based mock (see src/test_support/br.rs:154-185 where `run` pops from a `VecDeque<MockBrResponse>` regardless of command). `build_mock_br_adapter` scripts exactly the six-step narrative the smoke test exercises (list -> show prepare -> create -> show follow-up -> close -> sync), and the test verifies that ordering end-to-end at lines 597-676. The finding's concern that 'any integration test that inspects ROOT_EPIC_ID or VALIDATE_TASK_ID' would break is speculative about hypothetical future tests; the fixture already exposes `bead_ids` and the mock exposes `push_response` so any future test that needs a different flow can extend the queue. Making the mock stateful (request-routed) would be an architectural redesign of the test_support layer, not a bug fix, and the alternative -- preloading responses for every conceivable bead/command combination -- isn't meaningfully more correct than the current scripted approach. The 'synthetic bead stays open after close' observation correctly describes queue-based mock semantics; it is not impossible data, it is simply the absence of a requeued show. No current test is broken, and the design contract of the mock is clear.\n- `fr-3-96eb17b8`: Accept\n  The assertion at src/test_support/e2e_fixtures.rs:466-469 imposes `elapsed < Duration::from_secs(1)` around `build_e2e_milestone_scenario_fixture()`, which performs real filesystem work: creating a temp workspace, writing a bead graph jsonl, materializing a milestone bundle (plan.md, plan.json, snapshot, journal), and parsing it back. That wall-clock budget is sensitive to host load, shared CI runners, and sandboxed/virtualized filesystems (including Nix builders, which the repo actively uses via `nix develop -c cargo test`). A smoke test's primary job is to verify fixture correctness; stapling a tight performance bound onto it conflates two concerns and creates a flake risk that erodes trust in the suite without catching the regressions a dedicated benchmark would. The remediation hint is reasonable: relax the bound substantially, mark a dedicated perf assertion `#[ignore]`, or move it to a benchmark. The fixture should remain fast, but the test should not gate CI on a 1-second wall clock around I/O.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}

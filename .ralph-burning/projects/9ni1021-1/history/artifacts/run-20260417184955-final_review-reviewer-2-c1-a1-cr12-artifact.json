@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:48:01.465065700Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the e2e fixture builder addition (src/test_support/e2e_fixtures.rs, 1590 lines) plus additive dispatch/default-working-dir support on MockBrAdapter and MockBvAdapter. The fixture correctly materializes a Ready milestone, a 6-bead graph with parent-child and blocks dependencies, and wires mock dispatchers that reload .beads/issues.jsonl from disk before each call so external file rewrites are visible. Working-dir enforcement fails deterministically when callers forget to scope adapters to the workspace. Mock mutex usage is safe: lock critical sections are short and acquisition order is consistent across ProcessRunner::run and Debug::fmt. The comprehensive smoke test (list/show/create/close/dep-add/sync, dangling dependency errors, external rewrite, reopen) passes in 0.01s, well under the <1s target. All 15 test_support tests pass. Clippy errors observed in the workspace are pre-existing on master (confirmed by checking out master) and unrelated to this PR. No critical, high, medium, or low findings warrant amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 12
+}

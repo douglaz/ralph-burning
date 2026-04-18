@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T22:42:36.855954698Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 8/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-8-1bebf4fa`\n\n## Rejected\n\n- `fr-8-73f0a378`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-1bebf4fa`\n\nfinding_summary: The scenario mocks ignore the adapter working directory, so tests built on this fixture will still pass even if production code forgets to point `br`/`bv` at the temp workspace.\nseverity: medium\naffected_files:\n- src/test_support/e2e_fixtures.rs:419-425\n- src/test_support/e2e_fixtures.rs:575-659\nremediation_hint: Thread `MockBrCall.working_dir` / `MockBvCall.working_dir` into the scenario handlers and fail on a missing or mismatched path, or return adapters that are already bound to `fixture.workspace.path()` so cwd wiring is part of what the fixture validates.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

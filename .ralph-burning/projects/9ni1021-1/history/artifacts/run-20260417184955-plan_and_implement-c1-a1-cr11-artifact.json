@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr11-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr11",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T23:20:44.951910874Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated the E2E milestone scenario fixture so its returned mocks are actually usable through the repo’s normal convenience constructors. `MockBrAdapter` and `MockBvAdapter` now support an additive default working-directory binding that `as_br_adapter()`, `as_mutation_adapter()`, and `as_bv_adapter()` automatically apply when configured. `build_e2e_milestone_scenario_fixture()` now prebinds both mocks to the temp workspace root, and the smoke test was rewritten to use those direct fixture adapters while keeping separate raw-adapter checks that still prove missing or mismatched working directories fail. Added focused unit coverage for the new default-working-dir behavior in both mock adapter modules.\n\n## Steps\n\n1. [Completed] Inspected the E2E fixture and mock adapter helpers to confirm the failure mode: the scenario dispatcher enforced a workspace cwd, but the returned `mock_br` and `mock_bv` convenience constructors did not prebind one.\n2. [Completed] Patched `src/test_support/br.rs` and `src/test_support/bv.rs` to store an optional default working directory on each mock and automatically apply it from `as_br_adapter()`, `as_mutation_adapter()`, and `as_bv_adapter()` without changing existing call sites that leave the default unset.\n3. [Completed] Updated `build_e2e_milestone_scenario_fixture()` to preconfigure both mocks with the fixture workspace root, rewrote the smoke test to exercise the direct convenience adapters, preserved explicit raw-adapter failure checks for missing and wrong cwd wiring, and added targeted unit tests for the new mock binding behavior.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed successfully.\n- `cargo test mock_br_adapter_applies_default_working_dir_to_convenience_adapter --lib` passed.\n- `cargo test mock_bv_adapter_applies_default_working_dir_to_convenience_adapter --lib` passed.\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` was started on the final tree and reached `/nix/store/lj9jsr6bwgdp3l5gdbrlsavzajgkq32i-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0.drv`, but no successful completion was captured before it was interrupted after stalling.\n\n## Outstanding Risks\n\n- `nix build` was started on the final tree, reached the musl derivation again, then stopped producing output and had to be interrupted. I did not capture a successful `nix build` completion in this turn.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 11
+}

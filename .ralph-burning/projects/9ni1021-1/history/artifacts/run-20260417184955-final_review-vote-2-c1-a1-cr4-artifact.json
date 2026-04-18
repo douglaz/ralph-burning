@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T21:17:51.931643363Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified all three amendments against src/test_support/e2e_fixtures.rs, src/test_support/br.rs, src/cli/project.rs, and the scenario prompt. All three findings are technically accurate: the FIFO mock only supports one hard-coded call order, br_show_json hard-codes empty dependents which would hide regressions in dependent-consuming logic (project.rs:1778, 1834), and the <10s smoke-test threshold fails to enforce the prompt's stated <1s performance contract.\n\n## Votes\n\n- `fr-4-073ce007`: Accept\n  Confirmed at src/test_support/e2e_fixtures.rs:344-359 and src/test_support/br.rs:154-184: the mock pops responses in strict FIFO order regardless of command/args. The fixture is advertised as a reusable scenario fixture, yet any consumer that calls show before list, repeats a query, or diverges from the embedded smoke-test sequence will get the wrong payload or panic (expect('mock br runner exhausted')). Command-aware dispatch makes the fixture actually reusable across integration tests rather than coupled to one specific call sequence.\n- `fr-4-303bd4b6`: Accept\n  Confirmed at src/test_support/e2e_fixtures.rs:452 — dependents is hard-coded to an empty array. Production code at src/cli/project.rs:390 (build_dependent_prompt_context) and src/cli/project.rs:1778,1834 (build_planned_elsewhere_context) reads bead.dependents. Integration tests using this fixture would see empty reverse edges, masking regressions in downstream-context and planned-elsewhere logic. Deriving dependents from reverse-scanning the scenario dependencies is a small change that materially improves fixture fidelity to the bead graph.\n- `fr-4-65f5a738`: Accept\n  The scenario prompt (prompt.md) explicitly states 'Target: <1 second for fixture creation' and the acceptance criteria lists 'Fixture creation is fast (<1 second)'. The assertion at src/test_support/e2e_fixtures.rs:497-500 uses Duration::from_secs(10), which is 10x too permissive and would let a multi-second regression slip past CI while still technically passing. Tightening to the actual contract (or a sub-second ceiling with reasonable CI jitter headroom) makes the test enforce the stated requirement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 4
+}

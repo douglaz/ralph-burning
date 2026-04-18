@@ -290,6 +290,18 @@ impl From<&BeadGraphDependency> for SerializedBeadGraphDependency {
     }
 }
 
+/// Write typed bead graph issues using the canonical `.beads/issues.jsonl` schema.
+pub fn write_bead_graph_issues(path: &Path, issues: &[BeadGraphIssue]) -> AppResult<()> {
+    let mut content = String::new();
+    for issue in issues {
+        let record = SerializedBeadGraphIssue::from(issue);
+        content.push_str(&serde_json::to_string(&record)?);
+        content.push('\n');
+    }
+    FileSystem::write_atomic(path, &content)?;
+    Ok(())
+}
+
 /// Builder for `.beads/issues.jsonl` fixture state.
 #[derive(Debug, Clone, Default)]
 pub struct BeadGraphFixtureBuilder {
@@ -379,13 +391,7 @@ impl BeadGraphFixtureBuilder {
         let beads_root = base_dir.join(".beads");
         fs::create_dir_all(&beads_root)?;
         let issues_path = beads_root.join("issues.jsonl");
-        let mut content = String::new();
-        for issue in &self.issues {
-            let record = SerializedBeadGraphIssue::from(issue);
-            content.push_str(&serde_json::to_string(&record)?);
-            content.push('\n');
-        }
-        FileSystem::write_atomic(&issues_path, &content)?;
+        write_bead_graph_issues(&issues_path, &self.issues)?;
         Ok(BeadGraphFixture {
             root: beads_root,
             issues_path,

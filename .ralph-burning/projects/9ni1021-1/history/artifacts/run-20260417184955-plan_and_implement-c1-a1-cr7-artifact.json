@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-17T22:15:13.438170136Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nReworked `src/test_support/e2e_fixtures.rs` so `build_e2e_milestone_scenario_fixture()` now stages a production-shaped scenario instead of conflating a bundle proposal with the exported root epic. The fixture now persists a milestone root epic plus derived workstream epics around the same three explicit bundle tasks, shares mutable scenario state between the mocked `br` and `bv` adapters, rewrites `.beads/issues.jsonl` on create/close/dep-add mutations, and computes `bv --robot-next` from the current graph so filesystem reads, `br show/list`, and `bv` recommendations stay consistent. The mock `br` dispatcher was also broadened to accept production-style `create` commands with optional `--labels`/`--description`, generic close reasons, and dependency additions, and the smoke test was expanded to verify the aligned topology, on-disk mutation updates, readiness progression, and real mutation-adapter command shapes.\n\n## Steps\n\n1. [Completed] Inspected the existing E2E fixture, bundle topology, mock adapters, and milestone bead materialization rules to pinpoint the impossible root/proposal reuse and the state drift between mock mutations, `.beads/issues.jsonl`, and `bv --robot-next`.\n2. [Completed] Rebuilt the scenario fixture around a production-shaped graph with a separate milestone root epic, derived workstream epics, and the same three explicit bundle tasks; then introduced shared mutable scenario state so mocked `br` and `bv` responses derive from the same live issue graph and persist mutation effects back to disk.\n3. [Completed] Generalized the mock command handling to match real mutation-adapter traffic (`create` with optional labels/description, `dep add`, and arbitrary close reasons), expanded the smoke test to exercise those flows and readiness transitions, and ran the repository validation stack.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` created `result -> /nix/store/7f9jk3djlqsb1xpzxdc0xizkpx84p0f5-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0` on the final tree.\n\n## Outstanding Risks\n\n- The observed `nix build` run produced a fresh `result` symlink for `/nix/store/7f9jk3djlqsb1xpzxdc0xizkpx84p0f5-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`, but the `nix build` client itself did not return before observation ended, so the Nix pass is inferred from the successful output link rather than a captured clean process exit.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 7
+}

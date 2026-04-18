@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260417184955-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260417184955-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T22:27:30.647305870Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 7/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-7-d2619344`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-7-eaeaf7d2`\n\n## Final Accepted Amendments\n\n### `fr-7-d2619344`\n\nDe-duplicate bead-graph serialization between src/test_support/e2e_fixtures.rs and src/test_support/fixtures.rs. The new file redefines `SerializedScenarioIssue` (e2e_fixtures.rs:873-899), `SerializedScenarioDependency` (e2e_fixtures.rs:901-911), their `From<&BeadGraphIssue>`/`From<&BeadGraphDependency>` impls (e2e_fixtures.rs:913-953), and `serialize_acceptance_criteria` (e2e_fixtures.rs:857-871) verbatim from fixtures.rs (fixtures.rs:66-79 and 211-292). Both paths currently produce identical JSON, but they are on separate evolution paths: `BeadGraphFixtureBuilder::write_into` (fixtures.rs) writes the initial .beads/issues.jsonl using SerializedBeadGraphIssue, while `ScenarioState::persist` (e2e_fixtures.rs:561-578) rewrites it after every create/close/dep-add using SerializedScenarioIssue. If a field is ever added to the canonical serializer in fixtures.rs (a realistic change — acceptance_criteria already has custom formatting logic), the mutation path will silently strip it, breaking tests in hard-to-debug ways. Fix by exposing a shared helper from fixtures.rs — either `pub(crate) fn write_bead_graph_issues(path: &Path, issues: &[BeadGraphIssue]) -> AppResult<()>` or `pub(crate)` visibility on the Serialized* structs — and calling it from ScenarioState::persist. This keeps a single source of truth for the on-disk shape.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

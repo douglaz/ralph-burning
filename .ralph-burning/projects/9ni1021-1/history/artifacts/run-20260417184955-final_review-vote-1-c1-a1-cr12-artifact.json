@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-vote-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260417184955-final_review-vote-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T23:49:58.911804715Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe missing `br ready --json` support in the scenario fixture is a real defect in an advertised controller-facing test helper. The timing-budget amendment is not persuasive because the bead in `.beads/issues.jsonl` explicitly says to avoid brittle sub-second wall-clock assertions and frames the smoke test as a completeness check with only a coarse slowdown guard.\n\n## Votes\n\n- `fr-12-32f38544`: Accept\n  `build_e2e_milestone_scenario_fixture()` wires `MockBrAdapter::from_dispatch()` through `scenario_br_response()`, and that dispatcher handles `list/show/create/dep add/close/sync` but not `ready --json`. Both `select_next_milestone_bead()` and `select_next_milestone_bead_from_recommendation()` call `request_ready_milestone_beads()`, which executes `BrCommand::ready()`. In this fixture, that falls through the dispatcher and hits `expect(\"mock br runner exhausted\")`, so the helper cannot actually drive the documented controller selection flow. Adding `ready --json` synthesis from current scenario state and a smoke assertion for that path is technically warranted.\n- `fr-12-afbeb5da`: Reject\n  The premise does not match the repository’s actual contract. The bead text in `.beads/issues.jsonl` says fixture creation should stay cheap but specifically warns not to rely on brittle sub-second wall-clock assertions in CI, and the acceptance criteria call for a smoke test that verifies completeness without a flaky hard real-time budget. The current `<10s` check is a coarse pathological-slowdown guard, not a broken implementation of a 1-second requirement. Tightening it to `<1s` or similar would trade robustness for a likely flaky test without evidence that the current bound violates the stated contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

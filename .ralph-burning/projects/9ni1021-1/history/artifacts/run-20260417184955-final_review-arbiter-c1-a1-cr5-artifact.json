@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-arbiter-c1-a1-cr5-artifact",
+  "payload_id": "run-20260417184955-final_review-arbiter-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T21:45:05.048457059Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed timing amendment. The authoritative bead contract expressly avoids sub-second timing assertions, so the existing 10-second smoke-test ceiling is consistent with the current acceptance criteria rather than an unverified promised 1-second guarantee.\n\n## Rulings\n\n- `fr-5-14998f88`: Reject\n  The decisive evidence is the repository’s own contract hierarchy: AGENTS.md says `.beads/issues.jsonl` is the authoritative backlog export, and the active bead for this fixture (`ralph-burning-9ni.10.2.1`) explicitly says to keep creation cheap but 'do not rely on brittle sub-second wall-clock assertions in CI,' with an acceptance criterion requiring a smoke test 'without relying on a flaky hard real-time budget.' That directly matches the current test’s `elapsed < Duration::from_secs(10)` guard as a coarse pathological-slowdown check. Although the generated run prompt mentions a `<1 second` target, that prompt is not the authoritative acceptance source under the repo norms, so it is not enough to prove the implemented test violates the current bead contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

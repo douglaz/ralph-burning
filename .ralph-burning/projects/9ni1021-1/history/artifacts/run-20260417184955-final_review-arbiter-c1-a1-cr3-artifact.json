@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-arbiter-c1-a1-cr3-artifact",
+  "payload_id": "run-20260417184955-final_review-arbiter-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-17T20:15:38.117155287Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment. The deciding evidence is the mismatch between the fixture's stated contract ('mirror the staged bead graph') and the actual FIFO mock preload, which only supports one narrow command sequence and never reflects post-mutation state.\n\n## Rulings\n\n- `fr-3-ab07ff12`: Accept\n  `build_e2e_milestone_scenario_fixture()` advertises a reusable scenario fixture whose mock adapters 'line up with the scenario graph' and whose AC-3 says the adapters 'mirror the staged bead graph'. The staged graph contains three persisted issues (`ROOT_EPIC_ID`, `PREPARE_TASK_ID`, `VALIDATE_TASK_ID`), and `br list` is preloaded with all three, but `build_mock_br_adapter()` only queues two `show` payloads: one for `PREPARE_TASK_ID` and one synthetic follow-up bead (`src/test_support/e2e_fixtures.rs:318-329`). Because `MockBrAdapter` is a pure FIFO queue with no command routing or state (`src/test_support/br.rs:154-185`), a caller that does the natural thing and asks `br show` for `ROOT_EPIC_ID` or `VALIDATE_TASK_ID`, or re-reads the created bead after `close`, will consume the wrong response or exhaust the mock. The post-close inconsistency is real as well: `follow_up_validation_issue()` hard-codes the created bead as `status: Open` with no later queued `show`/`list` reflecting the mocked `close` (`src/test_support/e2e_fixtures.rs:343-371`). Even if the current smoke test only exercises the scripted happy path, the returned fixture does not satisfy its own broader contract of mirroring the staged graph, so this is a valid defect in the fixture design rather than a purely speculative future enhancement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr15-artifact",
+  "payload_id": "run-20260417184955-final_review-reviewer-2-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T01:10:00.948973451Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the full diff and key implementation files end-to-end. The new src/test_support/e2e_fixtures.rs (1746 lines) along with the dispatch/default-working-dir extensions to MockBrAdapter and MockBvAdapter are correct. Build, test, clippy on lib, fmt, and nix build all pass. The smoke test exercises the full scenario (initial state, external rewrites, dangling deps, reopen, mutation-based close, follow-up creation, robot-next sequencing, sync flush, exhaustion) and verifies all acceptance criteria (milestone in Ready, plan.md/plan.json present, .beads/issues.jsonl populated, mock adapters produce matching responses). Fixture runtime is ~10ms, well under the <1s target. 27 clippy errors on --all-targets are pre-existing on master (unrelated files like src/cli/project.rs, src/adapters/fs.rs, tests/unit/process_backend_test.rs). No bugs, safety issues, or correctness gaps warranting amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 15
+}
