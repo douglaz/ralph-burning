@@ -2,29 +2,96 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-18T02:19:11.612527594Z",
     "prompt_hash_at_cycle_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "prompt_hash_at_stage_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-d4247189",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: `git_diff_fingerprint` hashes `git status --porcelain` output instead of the actual diff, so further edits to a file that is already dirty leave the fingerprint unchanged (` M path` / `?? path`). In `iterative_minimal`, that makes `diff_changed` go false even while the implementer is still changing contents, so the loop can hit the stable exit early. affected_files: src/contexts/workflow_composition/engine.rs:5911-5946, src/contexts/workflow_composition/engine.rs:6079-6081. remediation_hint: fingerprint real content-level state (for example staged diff + unstaged diff + untracked file contents, or a full workspace content hash) instead of `git status` category lines.",
+        "created_at": "2026-04-18T03:18:53.953070773Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "e8d23af6d16037b31fdcc71c3be81d7b15eeb348d7ead025d87bf87d61703849"
+      },
+      {
+        "amendment_id": "fr-1-65c2ecd2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: The iterative loop's `iteration` and `stable_count` live only in local variables, so they reset whenever the stage is retried or the run is resumed. `resume_iteration_counters` restores only QA/review counters, and `ActiveRun` has nowhere to persist iterative loop state. As a result, an interrupted or retryable `plan_and_implement` attempt can consume another full `max_consecutive_implementer_rounds` budget and restart from iteration 1, violating the configured cap and stable-window semantics. affected_files: src/contexts/project_run_record/model.rs:161-179, src/contexts/workflow_composition/engine.rs:1096-1108, src/contexts/workflow_composition/engine.rs:5551-5756, src/contexts/workflow_composition/engine.rs:5975-5988. remediation_hint: persist iterative loop state in `ActiveRun` (at least current iteration and current stable streak) and resume/retry from that state instead of reinitializing the loop.",
+        "created_at": "2026-04-18T03:18:53.953076785Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "06ac4dc5b327c618509e727718481be7b052c8b36a271f9aff042c2ec1d0712f"
+      },
+      {
+        "amendment_id": "fr-1-f9ace051",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "`git_diff_fingerprint` in `src/contexts/workflow_composition/engine.rs:5911-5946` uses `git status --porcelain=v1 --untracked-files=all`, whose output is identical across different content modifications to a file that is already modified or already untracked. Experimentally verified: editing an already-`?? newfile.txt` file to different bytes, or an already-` M file.txt` file to different bytes, yields the same porcelain string before and after. This means `diff_before != diff_after` returns `false` for iterations that change only already-dirty files, so the stability counter (`advance_iterative_loop_state`) increments when the agent is still making real changes, and the loop can exit with reason=`stable` prematurely. The existing test `iterative_minimal_loops_plan_and_implement_until_stable_then_runs_final_review` does not catch this because its stub only creates a new file once (transition from clean) and never modifies an already-dirty file across iterations. Fix: switch to a fingerprint that captures working-tree content — e.g. combine `git diff HEAD -- . :(exclude).ralph-burning` (for tracked, state + content) with content hashes of untracked files from `git ls-files --others --exclude-standard -- . :(exclude).ralph-burning`, or reuse the existing `hash_workspace_entries` logic but restrict it to paths reported by git. Also add a regression test that modifies an already-dirty file across iterations to verify diff_changed stays `true`.",
+        "created_at": "2026-04-18T03:18:53.953087234Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "6f43cc15266a1a20db2f9247e92f95de3b8f2be53cb490133cba3db4b7c3f5e4"
+      },
+      {
+        "amendment_id": "fr-1-f79fad09",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "`is_non_git_workspace_error` in `src/contexts/workflow_composition/engine.rs:5850-5854` matches git's stderr against the English strings \"not a git repository\", \"unable to find repository\", and \"failed to discover repository\". `git_diff_fingerprint` invokes git with the inherited environment, so when a user runs in a non-English locale that has git translations installed (`LANG=de_DE.UTF-8`, `LC_ALL=fr_FR.UTF-8`, etc.), the stderr will be translated and the substring match will fail. The function then returns `AppError::StageCommitFailed` instead of falling back to `workspace_diff_fingerprint`, so iterative_minimal runs outside git (or in a locale where git localizes fatal messages) will fail the stage rather than using the filesystem fingerprint. Fix: set a C-locale environment on the `Command` (e.g. `.env(\"LC_ALL\", \"C\").env(\"LANG\", \"C\").env_remove(\"LANGUAGE\")`) before calling `.output()`, and/or detect the condition by checking for the presence of `.git` or running `git rev-parse --is-inside-work-tree` up front instead of parsing stderr text.",
+        "created_at": "2026-04-18T03:18:53.953093827Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "b80e9a3419cff75739605c9ea412100e5475c4270b00ad5b5996204c8609936d"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-18T03:05:19.183328951Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-7-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }
