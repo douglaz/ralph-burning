@@ -5,7 +5,6 @@
 
 pub mod br;
 pub mod bv;
-pub mod e2e_fixtures;
 pub mod env;
 pub mod fixtures;
 pub mod logging;
