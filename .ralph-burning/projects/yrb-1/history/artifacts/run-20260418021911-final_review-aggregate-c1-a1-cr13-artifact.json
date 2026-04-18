@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260418021911-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260418021911-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T09:49:39.621572574Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 13/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-13-944ad1cf`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-13-eba9caaf`\n\n## Final Accepted Amendments\n\n### `fr-13-944ad1cf`\n\nfinding_summary: `iterative_minimal` resume recovery still breaks for successful terminal iterations when the parsed sidecar is missing but the backend's raw transcript is not plain JSON. In [src/contexts/workflow_composition/engine.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/engine.rs:6321), `recover_iterative_payload_from_raw_output` reads the `.raw` file and blindly `serde_json::from_str`s it ([6328-6351]). But successful invocations are allowed to have `parsed_payload != raw_output`: [src/contexts/agent_execution/service.rs](/home/master/p/ralphs/ralph-burning/src/contexts/agent_execution/service.rs:334) returns the already-parsed payload without looking at the raw text when `parsed_payload` is non-null, and [src/adapters/process_backend.rs](/home/master/p/ralphs/ralph-burning/src/adapters/process_backend.rs:199) extracts/parses structured output separately while persisting full `stdout_text` as the raw artifact ([288-290]). The new code also explicitly treats parsed-sidecar persistence as best-effort and keeps running anyway ([src/contexts/workflow_composition/engine.rs](/home/master/p/ralphs/ralph-burning/src/contexts/workflow_composition/engine.rs:6260)); if a run then crashes after the terminal iteration but before stage commit, resume hard-fails instead of recovering ([6572-6586]). That leaves `iterative_minimal` runs unrecoverable in exactly the sidecar-loss scenario this change is trying to support for real process backends whose raw output is not pure JSON.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

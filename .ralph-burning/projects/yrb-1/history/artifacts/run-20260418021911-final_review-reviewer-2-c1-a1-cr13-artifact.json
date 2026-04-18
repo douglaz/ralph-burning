@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr13-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T09:39:49.663668245Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the IterativeMinimal workflow preset implementation end-to-end: FlowPreset variant and FromStr/description wiring in shared/domain.rs; IterativeMinimalSettings + EffectiveIterativeMinimalPolicy with defaults (max=10, stable=2) and validation in workspace_governance/config.rs (rejects zero, rejects stable > max, checks both workspace and project configs); the iterative loop in workflow_composition/engine.rs (load persisted state, cancellation check, terminal-resume fast path, diff_before via git_diff_fingerprint with filesystem fallback, backend invocation with invocation_suffix 'it{n}' and iteration metadata, diff_after, advance_iterative_loop_state computing stable_count and ExitReason, snapshot persistence, emit implementer_iteration_started/completed and implementer_loop_exited with reason stable|max_rounds|error|cancelled); fingerprint excludes .git, .ralph-burning, target, target-final, result* so journal/build noise doesn't mask stability; journal event trio and model.rs ActiveRun.iterative_implementer_state; resume machinery (reconstruct_iterative_state_from_events replays journal, resume_iteration_counters reconciles snapshot vs journal via max, carry_forward_iterative_state clears on stage/cycle/attempt/completion_round mismatch so retries start fresh, resume_terminal_iterative_stage_result + sidecar parsed_payload recovery using evaluate_permissive); preflight_start_index skips preflight when iterative state terminal; stage_running_summary shows 'iteration n/max'; cli/run.rs summarizes all three new events; unit tests cover resume recovery, counter reconciliation, invocation_id suffixing, journal replay reconstruction, validation rejections, and sidecar-unavailable negative path. Error path intentionally emits implementer_loop_exited reason=error without iteration_completed, which is consistent with the semantics (iteration did not complete). No blocking correctness, safety, or robustness issues identified; the design is internally consistent with the existing stage cursor and event-sourcing model.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 13
+}

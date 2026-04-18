@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-arbiter-c1-a1-cr13-artifact",
+  "payload_id": "run-20260418021911-final_review-arbiter-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T09:49:39.608232587Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment because the missing coverage from plain `cargo test` is an intentional, documented `test-stub` split, while the authoritative verification paths (`nix build` and CI) do run the stub-gated `workflow_engine_test` coverage.\n\n## Rulings\n\n- `fr-13-eba9caaf`: Reject\n  The factual premise is correct: `test-stub` is opt-in in `Cargo.toml:6`, and `tests/unit.rs:73-75` gates `workflow_engine_test` behind that feature, so plain `cargo test` does not run the new end-to-end `iterative_minimal` cases. What tips this to REJECT is the repository’s established verification model: `flake.nix:51` and `flake.nix:64` set `cargoTestFlags = [ \"--features\" \"test-stub\" ]`, and `.github/workflows/conformance.yml:42-46` likewise runs `cargo test --locked --features test-stub` in CI. The split is also explicitly documented as intentional in `docs/slice-reports/slice-8.md:20-45`, which distinguishes the default suite from the stub-only suite. On top of that, default builds still exercise non-stub iterative-minimal logic in always-compiled `engine.rs` tests such as `iterative_loop_state_stops_on_stability_or_max_rounds` (`engine.rs:10113`), `resume_terminal_iterative_stage_result_recovers_last_iteration_output` (`engine.rs:10154`), `resume_terminal_iterative_stage_result_recovers_from_raw_output_when_sidecar_is_missing` (`engine.rs:10376`), and `failed_invocation_id_for_iterative_minimal_uses_next_iteration_suffix` (`engine.rs:11054`). So this is an intentional test-target split plus a bead-text/local-command mismatch, not a correctness defect or missing authoritative gate coverage in the implementation under review.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}
