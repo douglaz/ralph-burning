@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-18T02:19:11.612527594Z",
     "prompt_hash_at_cycle_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "prompt_hash_at_stage_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-d4dacaf1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "`src/contexts/workflow_composition/engine.rs:6000-6004` and `src/contexts/workflow_composition/engine.rs:6130-6142` suppress duplicate `implementer_loop_exited` events by scanning the whole project journal and matching only `stage_id`/`cycle`/`completion_round`. On resume, an older run's exit event for the same cursor can be mistaken for the current run, so the current run skips emitting its own loop-exited record.",
+        "created_at": "2026-04-18T05:00:25.002021842Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "9d8688b510ea3976b4908884882725d32b43a62f114c6337b8dd123cb2280285"
+      },
+      {
+        "amendment_id": "fr-4-3bcf030d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "In `recover_iterative_iteration_result` (src/contexts/workflow_composition/engine.rs), the recovery path reads the persisted `{invocation_id}.raw` file and parses it directly as JSON to reconstruct the parsed payload. This assumes the backend's parsed payload is always derivable by plain `serde_json::from_str` on the raw output, which couples recovery to a single wire protocol. Any backend whose raw output is not a bare JSON document (framed/SSE/multi-part/leading whitespace or log prefixes) will either fail to recover or reconstruct a wrong payload — without ever re-invoking the backend, so the iterative loop could advance on a silently-wrong contract evaluation or abort a resume that should have succeeded. Fix: either persist the parsed payload alongside the raw output and load that on recovery, or route recovery through the same parser the backend used when the invocation originally completed (rather than a bare `serde_json::from_str`). At minimum, surface a clear, non-generic error that points at the offending `{invocation_id}.raw` so operators can diagnose a recovery mismatch instead of seeing a misleading parse error.",
+        "created_at": "2026-04-18T05:00:25.002029446Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "910c55a950f9a5fde603523c7ddbf6f52223eac00c1b73dd60846af355f1e190"
+      },
+      {
+        "amendment_id": "fr-4-24fa94d8",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "In `git_repo_available` / `git_diff_fingerprint` (src/contexts/workflow_composition/engine.rs), the git-presence probe uses `Command::new(\"git\")....output()?`, propagating `io::Error` on spawn failure (e.g., git binary missing from PATH, permission denied, transient spawn failure). The design intent is to fall back to `workspace_diff_fingerprint` when git is not usable, but the `?` turns a missing-git environment into a hard stage error instead of a graceful fallback. Treat spawn failure the same as a negative probe result: log the error at debug level and return `false` so the filesystem-based fingerprint path runs. This matches the fallback already in place for the not-a-repo case and keeps the iterative loop usable in containers or minimal environments where git may not be installed.",
+        "created_at": "2026-04-18T05:00:25.002034165Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "005f2138fabb119a383f1957452aa939e29b4f545116900dd04019b1a00e39ec"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-18T04:06:25.378964526Z",
+    "resolved_at": "2026-04-18T04:45:38.969420763Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

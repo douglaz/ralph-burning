@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T04:59:41.120581515Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAll four amendments identify real defects verified against the codebase. Accepting all.\n\n## Votes\n\n- `fr-4-f4be8338`: Accept\n  Verified: tests/unit.rs:73-75 gates workflow_engine_test behind #[cfg(feature = \"test-stub\")] and Cargo.toml declares test-stub as non-default, so plain `cargo test` never exercises the new iterative_minimal loop/resume coverage. Engine-level tests added by this round are effectively dead for CI without flag changes.\n- `fr-4-d4dacaf1`: Accept\n  Verified: iterative_loop_exit_recorded (engine.rs:6000) scans the full journal via read_journal and matches only stage_id/cycle/completion_round through event_matches_stage_cursor (engine.rs:1152). The journal persists across runs for the same project and an events_for_run helper already exists at line 7906 but is not used here. An older run's ImplementerLoopExited at the same cursor would suppress the current run's event emission.\n- `fr-4-3bcf030d`: Accept\n  Verified: recover_iterative_iteration_result (engine.rs:6084) does a bare serde_json::from_str on the .raw file, but the .raw contents are backend-specific envelopes, not the parsed payload. For Claude the raw is the envelope JSON that requires unwrap_claude_structured_output_transport_payload (process_backend.rs:200-206); for Codex the parsed payload comes from a separate message_path file (process_backend.rs:313); for OpenRouter parsed_payload is extracted from choice.message.content (openrouter_backend.rs:304). The test at engine.rs:9587 only passes because it writes already-parsed content to .raw, masking the defect. Recovery would silently produce wrong contract evaluations or misleadingly fail to parse.\n- `fr-4-24fa94d8`: Accept\n  Verified: git_repo_available (engine.rs:6226) calls run_git_output which uses Command::output()? and propagates io::Error through AppError. The fallback at git_diff_fingerprint (engine.rs:6308) only triggers when Ok(false) is returned, not when spawn fails. This produces inconsistent behavior — a graceful fallback exists for not-a-repo detection but missing-git is a hard stage failure. Treating spawn errors as negative probe results matches the existing fallback intent and keeps the iterative loop usable in minimal containers.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 4
+}

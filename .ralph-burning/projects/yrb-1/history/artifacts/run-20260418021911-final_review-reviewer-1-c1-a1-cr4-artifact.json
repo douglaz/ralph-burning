@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T04:54:09.380879724Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the iterative_minimal flow, config, journal, and CLI changes. The main implementation is aligned with the bead, but I found one acceptance-gap in the new test coverage and one resume-path journaling bug.\n\n## Amendments\n\n1. The new engine-level iterative_minimal coverage is not exercised by the default acceptance command. `tests/unit/workflow_engine_test.rs:1729-2041` adds the required loop/resume tests, but `tests/unit.rs:73-75` still gates that module behind `#[cfg(feature = \"test-stub\")]`, and `Cargo.toml:6-7` makes `test-stub` opt-in. As a result, plain `cargo test` never runs the core iterative_minimal workflow tests.\n   Rationale: This is a significant acceptance gap for the current bead: the main correctness path can regress while the stated verification command still passes. Either ungate the relevant workflow-engine tests or make the default test target include the stub feature so the iterative loop, diff detection, and resume logic are actually covered during normal CI/local validation.\n2. `src/contexts/workflow_composition/engine.rs:6000-6004` and `src/contexts/workflow_composition/engine.rs:6130-6142` suppress duplicate `implementer_loop_exited` events by scanning the whole project journal and matching only `stage_id`/`cycle`/`completion_round`. On resume, an older run's exit event for the same cursor can be mistaken for the current run, so the current run skips emitting its own loop-exited record.\n   Rationale: The feature's audit trail is supposed to be per-run, and `run tail` depends on that journal history. Using the full unfiltered project journal here breaks that invariant on the resume path after a stage-commit failure. The duplicate check should operate on the current run's visible events, or at minimum include `run_id` in the predicate before deciding that the exit event already exists.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
