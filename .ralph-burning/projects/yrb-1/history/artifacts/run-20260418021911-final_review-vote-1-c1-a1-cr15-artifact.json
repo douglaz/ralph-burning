@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T10:51:58.291892331Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real resume-path defects in `iterative_minimal`. One breaks backend/model continuity for an in-progress implementer stage after resume, and the other overstates the reliability of recovering Codex iterations from persisted raw output when the parsed sidecar is absent.\n\n## Votes\n\n- `fr-15-1d44cf39`: Accept\n  `resume_iteration_counters` explicitly restores `iterative_implementer_state.stage_target` from the interrupted snapshot or prior stage-resolution snapshot, and `iterative_resume_target` already uses that persisted target for terminal recovery. That makes the intended invariant clear: an in-flight iterative implementer attempt should keep the same resolved backend/model across resume. But `resume_run` still preflights `stage_plan[resume_state.stage_index].target`, which is rebuilt from current config, and the resumed implementer loop is invoked with a freshly resolved target rather than the persisted one. If the implementer backend or model changes between interruption and resume, the resumed run can either fail preflight unnecessarily or continue the same stage attempt on a different backend. That is a real correctness and determinism bug, not a theoretical concern.\n- `fr-15-bbad6dde`: Accept\n  The Codex adapter reads the structured payload from `--output-last-message`, but the raw output it persists is stdout. The code and tests show that Codex stdout is NDJSON event output used for usage extraction, not the final structured payload. When iterative recovery falls back from a missing/corrupt `.parsed.json` sidecar to `.raw`, `recover_structured_payload_from_process_stdout` treats all non-Claude process output as a single JSON value via `serde_json::from_str(raw_output)`. That may work for synthetic tests that write the payload directly into `.raw`, but it does not match the actual Codex success path, where `.raw` contains NDJSON and usually cannot be parsed as one JSON object. Because sidecar persistence during iterative invocations is best-effort only, a crash after a successful terminal Codex iteration but before stage commit can indeed leave the run unrecoverable. That is a genuine robustness defect in the resume path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}
