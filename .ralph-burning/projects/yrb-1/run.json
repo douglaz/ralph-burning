@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 11
+      "completion_round": 12
     },
     "started_at": "2026-04-18T02:19:11.612527594Z",
     "prompt_hash_at_cycle_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "prompt_hash_at_stage_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 10
+    "final_review_restart_count": 11
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 11,
+  "completion_rounds": 12,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-11-2824764e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 11,
+        "body": "finding_summary: Failed `iterative_minimal` iterations are journaled under the wrong invocation id. `execute_stage_with_retry()` always emits `stage_failed` with `history_record_base_id(...)` (`src/contexts/workflow_composition/engine.rs:5782`), but iterative implementer calls are actually invoked with suffixed ids from `invocation_id_for_stage(..., Some(\"it{iteration}\"))` (`src/contexts/workflow_composition/engine.rs:7103`). When an implementer iteration fails, `stage_failed.details.invocation_id` and the matching runtime log entry no longer identify the real raw output artifact for that failure, which breaks failure forensics and any tooling/operators that follow the recorded invocation id to inspect the backend output. remediation_hint: thread the actual invocation id (or the iteration suffix) back out of the iterative invocation path so the failure event records the same id the backend used.",
+        "created_at": "2026-04-18T08:45:09.770869028Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "8f51fa9fa408e0c79eecaef6912081a581d96eeeb326c99714ce79241b5f92fa"
+      }
+    ],
     "processed_count": 28
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 12 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-18T08:05:59.636548780Z",
+    "resolved_at": "2026-04-18T08:33:20.109531292Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
