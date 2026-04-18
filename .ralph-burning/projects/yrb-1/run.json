@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-13e645ad",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "In `src/contexts/workflow_composition/engine.rs`, `invoke_stage_on_backend` (lines 6856-6918) calls `persist_invocation_parsed_payload` (lines 6161-6185) inline after the contract evaluates the envelope, gated by `invocation_suffix.is_some()`. If the atomic write fails (disk full, permissions, transient IO), the `?` inside the `and_then` closure turns a completed backend invocation into `Err(AppError::StageCommitFailed)`, which the iterative loop (line 6756) catches and journals as `implementer_loop_exited` reason=\"error\". On resume, `reconstruct_iterative_state_from_events` sees `implementer_iteration_started` for iteration N without a matching `implementer_iteration_completed`, so `completed_iterations = N-1`. The loop then invokes iteration N again — but `recover_iterative_iteration_result` cannot find the parsed payload sidecar (never written), so the backend gets called (and billed) a second time for the same iteration, and the original in-memory bundle is discarded without use. Additionally, the error path makes the user's implementer call completely wasted: despite the backend having produced a valid bundle, the run exits failed. Fix options: (1) degrade persistence failures to `tracing::warn!` plus a best-effort retry and continue with the in-memory bundle (accepting that resume may need to re-invoke, but succeeding on the happy path); or (2) sequence persistence so the sidecar is written BEFORE `implementer_iteration_started` is appended is not viable, but (3) fold the sidecar write into the same atomic boundary as `implementer_iteration_completed` journal append so both succeed-or-fail together. Option (1) is the least invasive.",
-        "created_at": "2026-04-18T06:58:21.911851492Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "f281d10bd859a1af117208350e751490de867678f1cf791f9ad7be1cfcd7ed4c"
-      }
-    ],
-    "processed_count": 19
+    "pending": [],
+    "processed_count": 20
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T06:45:39.110308995Z",

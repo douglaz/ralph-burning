@@ -1804,6 +1804,79 @@ async fn iterative_minimal_loops_plan_and_implement_until_stable_then_runs_final
 }
 
 #[tokio::test]
+async fn iterative_minimal_continues_when_terminal_parsed_payload_sidecar_persist_fails() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-sidecar-persist-warning",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "iterative_minimal should continue with the in-memory terminal bundle when parsed payload persistence fails: {result:?}"
+    );
+    assert_eq!(adapter_handle.plan_calls(), 3);
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read final snapshot");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+            .count(),
+        3,
+        "terminal iteration completion should still be recorded"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "the loop should exit cleanly instead of erroring on sidecar persistence"
+    );
+    assert_eq!(
+        stage_events(
+            &events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement should still complete after the warning"
+    );
+}
+
+#[tokio::test]
 async fn iterative_minimal_falls_back_to_workspace_diff_when_no_git_repo_exists() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3631,6 +3704,74 @@ impl AgentExecutionPort for DirtyFileIterativePlanAdapter {
         }
 
         self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct ParsedPayloadPersistenceFailureAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+}
+
+impl ParsedPayloadPersistenceFailureAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn plan_calls(&self) -> u32 {
+        self.plan_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl AgentExecutionPort for ParsedPayloadPersistenceFailureAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        let is_plan = request.contract.stage_id() == Some(StageId::PlanAndImplement);
+        let invocation_id = request.invocation_id.clone();
+        let project_root = request.project_root.clone();
+        let working_dir = request.working_dir.clone();
+
+        let call = is_plan
+            .then(|| self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1)
+            .unwrap_or(0);
+        if call == 1 {
+            fs::write(working_dir.join("iterative-output.txt"), "changed once\n")
+                .expect("write iterative output");
+        }
+
+        let envelope = self.inner.invoke(request).await?;
+
+        if call == 3 {
+            fs::create_dir_all(
+                project_root
+                    .join("runtime/backend")
+                    .join(format!("{invocation_id}.parsed.json")),
+            )
+            .expect("block parsed payload sidecar path");
+        }
+
+        Ok(envelope)
     }
 
     async fn cancel(&self, invocation_id: &str) -> AppResult<()> {

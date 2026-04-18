@@ -6184,6 +6184,34 @@ fn persist_invocation_parsed_payload(
     })
 }
 
+fn persist_invocation_parsed_payload_best_effort(
+    project_root: &Path,
+    invocation_id: &str,
+    stage_id: StageId,
+    parsed_payload: &Value,
+) {
+    if let Err(first_error) =
+        persist_invocation_parsed_payload(project_root, invocation_id, stage_id, parsed_payload)
+    {
+        tracing::warn!(
+            stage = %stage_id,
+            invocation_id,
+            error = %first_error,
+            "failed to persist iterative parsed payload sidecar; retrying once and continuing with in-memory result"
+        );
+        if let Err(retry_error) =
+            persist_invocation_parsed_payload(project_root, invocation_id, stage_id, parsed_payload)
+        {
+            tracing::warn!(
+                stage = %stage_id,
+                invocation_id,
+                error = %retry_error,
+                "failed to persist iterative parsed payload sidecar on retry; resume may need to re-invoke this iteration"
+            );
+        }
+    }
+}
+
 fn recover_iterative_iteration_result(
     project_root: &Path,
     run_id: &RunId,
@@ -6906,12 +6934,12 @@ where
                 details: contract_error.to_string(),
             })?;
         if invocation_suffix.is_some() {
-            persist_invocation_parsed_payload(
+            persist_invocation_parsed_payload_best_effort(
                 project_root,
                 &invocation_id,
                 stage_entry.stage_id,
                 &envelope.parsed_payload,
-            )?;
+            );
         }
         Ok((bundle, producer))
     })
