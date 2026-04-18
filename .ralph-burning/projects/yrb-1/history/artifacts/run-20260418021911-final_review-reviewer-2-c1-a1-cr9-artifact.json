@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T07:43:02.306797433Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nApproved. The IterativeMinimal flow preset is implemented additively and matches the bead spec: FlowPreset variant + CLI/config plumbing, defaults (max=10, stable=2) with cross-key validation (stable<=max, positive), new IterativeImplementerState plus three journal event types (iteration started/completed/loop exited), and an engine loop that uses git diff --binary (HEAD + staged + unstaged + per-untracked hashes) with build-artifact exclusion, a filesystem-walk fallback, correct stop conditions (stable_count>=required => Stable; otherwise iteration>=max => MaxRounds), carry-forward of iterative state, and sidecar-based resume that rewinds to pre-iteration state on missing payload. Existing flows remain single-pass (guarded by minimal_flow_remains_single_pass_without_iteration_events). Unit + CLI integration tests cover happy path, resume paths, sidecar persist failure, no-git fallback, dirty-file detection, preflight skip on recoverable terminal output, and status/tail rendering. Review treats `.ralph-burning/` as out of scope per instructions. Minor non-blocking observations (filesystem fallback does not exclude target/, so non-git workspaces with build output could be slow; iteration-started log may reappear if the first attempt errored before completion) are narrow, well-mitigated by tests, and out of the bead's immediate scope.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 9
+}
