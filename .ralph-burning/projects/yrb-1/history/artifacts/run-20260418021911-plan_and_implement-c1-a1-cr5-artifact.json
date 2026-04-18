@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260418021911-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T05:20:54.112324713Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the remaining iterative_minimal amendments in `src/contexts/workflow_composition/engine.rs`. Loop-exit deduplication is now scoped to the current `run_id`, so resumed runs no longer mistake an older run's `implementer_loop_exited` event for their own. Iterative terminal recovery now persists and reloads a parsed payload sidecar for each invocation instead of reparsing `{invocation_id}.raw`, with recovery errors explicitly pointing at both the parsed sidecar and raw output paths. The git repo probe now treats git spawn failures as a graceful fallback to filesystem fingerprinting instead of aborting the stage. Added regression coverage for run-scoped loop-exit recovery and missing-git fallback without mutating global `PATH` during parallel tests.\n\n## Steps\n\n1. [Completed] Scope iterative loop-exit detection to the active run so resumed iterative_minimal executions always emit their own terminal exit event.\n2. [Completed] Persist parsed invocation payloads for iterative implementer iterations and recover terminal loop state from the parsed sidecar instead of assuming raw output is directly JSON-parseable.\n3. [Completed] Make git availability probing fall back cleanly on spawn failure and replace the PATH-mutation regression with a deterministic helper-level test.\n4. [Completed] Re-run repository validation for formatting, tests, clippy, conformance, and nix build on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo run --features test-stub -- conformance run --filter SC-START-017` passed.\n- Targeted regressions passed: `cargo test --lib resume_terminal_iterative_stage_result_records_exit_for_current_run_only -- --nocapture` and `cargo test --lib git_repo_available_returns_false_when_git_binary_is_unavailable -- --nocapture`.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 5
+}

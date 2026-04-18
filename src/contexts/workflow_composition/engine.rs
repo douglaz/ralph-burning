@@ -5997,9 +5997,18 @@ fn validate_iterative_minimal_loop_setting(key: &str, value: u32) -> AppResult<(
     Ok(())
 }
 
-fn iterative_loop_exit_recorded(events: &[JournalEvent], cursor: &StageCursor) -> AppResult<bool> {
+fn event_matches_run(event: &JournalEvent, run_id: &RunId) -> bool {
+    event.details.get("run_id").and_then(Value::as_str) == Some(run_id.as_str())
+}
+
+fn iterative_loop_exit_recorded(
+    events: &[JournalEvent],
+    run_id: &RunId,
+    cursor: &StageCursor,
+) -> AppResult<bool> {
     for event in events {
         if event.event_type == JournalEventType::ImplementerLoopExited
+            && event_matches_run(event, run_id)
             && event_matches_stage_cursor(event, cursor)?
         {
             return Ok(true);
@@ -6055,6 +6064,41 @@ fn recovered_iterative_record_producer(resolved_target: &ResolvedBackendTarget) 
     }
 }
 
+fn iterative_backend_raw_output_path(project_root: &Path, invocation_id: &str) -> PathBuf {
+    project_root
+        .join("runtime/backend")
+        .join(format!("{invocation_id}.raw"))
+}
+
+fn iterative_backend_parsed_output_path(project_root: &Path, invocation_id: &str) -> PathBuf {
+    project_root
+        .join("runtime/backend")
+        .join(format!("{invocation_id}.parsed.json"))
+}
+
+fn persist_invocation_parsed_payload(
+    project_root: &Path,
+    invocation_id: &str,
+    stage_id: StageId,
+    parsed_payload: &Value,
+) -> AppResult<()> {
+    let parsed_output_path = iterative_backend_parsed_output_path(project_root, invocation_id);
+    let serialized =
+        serde_json::to_vec_pretty(parsed_payload).map_err(|error| AppError::StageCommitFailed {
+            stage_id,
+            details: format!(
+                "failed to serialize parsed payload for invocation {invocation_id}: {error}"
+            ),
+        })?;
+    fs::write(&parsed_output_path, serialized).map_err(|error| AppError::StageCommitFailed {
+        stage_id,
+        details: format!(
+            "failed to persist parsed payload for invocation {invocation_id} at {}: {error}",
+            parsed_output_path.display()
+        ),
+    })
+}
+
 fn recover_iterative_iteration_result(
     project_root: &Path,
     run_id: &RunId,
@@ -6069,23 +6113,25 @@ fn recover_iterative_iteration_result(
         cursor,
         Some(&format!("it{iteration}")),
     );
-    let raw_output_path = project_root
-        .join("runtime/backend")
-        .join(format!("{invocation_id}.raw"));
-    let raw_output = fs::read_to_string(&raw_output_path).map_err(|error| {
+    let raw_output_path = iterative_backend_raw_output_path(project_root, &invocation_id);
+    let parsed_output_path = iterative_backend_parsed_output_path(project_root, &invocation_id);
+    let parsed_payload = fs::read_to_string(&parsed_output_path).map_err(|error| {
         AppError::StageCommitFailed {
             stage_id: stage_entry.stage_id,
             details: format!(
-                "failed to recover iterative_minimal raw output for iteration {iteration} from {}: {error}",
+                "failed to recover iterative_minimal parsed payload for iteration {iteration} from {}: {error}; raw output remains at {}",
+                parsed_output_path.display(),
                 raw_output_path.display()
             ),
         }
     })?;
-    let parsed_payload = serde_json::from_str::<Value>(&raw_output).map_err(|error| {
+    let parsed_payload = serde_json::from_str::<Value>(&parsed_payload).map_err(|error| {
         AppError::StageCommitFailed {
             stage_id: stage_entry.stage_id,
             details: format!(
-                "failed to parse recovered iterative_minimal raw output for iteration {iteration}: {error}"
+                "failed to parse recovered iterative_minimal parsed payload for iteration {iteration} from {}: {error}; inspect raw output at {}",
+                parsed_output_path.display(),
+                raw_output_path.display()
             ),
         }
     })?;
@@ -6095,7 +6141,9 @@ fn recover_iterative_iteration_result(
         .map_err(|error| AppError::StageCommitFailed {
             stage_id: stage_entry.stage_id,
             details: format!(
-                "recovered iterative_minimal raw output for iteration {iteration} did not satisfy the stage contract: {error}"
+                "recovered iterative_minimal parsed payload for iteration {iteration} did not satisfy the stage contract: {error}; inspect {} and {}",
+                parsed_output_path.display(),
+                raw_output_path.display()
             ),
         })?;
 
@@ -6128,7 +6176,7 @@ fn resume_terminal_iterative_stage_result(
     };
 
     let events = journal_store.read_journal(base_dir, project_id)?;
-    if !iterative_loop_exit_recorded(&events, cursor)? {
+    if !iterative_loop_exit_recorded(&events, run_id, cursor)? {
         append_implementer_loop_exited_event(
             journal_store,
             base_dir,
@@ -6211,8 +6259,8 @@ fn workspace_diff_fingerprint(workspace_root: &Path) -> AppResult<String> {
     Ok(format!("fs:{:x}", hasher.finalize()))
 }
 
-fn git_command() -> Command {
-    let mut command = Command::new("git");
+fn git_command_for_program(program: &str) -> Command {
+    let mut command = Command::new(program);
     command.env("LC_ALL", "C");
     command.env("LANG", "C");
     command.env_remove("LANGUAGE");
@@ -6220,11 +6268,41 @@ fn git_command() -> Command {
 }
 
 fn run_git_output(repo_root: &Path, args: &[&str]) -> AppResult<std::process::Output> {
-    Ok(git_command().args(args).current_dir(repo_root).output()?)
+    run_git_output_with_program("git", repo_root, args)
+}
+
+fn run_git_output_with_program(
+    program: &str,
+    repo_root: &Path,
+    args: &[&str],
+) -> AppResult<std::process::Output> {
+    Ok(git_command_for_program(program)
+        .args(args)
+        .current_dir(repo_root)
+        .output()?)
 }
 
 fn git_repo_available(repo_root: &Path) -> AppResult<bool> {
-    let output = run_git_output(repo_root, &["rev-parse", "--is-inside-work-tree"])?;
+    git_repo_available_with_program(repo_root, "git")
+}
+
+fn git_repo_available_with_program(repo_root: &Path, program: &str) -> AppResult<bool> {
+    let output = match run_git_output_with_program(
+        program,
+        repo_root,
+        &["rev-parse", "--is-inside-work-tree"],
+    ) {
+        Ok(output) => output,
+        Err(AppError::Io(error)) => {
+            tracing::debug!(
+                repo_root = %repo_root.display(),
+                error = %error,
+                "git unavailable during iterative_minimal repo probe; falling back to filesystem fingerprint"
+            );
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
     Ok(output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true")
 }
 
@@ -6621,13 +6699,10 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
+    let invocation_id =
+        invocation_id_for_stage(run_id, stage_entry.stage_id, cursor, invocation_suffix);
     let request = InvocationRequest {
-        invocation_id: invocation_id_for_stage(
-            run_id,
-            stage_entry.stage_id,
-            cursor,
-            invocation_suffix,
-        ),
+        invocation_id: invocation_id.clone(),
         project_root: project_root.to_path_buf(),
         working_dir: execution_cwd.unwrap_or(base_dir).to_path_buf(),
         contract: InvocationContract::Stage(stage_entry.contract),
@@ -6646,16 +6721,22 @@ where
 
     agent_service.invoke(request).await.and_then(|envelope| {
         let producer = agent_record_producer(&envelope.metadata);
-        stage_entry
+        let bundle = stage_entry
             .contract
             .evaluate_permissive(&envelope.parsed_payload)
-            .map(|bundle| (bundle, producer))
             .map_err(|contract_error| AppError::InvocationFailed {
                 backend: resolved_target.backend.family.to_string(),
                 contract_id: stage_entry.stage_id.to_string(),
                 failure_class: contract_error.failure_class(),
                 details: contract_error.to_string(),
-            })
+            })?;
+        persist_invocation_parsed_payload(
+            project_root,
+            &invocation_id,
+            stage_entry.stage_id,
+            &envelope.parsed_payload,
+        )?;
+        Ok((bundle, producer))
     })
 }
 
@@ -9465,12 +9546,13 @@ mod tests {
     use super::{
         advance_iterative_loop_state, build_final_review_snapshot, build_prompt_review_snapshot,
         complete_run, drift_still_satisfies_requirements, git_diff_fingerprint,
-        invocation_id_for_stage, iterative_loop_exit_reason, mark_running_run_interrupted,
-        milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
-        resolution_has_drifted, resume_iteration_counters, resume_run_with_retry,
-        resume_terminal_iterative_stage_result, role_for_stage, sync_milestone_bead_start,
-        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
-        IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity, StagePlan,
+        git_repo_available_with_program, invocation_id_for_stage, iterative_loop_exit_reason,
+        mark_running_run_interrupted, milestone_lineage_plan_hash,
+        partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
+        resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
+        role_for_stage, sync_milestone_bead_start, FinalReviewQueuedAmendment,
+        InterruptedRunContext, InterruptedRunUpdate, IterativeLoopExitReason, QueuedAmendment,
+        RunningAttemptIdentity, StagePlan,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -9584,23 +9666,31 @@ mod tests {
         let raw_output_path = project_root
             .join("runtime/backend")
             .join(format!("{invocation_id}.raw"));
+        let parsed_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.parsed.json"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from the terminal iteration",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from persisted parsed payload"],
+            "outstanding_risks": []
+        });
         fs::write(
             &raw_output_path,
-            serde_json::to_string(&json!({
-                "change_summary": "Recovered iterative execution output",
-                "steps": [
-                    {
-                        "order": 1,
-                        "description": "Resume from the terminal iteration",
-                        "status": "completed"
-                    }
-                ],
-                "validation_evidence": ["recovered from persisted raw output"],
-                "outstanding_risks": []
-            }))
-            .expect("serialize payload"),
+            serde_json::to_string(&payload).expect("serialize raw payload"),
         )
         .expect("write raw output");
+        fs::write(
+            &parsed_output_path,
+            serde_json::to_string(&payload).expect("serialize parsed payload"),
+        )
+        .expect("write parsed output");
 
         let mut seq = FsJournalStore
             .read_journal(temp_dir.path(), &project_id)
@@ -9646,6 +9736,135 @@ mod tests {
         assert_eq!(exited_events.len(), 1);
         assert_eq!(exited_events[0].details["reason"], "stable");
         assert_eq!(exited_events[0].details["total_iterations"], 2);
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_records_exit_for_current_run_only() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-run-scope").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery run scope".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let old_run_id = RunId::new("run-iter-old").expect("old run id");
+        let run_id = RunId::new("run-iter-new").expect("new run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        seq += 1;
+        let prior_exit = journal::implementer_loop_exited_event(
+            seq,
+            Utc::now(),
+            &old_run_id,
+            StageId::PlanAndImplement,
+            cursor.cycle,
+            cursor.completion_round,
+            "stable",
+            2,
+        );
+        let prior_exit_line = journal::serialize_event(&prior_exit).expect("serialize prior exit");
+        FsJournalStore
+            .append_event(temp_dir.path(), &project_id, &prior_exit_line)
+            .expect("append prior exit");
+
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let parsed_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.parsed.json"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from the terminal iteration",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered for current run"],
+            "outstanding_risks": []
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&payload).expect("serialize raw payload"),
+        )
+        .expect("write raw output");
+        fs::write(
+            &parsed_output_path,
+            serde_json::to_string(&payload).expect("serialize parsed payload"),
+        )
+        .expect("write parsed output");
+
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result")
+        .expect("terminal result should exist");
+
+        match recovered.0.payload {
+            StagePayload::Execution(payload) => {
+                assert_eq!(
+                    payload.change_summary,
+                    "Recovered iterative execution output"
+                );
+            }
+            other => panic!("expected execution payload, got {other:?}"),
+        }
+
+        let events = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read journal");
+        let exited_events: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .collect();
+        assert_eq!(exited_events.len(), 2);
+        assert_eq!(exited_events[0].details["run_id"], old_run_id.as_str());
+        assert_eq!(exited_events[1].details["run_id"], run_id.as_str());
     }
 
     #[test]
@@ -9792,6 +10011,18 @@ mod tests {
         assert_ne!(
             first, second,
             "filesystem fallback must detect chmod-only changes"
+        );
+    }
+
+    #[test]
+    fn git_repo_available_returns_false_when_git_binary_is_unavailable() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        assert!(
+            !git_repo_available_with_program(temp_dir.path(), "git-does-not-exist")
+                .expect("repo probe should fall back cleanly"),
+            "missing git binary should be treated as a non-git workspace probe result"
         );
     }
 
