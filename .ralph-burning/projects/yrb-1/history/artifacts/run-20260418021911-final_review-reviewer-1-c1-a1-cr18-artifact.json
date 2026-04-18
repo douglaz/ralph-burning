@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr18-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T12:44:25.189023153Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `master` excluding `.ralph-burning/`, then read the key implementation paths end-to-end (`src/shared/domain.rs`, `src/contexts/workspace_governance/config.rs`, `src/contexts/project_run_record/{model,journal,service}.rs`, `src/contexts/workflow_composition/{mod,engine}.rs`, `src/cli/run.rs`, and the related adapter changes). I did not find any correctness, safety, or robustness issues that warrant an amendment. I also spot-checked the new coverage by running `cargo test iterative_minimal -- --nocapture` and `cargo test --features test-stub --test unit iterative_minimal -- --nocapture`; the targeted iterative_minimal test suites passed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 18
+}

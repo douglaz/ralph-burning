@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr18-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T12:42:10.055005455Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the iterative_minimal flow implementation across src/shared/domain.rs, src/contexts/workflow_composition/engine.rs (~8k lines changed), src/contexts/workflow_composition/mod.rs, src/contexts/workspace_governance/config.rs, src/contexts/project_run_record/{model,journal}.rs, src/adapters/process_backend.rs, src/cli/run.rs, and tests. Loop stop conditions (stable/max_rounds) are correct with stable-reason precedence over max-rounds in advance_iterative_loop_state/iterative_loop_exit_reason. Resume logic properly reconciles journal events with snapshot state via reconstruct_iterative_state_from_events and refuses to re-invoke on post-iteration terminal workspace when recovery is impossible (resume_terminal_iterative_stage_result). Config validation enforces positive integers and stable_rounds_required <= max_consecutive_implementer_rounds across workspace and project configs, and walks both audit and live project directories. Git diff fingerprinting uses `git diff --cached --no-ext-diff` with properly anchored pathspecs (`.`, `:(top,exclude).ralph-burning`, `:(top,glob,exclude).ralph-burning/**`) and falls back to workspace_diff_fingerprint (excluding target/, result*, .git, .ralph-burning) for non-git repos. Iterative state carries forward only within the same stage/cycle/completion_round via iterative_state_carries_into_cursor, correctly clearing on final_review amendment restart. Cancellation is checked at the iteration boundary and inside invoke_stage_on_backend. Sidecar parsed-payload persistence is best-effort and recovery falls back to raw output via Claude/Codex envelopes. Tests comprehensively cover loop-until-stable, sidecar persistence failure tolerance, iteration context propagation, stage_failed iteration IDs, raw-envelope recovery for Claude and Codex, loop policy/target persistence, retry budget preservation, workspace fallback, dirty-file detection, terminal resume no-reinvoke, preflight skipping, and minimal-flow isolation. No critical bugs, safety issues, or correctness gaps found that warrant fix-now amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 18
+}
