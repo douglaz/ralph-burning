@@ -495,6 +495,17 @@ fn extract_choice_payload(content: &Value) -> Result<Value, String> {
     }
 }
 
+pub(crate) fn recover_structured_payload_from_response_body(
+    response_body: &str,
+) -> Result<Value, String> {
+    let parsed: ChatCompletionResponse = serde_json::from_str(response_body)
+        .map_err(|error| format!("failed to parse OpenRouter response JSON: {error}"))?;
+    let Some(choice) = parsed.choices.into_iter().next() else {
+        return Err("OpenRouter response did not contain any choices".to_owned());
+    };
+    extract_choice_payload(&choice.message.content)
+}
+
 fn format_http_error_details(status: StatusCode, body: &str) -> String {
     let body = body.trim();
     let body_details = serde_json::from_str::<Value>(body)

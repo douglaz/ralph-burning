@@ -1922,6 +1922,49 @@ fn unwrap_claude_structured_output_transport_payload(
     }
 }
 
+pub(crate) fn recover_structured_payload_from_process_stdout(
+    raw_output: &str,
+    backend_family: BackendFamily,
+) -> Result<Value, String> {
+    match backend_family {
+        BackendFamily::Claude => recover_claude_structured_payload_from_stdout(raw_output),
+        _ => serde_json::from_str(raw_output)
+            .map_err(|error| format!("failed to parse raw output as JSON: {error}")),
+    }
+}
+
+fn recover_claude_structured_payload_from_stdout(raw_output: &str) -> Result<Value, String> {
+    if let Ok(payload) = serde_json::from_str::<Value>(raw_output) {
+        if !looks_like_claude_envelope(&payload) {
+            return Ok(payload);
+        }
+    }
+
+    let envelope: ClaudeEnvelope = serde_json::from_str(raw_output)
+        .map_err(|error| format!("failed to parse Claude stdout envelope as JSON: {error}"))?;
+
+    if let Some(structured) = envelope.structured_output {
+        return Ok(unwrap_claude_structured_output_transport_payload(
+            structured,
+        ));
+    }
+
+    if !envelope.result.trim().is_empty() {
+        return serde_json::from_str(&envelope.result)
+            .or_else(|_| extract_json_from_text(&envelope.result))
+            .map(unwrap_claude_structured_output_transport_payload)
+            .map_err(|error| {
+                format!("failed to recover Claude structured payload from result text: {error}")
+            });
+    }
+
+    extract_json_from_text(raw_output)
+        .ok()
+        .filter(|value| !looks_like_claude_envelope(value))
+        .map(unwrap_claude_structured_output_transport_payload)
+        .ok_or_else(|| "Claude stdout did not contain a recoverable structured payload".to_owned())
+}
+
 /// Classify process exit status into the appropriate failure class.
 ///
 /// Exit code 127 conventionally means "command not found" and is treated as

@@ -15,7 +15,10 @@ use crate::adapters::fs::{
     FsMilestoneSnapshotStore, FsPlannedElsewhereMappingStore, FsProjectStore, FsRollbackPointStore,
     FsTaskRunLineageStore, RunPidOwner,
 };
-use crate::adapters::process_backend::processed_contract_schema_value;
+use crate::adapters::openrouter_backend::recover_structured_payload_from_response_body;
+use crate::adapters::process_backend::{
+    processed_contract_schema_value, recover_structured_payload_from_process_stdout,
+};
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -6333,10 +6336,16 @@ fn recover_iterative_payload_from_raw_output(
             ),
         }
     })?;
-    let parsed_payload = serde_json::from_str::<Value>(&raw_output).map_err(|error| {
+    let parsed_payload = match resolved_target.backend.family {
+        BackendFamily::OpenRouter => recover_structured_payload_from_response_body(&raw_output),
+        backend_family => {
+            recover_structured_payload_from_process_stdout(&raw_output, backend_family)
+        }
+    }
+    .map_err(|error| {
         IterativeIterationRecoveryFailure::SidecarUnavailable {
             details: format!(
-                "{sidecar_error}; failed to parse iterative_minimal raw output for iteration {iteration} from {} as JSON: {error}",
+                "{sidecar_error}; failed to recover iterative_minimal parsed payload for iteration {iteration} from raw transcript {}: {error}",
                 raw_output_path.display()
             ),
         }
@@ -10471,6 +10480,121 @@ mod tests {
                         requested_model_id: "gpt-5.4".to_owned(),
                         actual_backend_family: "codex".to_owned(),
                         actual_model_id: "gpt-5.4".to_owned(),
+                    }
+                );
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_from_claude_raw_envelope_when_sidecar_is_missing(
+    ) {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-claude-raw").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery Claude raw fallback".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-claude-raw").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output from Claude envelope",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from Claude structured output",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from raw Claude transcript"],
+            "outstanding_risks": []
+        });
+        let raw_transcript = json!({
+            "type": "result",
+            "result": "assistant prose that is not the payload",
+            "session_id": "sess-terminal",
+            "structured_output": {
+                "data": payload
+            }
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&raw_transcript).expect("serialize raw transcript"),
+        )
+        .expect("write raw output");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result from Claude raw transcript");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output from Claude envelope"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+                assert_eq!(
+                    producer,
+                    RecordProducer::Agent {
+                        requested_backend_family: "claude".to_owned(),
+                        requested_model_id: "claude-opus".to_owned(),
+                        actual_backend_family: "claude".to_owned(),
+                        actual_model_id: "claude-opus".to_owned(),
                     }
                 );
             }

@@ -2100,6 +2100,120 @@ async fn iterative_minimal_resume_recovers_terminal_raw_output_when_sidecar_is_m
 }
 
 #[tokio::test]
+async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-missing-sidecar-claude-raw",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = ParsedPayloadPersistenceFailureAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit after the terminal iteration"
+        );
+    }
+
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "initial run should stop after the terminal iteration completes"
+    );
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_id = failed_events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunStarted)
+        .and_then(|event| event.details["run_id"].as_str())
+        .expect("run_started run_id");
+    let raw_output_path = project_root(base_dir, pid.as_str())
+        .join("runtime/backend")
+        .join(format!("{run_id}-plan_and_implement-c1-a1-cr1-it3.raw"));
+    let payload: Value =
+        serde_json::from_str(&fs::read_to_string(&raw_output_path).expect("read raw payload"))
+            .expect("parse raw payload");
+    let raw_transcript = json!({
+        "type": "result",
+        "result": "assistant prose that is not the structured payload",
+        "session_id": "sess-terminal",
+        "structured_output": {
+            "data": payload
+        }
+    });
+    fs::write(&raw_output_path, raw_transcript.to_string()).expect("rewrite raw output");
+
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover the terminal Claude raw transcript instead of replaying the last implementer iteration: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should not re-run the terminal implementer iteration when the rewritten Claude raw transcript is recoverable"
+    );
+
+    let resumed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read resumed snapshot");
+    assert_eq!(resumed_snapshot.status, RunStatus::Completed);
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(
+            &resumed_events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement should complete after recovering the Claude raw transcript"
+    );
+}
+
+#[tokio::test]
 async fn iterative_minimal_resume_appends_fresh_loop_exit_when_stale_exit_event_mismatches() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
