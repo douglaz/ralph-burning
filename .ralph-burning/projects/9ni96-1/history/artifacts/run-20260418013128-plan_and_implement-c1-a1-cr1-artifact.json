@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418013128-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418013128-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T01:46:18.385045777Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded 16 new additive integration tests to `tests/cli.rs` covering milestone create/show/status behavior, task command alias dispatch, deprecated project command compatibility, missing-resource failures, and human/JSON output shape checks. Existing source code and existing tests were left unchanged.\n\n## Steps\n\n1. [Completed] Inspected existing CLI fixtures, helpers, and command output patterns in `tests/cli.rs` and the milestone/task/project CLI modules to align new tests with current behavior.\n2. [Completed] Appended the requested milestone, task alias, compatibility, error-handling, and output-format integration tests to `tests/cli.rs` using existing workspace and milestone fixtures.\n3. [Completed] Ran focused CLI test filters for the new milestone/task/project coverage, then ran full repository validation (`cargo test`, `cargo clippy -- -D warnings`, `cargo fmt --check`, and `nix build`).\n\n## Validation Evidence\n\n- `cargo test --test cli milestone_ -- --nocapture` passed (54 passed, 1 ignored).\n- `cargo test --test cli task_ -- --nocapture` passed (21 passed).\n- `cargo test --test cli project_ -- --nocapture` passed (103 passed).\n- `cargo test` passed across unit, integration, and doc-test targets.\n- `cargo clippy -- -D warnings` passed.\n- `cargo fmt --check` passed after formatting.\n- `nix build` completed successfully with exit code 0.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 1
+}

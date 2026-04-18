@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418013128-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418013128-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T01:54:57.856105495Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the 16 new integration tests added to tests/cli.rs. All tests compile, pass, and cover the scope specified by the bead (5 milestone tests, 3 task alias tests, 3 compatibility tests, 3 error handling tests, 2 output format tests). Verified all assertions against actual CLI output/error code at src/cli/milestone.rs, src/cli/task.rs, src/cli/project.rs, src/shared/error.rs, and src/contexts/workspace_governance/mod.rs. Fixture helpers are used correctly; each test has its own temp directory for isolation. `cargo clippy --test cli` and `cargo fmt --check` are clean. Pre-existing clippy errors in lib/unit tests are unrelated to this bead (ADDITIVE change did not touch any source code). No correctness, safety, or robustness issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

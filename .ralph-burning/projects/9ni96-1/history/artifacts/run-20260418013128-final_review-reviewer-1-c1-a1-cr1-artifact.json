@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418013128-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418013128-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T01:50:25.207703719Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against origin/master, excluding .ralph-burning/ per the prompt. I read the changed test block in tests/cli.rs and the relevant CLI implementations in src/cli/milestone.rs, src/cli/task.rs, and src/cli/project.rs, then ran the added tests individually, ran cargo test --test cli for the full CLI integration suite, and ran br lint because .beads/issues.jsonl also changed. I did not run nix build. I did not find any correctness, safety, robustness, or significant maintainability issues in the submitted changes.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
