@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-18T02:19:11.612527594Z",
     "prompt_hash_at_cycle_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "prompt_hash_at_stage_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-2f43664e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: The iterative stability check fingerprints the whole worktree instead of just source edits. In `src/contexts/workflow_composition/engine.rs:6256-6448`, both the git and non-git paths treat any tracked/generated file churn as `diff_changed=true`; in this repository `result:1` is a tracked symlink, so a normal `nix build` can change the fingerprint even when the implementer made no source edits. That means `iterative_minimal` can keep burning rounds until `max_rounds` instead of exiting as stable.\naffected_files: [src/contexts/workflow_composition/engine.rs:6256-6448, result:1]\nremediation_hint: Exclude verification/build artifacts from the fingerprint (at minimum `result` and non-source directories like `target/`), or compute stability from a filtered source-file status set rather than the raw worktree diff.",
+        "created_at": "2026-04-18T05:35:13.281277888Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "cc3e0f0f5741e72b7298bacbdbd3abb1c719964a39729dab00b96999a1e0e935"
+      },
+      {
+        "amendment_id": "fr-5-020cdd6b",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "`persist_invocation_parsed_payload` is called unconditionally inside `invoke_stage_on_backend` (src/contexts/workflow_composition/engine.rs, after every successful `agent_service.invoke(...)`), so every flow — Standard, Minimal, DocsChange, CiImprovement, QuickDev — now writes `runtime/backend/<invocation_id>.parsed.json` on every stage invocation. The iterative-minimal work was supposed to be ADDITIVE, but this introduces a new side effect (new file writes, new inode churn, potentially large JSON blobs persisted for stages that never read them back) for every existing flow. It also uses plain `fs::write` instead of `FileSystem::write_atomic`, which is the convention in this codebase for any file the engine may reread. Gate the call on `invocation_suffix.is_some()` (i.e., only for iterative iterations that need to recover the parsed payload on resume), and switch the write to `FileSystem::write_atomic` so a crash mid-write can't leave a truncated file that `recover_iterative_iteration_result` will later try to parse. Add a regression test that runs a `minimal` flow and asserts `runtime/backend/` contains no `*.parsed.json` artifacts for non-iterative stages.",
+        "created_at": "2026-04-18T05:35:13.281285693Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "e6db806a80a48c4700458217ca0e15936402713d71b907ac3125f9524b758362"
+      }
+    ],
     "processed_count": 12
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-18T04:45:38.969420763Z",
+    "resolved_at": "2026-04-18T05:20:54.298969112Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

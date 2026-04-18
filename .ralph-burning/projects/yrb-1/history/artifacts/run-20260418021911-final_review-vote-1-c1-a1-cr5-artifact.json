@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T05:35:00.262100615Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll four amendments identify real defects or robustness gaps. The strongest findings are the unfiltered diff fingerprinting and the fallback whole-tree hashing, which can misclassify build artifacts as source edits or make the fallback path disproportionately expensive. The parsed-payload persistence issue is also valid because the new durable artifact is only consumed by iterative recovery yet is written for every flow, and it is persisted less safely than comparable engine state. The git subprocess timeout issue is lower severity, but still a legitimate resilience problem.\n\n## Votes\n\n- `fr-5-2f43664e`: Accept\n  `git_diff_fingerprint` and the filesystem fallback currently treat any non-`.ralph-burning` worktree change as semantic drift. In this repository `result` is a tracked symlink, and `flake.nix` uses `src = ./.`, so a verification build can mutate tracked build output state without any implementer source edit. That makes `diff_changed` conflate artifact churn with real code changes and can prevent the iterative loop from recognizing stability reliably.\n- `fr-5-020cdd6b`: Accept\n  `invoke_stage_on_backend` unconditionally persists `<invocation_id>.parsed.json`, but the only read path is `recover_iterative_iteration_result`, which targets iterative `itN` invocations. Writing these files for every existing flow adds durable runtime state with no current consumer, and doing it with plain `fs::write` makes the artifact less crash-safe than the rest of the engine state that uses `FileSystem::write_atomic`. Restricting persistence to the iterative recovery case and using atomic writes is the safer, cleaner design.\n- `fr-5-f80e7bda`: Accept\n  The non-git fallback walks recursively from the workspace root and calls `fs::read` on every file except `.git` and `.ralph-burning`. That means ignored build outputs such as `target/`, caches, and other large generated trees are fully hashed if git is unavailable or the workspace is not a git repo. This is a real performance and memory-risk defect in the fallback path and should be filtered to source-relevant files.\n- `fr-5-7133cf55`: Accept\n  The amendment is slightly imprecise about the exact git commands used, but the underlying issue is valid: `git_repo_available`, `git_command_stdout`, and `run_git_output_with_program` rely on blocking `Command::output()` calls with no timeout or cancellation. If git stalls, the iterative loop can block indefinitely with no structured exit path. That is a legitimate robustness issue even if it is lower severity than the correctness bugs above.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
