@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T07:12:33.749266507Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against the merge-base while excluding `.ralph-burning/`. The new flow preset, config plumbing, journal events, and coverage look broadly coherent, but I found one medium-severity bug in the iterative resume path when terminal parsed-payload sidecar persistence fails.\n\n## Amendments\n\n1. finding_summary: `iterative_minimal` resume can become unrecoverable if the terminal iteration's parsed sidecar could not be written.\naffected_files: [\"src/contexts/workflow_composition/engine.rs\"]\ndetails: `persist_invocation_parsed_payload_best_effort` explicitly treats parsed-sidecar persistence as optional and warns that resume may need to re-invoke the iteration when both writes fail ([src/contexts/workflow_composition/engine.rs:6187-6210]). But once the saved loop state looks terminal, `resume_terminal_iterative_stage_result` always tries to reload that sidecar and returns an error if it is missing or unreadable ([src/contexts/workflow_composition/engine.rs:6323-6370], reached from [src/contexts/workflow_composition/engine.rs:6713-6728]). In the realistic failure mode where the final stable/max-rounds iteration finished, sidecar persistence failed, and the run then dies before `stage_completed`, `run resume` has no recovery path even though the code comments say it should be able to re-invoke that iteration. The helper also appends `implementer_loop_exited` before proving recovery is possible, which leaves the journal claiming a clean loop exit on a failing resume path.\nremediation_hint: When terminal recovery cannot load the saved parsed payload, fall back to continuing the loop and re-invoking the implementer instead of failing resume, and add a regression test that combines terminal-sidecar persistence failure with an interrupted stage commit.\n   Rationale: This is a real correctness hole in the new resume logic for the iterative flow. It only shows up on an error path, but that path is explicitly supported by the implementation and tests, and today it can strand a run that should remain resumable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

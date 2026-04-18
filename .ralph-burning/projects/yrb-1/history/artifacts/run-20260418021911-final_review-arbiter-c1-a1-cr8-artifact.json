@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-arbiter-c1-a1-cr8-artifact",
+  "payload_id": "run-20260418021911-final_review-arbiter-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T07:25:03.230013726Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment. The code makes `stable_rounds_required > max_consecutive_implementer_rounds` unreachable for the `Stable` exit path, yet current validation permits that combination silently, so this is a real configuration-validity gap rather than a supported operational mode.\n\n## Rulings\n\n- `fr-8-72cfeb11`: Accept\n  `advance_iterative_loop_state` only increases `stable_count` by at most 1 per iteration when no diff is observed (`src/contexts/workflow_composition/engine.rs:6029-6033`), and `iterative_loop_exit_reason` returns `Stable` only when `stable_count >= stable_rounds_required`; otherwise it exits on `iteration >= max_rounds` (`engine.rs:6011-6016`). Because the iterative loop in `execute_iterative_plan_and_implement_stage` is bounded by `max_consecutive_implementer_rounds`, a configuration with `stable_rounds_required > max_consecutive_implementer_rounds` makes the `Stable` branch unreachable by construction. The current validators in `engine.rs:6068-6078` and `src/contexts/workspace_governance/config.rs:2161-2195` only reject zero, so this contradictory configuration is accepted silently and degrades behavior to max-round termination with the stability signal rendered inert. There is no explicit documented \"disable early stability\" mode in the config surface; using an impossible threshold to nullify a named exit condition is better treated as invalid configuration. The proposed cross-field validation, with a mirrored guard at run start, is therefore a correctness fix and appropriate defense in depth.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}
