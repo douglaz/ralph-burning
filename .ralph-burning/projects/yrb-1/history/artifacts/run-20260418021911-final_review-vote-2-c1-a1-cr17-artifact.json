@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-2-c1-a1-cr17-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-2-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T12:20:01.526884548Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAmendment fr-17-7e353f47 contradicts an explicit, intentional design codified in tests/unit/workflow_engine_test.rs:1988-1993, which asserts that iterative failures must rely on stage_failed events rather than emitting misleading implementer_loop_exited error events. Failed versus incomplete loops are already distinguishable via stage_failed, so the premise of the amendment is incorrect. Amendment fr-17-8d762a4a identifies a genuine observability defect: the resume path at engine.rs:2402 and stage re-entry at engine.rs:5725-5732 unconditionally overwrite status_summary with the generic form, even when active_run.iterative_implementer_state is already populated (carry_forward_iterative_state preserves it across retries). RunStatusView/RunStatusJsonView just echo status_summary, so run status regresses from 'iteration N/M' to the generic form during the window before the next iteration write — a real UX inconsistency worth fixing.\n\n## Votes\n\n- `fr-17-7e353f47`: Reject\n  The premise contradicts the explicit contract codified in tests/unit/workflow_engine_test.rs:1988-1993, which asserts 'iterative failures should rely on stage_failed instead of emitting misleading implementer_loop_exited error events.' The journal already distinguishes failed loops (stage_failed event) from incomplete loops (no implementer_loop_exited yet) and completed loops (implementer_loop_exited with reason=stable|max_rounds). Adding reason=error would be a deliberate inversion of an intentional design decision, not a bug fix, and the amendment provides no evidence that a 'new journal contract' requiring reason:error actually exists.\n- `fr-17-8d762a4a`: Accept\n  Verified: engine.rs:2402 on the resume path unconditionally sets status_summary to the generic 'running: <stage>' form, and engine.rs:5725-5732 on stage re-entry calls stage_running_summary(stage_id, None, ...) even though carry_forward_iterative_state (engine.rs:747-754) preserves iterative_implementer_state when the cursor's cycle/stage/completion_round match and attempt is non-decreasing. Since queries.rs:320-328 and :357-380 simply echo snapshot.status_summary, run status and run status --json regress from 'iteration N/M' to the generic form whenever a resume or retry occurs, until the next iteration write at engine.rs:7155-7156 lands. That's a real, observable inconsistency — the completed_iterations count is already known and should feed the summary so observability remains monotonic across resume/retry boundaries.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 17
+}

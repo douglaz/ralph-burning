@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260418021911-final_review-aggregate-c1-a1-cr17-artifact",
+  "payload_id": "run-20260418021911-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T12:21:24.267502781Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 17/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-17-8d762a4a`\n\n## Rejected\n\n- `fr-17-7e353f47`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-17-8d762a4a`\n\n`run status` still loses iteration progress across resume/retry boundaries. The iterative-minimal resume path overwrites the restored loop state with a generic summary at `src/contexts/workflow_composition/engine.rs:2402`, and stage re-entry does the same at `src/contexts/workflow_composition/engine.rs:5725-5732` even when `iterative_implementer_state` is already present. Because `src/contexts/project_run_record/queries.rs:320-328` and `src/contexts/project_run_record/queries.rs:357-380` just echo `snapshot.status_summary`, a resumed or retried implementer loop shows `running: Plan and Implement` instead of `running: Plan and Implement (iteration N/M)` until the next iteration write lands.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr17-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-2-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T12:17:48.573454250Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the iterative_minimal workflow preset end-to-end (excluding .ralph-burning/ orchestration state). FlowPreset::IterativeMinimal variant with Display/FromStr, flow definition reusing the two-stage PlanAndImplement+FinalReview shape, workspace/project config keys with cross-scope validation (rejecting zero and stable_rounds_required > max_rounds), journal events (ImplementerIterationStarted/Completed/LoopExited), the iterative loop with stable-count and max-rounds exit in execute_iterative_plan_and_implement_stage, git-based diff fingerprint via git_diff_fingerprint using :(top,exclude).ralph-burning pathspecs covering staged/unstaged/untracked content plus HEAD ref/modes/empty dirs, terminal resume recovery (recover_iterative_iteration_result) with parsed-payload sidecar primary path and raw-output fallback across Claude/Codex/OpenRouter backends, IterativeImplementerState persistence and reconstruction from events, retry preservation of loop budget and stability state, amendment-driven completion_round advance correctly clearing iterative state via carry_forward_iterative_state/iterative_state_carries_into_cursor, and CLI status/tail integration are all implemented correctly. cargo test --all-targets passes (2183 tests, 1 ignored, 0 failures) including 12+ dedicated iterative_minimal tests; cargo fmt --check passes; nix build succeeds. cargo clippy -- -D warnings reports 24 errors, but those same errors also fail on master in the same files at the same locations — they are pre-existing and not introduced by this bead. Per reviewer contract: ignore style and cosmetics, only report real bugs, safety problems, correctness gaps, and significant maintainability risks. None found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 17
+}

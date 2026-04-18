@@ -2,37 +2,63 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 17
+      "completion_round": 18
     },
     "started_at": "2026-04-18T11:41:09.283250926Z",
     "prompt_hash_at_cycle_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "prompt_hash_at_stage_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 16
+    "final_review_restart_count": 17
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 17,
+  "completion_rounds": 18,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-17-8d762a4a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 17,
+        "body": "`run status` still loses iteration progress across resume/retry boundaries. The iterative-minimal resume path overwrites the restored loop state with a generic summary at `src/contexts/workflow_composition/engine.rs:2402`, and stage re-entry does the same at `src/contexts/workflow_composition/engine.rs:5725-5732` even when `iterative_implementer_state` is already present. Because `src/contexts/project_run_record/queries.rs:320-328` and `src/contexts/project_run_record/queries.rs:357-380` just echo `snapshot.status_summary`, a resumed or retried implementer loop shows `running: Plan and Implement` instead of `running: Plan and Implement (iteration N/M)` until the next iteration write lands.",
+        "created_at": "2026-04-18T12:21:24.267497671Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "5961025911207abc71f97617b03ee770771d4a58164b044d1bf5ed50f5edcaa2"
+      }
+    ],
     "processed_count": 41
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 18 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-18T11:20:39.458159163Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-18T11:53:19.764583763Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-7-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
       "backend_family": "codex",
-      "model_id": "gpt-5.4-high-fast"
+      "model_id": "gpt-5.4-xhigh"
     }
   }
 }
