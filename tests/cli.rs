@@ -4034,6 +4034,41 @@ fn project_create_defaults_to_minimal_flow_without_flag() {
 }
 
 #[test]
+fn project_create_accepts_iterative_minimal_flow() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "iterative-minimal-project",
+            "--name",
+            "Iterative Minimal Project",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "iterative_minimal",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "iterative-minimal-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"iterative_minimal\""));
+}
+
+#[test]
 fn project_create_initializes_journal_with_project_created_event() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());
@@ -7919,6 +7954,55 @@ fn run_status_reports_stale_running_when_pid_file_is_missing() {
 }
 
 #[test]
+fn run_status_shows_iterative_minimal_iteration_summary() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        r#"{
+  "active_run": {
+    "run_id": "run-iterative",
+    "stage_cursor": { "stage": "plan_and_implement", "cycle": 1, "attempt": 1, "completion_round": 1 },
+    "started_at": "2026-04-10T00:00:00Z"
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running: Plan and Implement (iteration 3/10)"
+}"#,
+    )
+    .expect("write iterative run snapshot");
+    ralph_burning::adapters::fs::FileSystem::write_pid_file(
+        temp_dir.path(),
+        &ralph_burning::shared::domain::ProjectId::new("alpha").expect("project id"),
+        ralph_burning::adapters::fs::RunPidOwner::Cli,
+        None,
+        Some("run-iterative"),
+        Some(
+            chrono::DateTime::parse_from_rfc3339("2026-04-10T00:00:00Z")
+                .expect("timestamp")
+                .with_timezone(&Utc),
+        ),
+    )
+    .expect("write pid file");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Stage: plan_and_implement"));
+    assert!(stdout.contains("Summary: running: Plan and Implement (iteration 3/10)"));
+}
+
+#[test]
 fn run_status_json_reports_stale_running_when_pid_file_is_missing() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -11019,6 +11103,63 @@ fn run_tail_with_logs_renders_final_review_member_timing_summary() {
             "final_review reviewer reviewer-2 proposal completed in 37ms outcome=proposed_amendments amendments=2"
         )
     );
+}
+
+#[test]
+fn run_tail_renders_iterative_minimal_iteration_events() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "tail-iterative",
+            "--name",
+            "Tail Iterative",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "iterative_minimal",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "tail-iterative"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    let journal_path = project_root(temp_dir.path(), "tail-iterative").join("journal.ndjson");
+    let events = [
+        r#"{"sequence":2,"timestamp":"2026-04-02T10:00:00Z","event_type":"implementer_iteration_started","details":{"run_id":"run-1","stage_id":"plan_and_implement","cycle":1,"completion_round":1,"iteration":3}}"#,
+        r#"{"sequence":3,"timestamp":"2026-04-02T10:00:02Z","event_type":"implementer_iteration_completed","details":{"run_id":"run-1","stage_id":"plan_and_implement","cycle":1,"completion_round":1,"iteration":3,"diff_changed":false,"outcome":"completed"}}"#,
+        r#"{"sequence":4,"timestamp":"2026-04-02T10:00:03Z","event_type":"implementer_loop_exited","details":{"run_id":"run-1","stage_id":"plan_and_implement","cycle":1,"completion_round":1,"reason":"stable","total_iterations":3}}"#,
+    ]
+    .join("\n")
+        + "\n";
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .expect("open journal")
+        .write_all(events.as_bytes())
+        .expect("append iteration events");
+
+    let output = Command::new(binary())
+        .args(["run", "tail"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("plan_and_implement iteration 3 started (cycle 1 round 1)"));
+    assert!(stdout
+        .contains("plan_and_implement iteration 3 completed diff_changed=false outcome=completed"));
+    assert!(stdout.contains("plan_and_implement loop exited reason=stable total_iterations=3"));
 }
 
 #[test]

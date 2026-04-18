@@ -363,6 +363,9 @@ pub enum JournalEventType {
     RollbackPerformed,
     ReviewerStarted,
     ReviewerCompleted,
+    ImplementerIterationStarted,
+    ImplementerIterationCompleted,
+    ImplementerLoopExited,
     AmendmentQueued,
     DurableWarning,
 }

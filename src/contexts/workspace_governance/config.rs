@@ -7,10 +7,10 @@ use crate::adapters::fs::FileSystem;
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRoleModels, BackendRoleTimeouts,
     BackendRuntimeSettings, BackendSelection, EffectiveBackendPolicy, EffectiveCompletionPolicy,
-    EffectiveDaemonPrPolicy, EffectiveFinalReviewPolicy, EffectivePromptReviewPolicy,
-    EffectiveRebasePolicy, EffectiveRunPolicy, EffectiveValidationPolicy, ExecutionMode,
-    FlowPreset, PanelBackendSpec, PrPolicy, ProjectConfig, ProjectId, PromptChangeAction,
-    WorkspaceConfig,
+    EffectiveDaemonPrPolicy, EffectiveFinalReviewPolicy, EffectiveIterativeMinimalPolicy,
+    EffectivePromptReviewPolicy, EffectiveRebasePolicy, EffectiveRunPolicy,
+    EffectiveValidationPolicy, ExecutionMode, FlowPreset, PanelBackendSpec, PrPolicy,
+    ProjectConfig, ProjectId, PromptChangeAction, WorkspaceConfig,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -29,6 +29,8 @@ pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 25;
 pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 25;
+pub const DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS: u32 = 10;
+pub const DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED: u32 = 2;
 pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
 pub const DEFAULT_PR_NO_DIFF_ACTION: PrPolicy = PrPolicy::SkipOnNoDiff;
 pub const DEFAULT_REBASE_AGENT_RESOLUTION_ENABLED: bool = false;
@@ -202,6 +204,32 @@ impl EffectiveConfig {
                 None,
                 PromptChangeAction::RestartCycle,
             ),
+            iterative_minimal: EffectiveIterativeMinimalPolicy {
+                max_consecutive_implementer_rounds: resolve_scalar(
+                    workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    project_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    None,
+                    DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS,
+                ),
+                stable_rounds_required: resolve_scalar(
+                    workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    project_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    None,
+                    DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED,
+                ),
+            },
         };
 
         let prompt_review_policy = EffectivePromptReviewPolicy {
@@ -853,6 +881,40 @@ impl EffectiveConfig {
                         .prompt_change_action
                         .map(|_| ()),
                     None::<()>,
+                ),
+            ),
+            ["workflow", "iterative_minimal", "max_consecutive_implementer_rounds"] => (
+                ConfigValue::Integer(
+                    self.run_policy
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds as u64,
+                ),
+                source_for_option(
+                    self.workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    self.project_config
+                        .workflow
+                        .iterative_minimal
+                        .max_consecutive_implementer_rounds,
+                    None::<u32>,
+                ),
+            ),
+            ["workflow", "iterative_minimal", "stable_rounds_required"] => (
+                ConfigValue::Integer(
+                    self.run_policy.iterative_minimal.stable_rounds_required as u64,
+                ),
+                source_for_option(
+                    self.workspace_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    self.project_config
+                        .workflow
+                        .iterative_minimal
+                        .stable_rounds_required,
+                    None::<u32>,
                 ),
             ),
             ["completion", "backends"] => (
@@ -1656,6 +1718,8 @@ fn known_config_keys() -> Vec<String> {
         "workflow.max_review_iterations".to_owned(),
         "workflow.max_completion_rounds".to_owned(),
         "workflow.prompt_change_action".to_owned(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds".to_owned(),
+        "workflow.iterative_minimal.stable_rounds_required".to_owned(),
         "completion.backends".to_owned(),
         "completion.min_completers".to_owned(),
         "completion.consensus_threshold".to_owned(),
@@ -1784,6 +1848,24 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
                 document["workflow"]["prompt_change_action"] = value(parsed.as_str());
             }
         }
+        ["workflow", "iterative_minimal", "max_consecutive_implementer_rounds"] => {
+            apply_optional_u64(
+                document,
+                &[
+                    "workflow",
+                    "iterative_minimal",
+                    "max_consecutive_implementer_rounds",
+                ],
+                key,
+                raw_value,
+            )?
+        }
+        ["workflow", "iterative_minimal", "stable_rounds_required"] => apply_optional_u64(
+            document,
+            &["workflow", "iterative_minimal", "stable_rounds_required"],
+            key,
+            raw_value,
+        )?,
         ["completion", "backends"] => {
             apply_string_list(document, &["completion", "backends"], raw_value)?
         }

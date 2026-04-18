@@ -74,6 +74,7 @@ const CI_IMPROVEMENT_STAGES: [StageId; 4] = [
 ];
 
 const MINIMAL_STAGES: [StageId; 2] = [StageId::PlanAndImplement, StageId::FinalReview];
+const ITERATIVE_MINIMAL_STAGES: [StageId; 2] = [StageId::PlanAndImplement, StageId::FinalReview];
 
 const STANDARD_REMEDIATION_TRIGGER_STAGES: [StageId; 2] = [StageId::Qa, StageId::Review];
 const STANDARD_LATE_STAGES: [StageId; 3] = [
@@ -89,7 +90,7 @@ const CI_IMPROVEMENT_REMEDIATION_TRIGGER_STAGES: [StageId; 2] =
     [StageId::CiValidation, StageId::Review];
 const MINIMAL_LATE_STAGES: [StageId; 1] = [StageId::FinalReview];
 
-const FLOW_DEFINITIONS: [FlowDefinition; 5] = [
+const FLOW_DEFINITIONS: [FlowDefinition; 6] = [
     FlowDefinition {
         preset: FlowPreset::Standard,
         description:
@@ -141,6 +142,16 @@ const FLOW_DEFINITIONS: [FlowDefinition; 5] = [
             final_review_enabled: true,
         },
     },
+    FlowDefinition {
+        preset: FlowPreset::IterativeMinimal,
+        description: "Minimal flow with iterative implementer stabilization before final review.",
+        stages: &ITERATIVE_MINIMAL_STAGES,
+        validation_profile: ValidationProfile {
+            name: "iterative-minimal-default",
+            summary: "Iterative plan+implement stabilization followed by final review.",
+            final_review_enabled: true,
+        },
+    },
 ];
 
 pub fn built_in_flows() -> &'static [FlowDefinition] {
@@ -154,6 +165,7 @@ pub fn flow_definition(preset: FlowPreset) -> &'static FlowDefinition {
         FlowPreset::DocsChange => &FLOW_DEFINITIONS[2],
         FlowPreset::CiImprovement => &FLOW_DEFINITIONS[3],
         FlowPreset::Minimal => &FLOW_DEFINITIONS[4],
+        FlowPreset::IterativeMinimal => &FLOW_DEFINITIONS[5],
     }
 }
 
@@ -193,6 +205,13 @@ pub fn flow_semantics(preset: FlowPreset) -> FlowSemantics {
             prompt_review_stage: None,
         },
         FlowPreset::Minimal => FlowSemantics {
+            planning_stage: StageId::PlanAndImplement,
+            execution_stage: StageId::PlanAndImplement,
+            remediation_trigger_stages: &[],
+            late_stages: &MINIMAL_LATE_STAGES,
+            prompt_review_stage: None,
+        },
+        FlowPreset::IterativeMinimal => FlowSemantics {
             planning_stage: StageId::PlanAndImplement,
             execution_stage: StageId::PlanAndImplement,
             remediation_trigger_stages: &[],

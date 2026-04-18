@@ -2740,6 +2740,7 @@ fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
         FlowPreset::DocsChange => StageId::DocsPlan,
         FlowPreset::CiImprovement => StageId::CiPlan,
         FlowPreset::Minimal => StageId::PlanAndImplement,
+        FlowPreset::IterativeMinimal => StageId::PlanAndImplement,
     }
 }
 

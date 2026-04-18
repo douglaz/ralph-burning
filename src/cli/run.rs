@@ -12036,6 +12036,26 @@ fn summarize_event(event: &JournalEvent) -> Option<String> {
             event_detail_string(event, "outcome")?,
             event.details.get("amendment_count")?.as_u64()?,
         )),
+        JournalEventType::ImplementerIterationStarted => Some(format!(
+            "{} iteration {} started (cycle {} round {})",
+            event_detail_string(event, "stage_id")?,
+            event.details.get("iteration")?.as_u64()?,
+            event.details.get("cycle")?.as_u64()?,
+            event.details.get("completion_round")?.as_u64()?,
+        )),
+        JournalEventType::ImplementerIterationCompleted => Some(format!(
+            "{} iteration {} completed diff_changed={} outcome={}",
+            event_detail_string(event, "stage_id")?,
+            event.details.get("iteration")?.as_u64()?,
+            event.details.get("diff_changed")?.as_bool()?,
+            event_detail_string(event, "outcome")?,
+        )),
+        JournalEventType::ImplementerLoopExited => Some(format!(
+            "{} loop exited reason={} total_iterations={}",
+            event_detail_string(event, "stage_id")?,
+            event_detail_string(event, "reason")?,
+            event.details.get("total_iterations")?.as_u64()?,
+        )),
         JournalEventType::AmendmentQueued => summarize_amendment_queued_event(event),
         _ => None,
     }

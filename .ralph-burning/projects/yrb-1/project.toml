@@ -1,0 +1,7 @@
+id = "yrb-1"
+name = "iterative-minimal"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72"
+created_at = "2026-04-18T02:19:11.377193448Z"
+status_summary = "created"

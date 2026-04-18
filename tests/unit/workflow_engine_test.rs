@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -219,6 +220,31 @@ impl Drop for ScopedMaxCompletionRounds {
     fn drop(&mut self) {
         std::env::remove_var(MAX_COMPLETION_ROUNDS_ENV);
     }
+}
+
+fn run_git(repo_root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo_root)
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: stdout={} stderr={}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
+}
+
+fn init_git_repo(repo_root: &Path) {
+    run_git(repo_root, &["init"]);
+    run_git(repo_root, &["config", "user.name", "Test User"]);
+    run_git(repo_root, &["config", "user.email", "test@example.com"]);
+    fs::write(repo_root.join("tracked.txt"), "baseline\n").expect("write tracked file");
+    run_git(repo_root, &["add", "tracked.txt"]);
+    run_git(repo_root, &["commit", "-m", "initial"]);
 }
 
 // ── Stage plan tests ────────────────────────────────────────────────────────
@@ -1699,6 +1725,181 @@ async fn quick_dev_final_review_conditionally_approved_triggers_completion_round
     );
 }
 
+#[tokio::test]
+async fn iterative_minimal_loops_plan_and_implement_until_stable_then_runs_final_review() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-min", FlowPreset::IterativeMinimal);
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "iterative_minimal run should complete: {result:?}"
+    );
+    assert_eq!(adapter_handle.plan_calls(), 3);
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read final snapshot");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(
+            &events,
+            JournalEventType::StageEntered,
+            "plan_and_implement"
+        )
+        .len(),
+        1,
+        "plan_and_implement stage should still be entered once"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerIterationStarted)
+            .count(),
+        3
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+            .count(),
+        3
+    );
+    let exited = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .expect("implementer_loop_exited event");
+    assert_eq!(exited.details["reason"], "stable");
+    assert_eq!(exited.details["total_iterations"], 3);
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "final_review").len(),
+        1,
+        "final_review should still run after the loop exits"
+    );
+}
+
+#[tokio::test]
+async fn iterative_minimal_falls_back_to_workspace_diff_when_no_git_repo_exists() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-no-git", FlowPreset::IterativeMinimal);
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "iterative_minimal run should complete outside git repos: {result:?}"
+    );
+    assert_eq!(adapter_handle.plan_calls(), 3);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let exited = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .expect("implementer_loop_exited event");
+    assert_eq!(exited.details["reason"], "stable");
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "final_review").len(),
+        1,
+        "final_review should still run after the filesystem fallback loop exits"
+    );
+}
+
+#[tokio::test]
+async fn minimal_flow_remains_single_pass_without_iteration_events() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "minimal-plain", FlowPreset::Minimal);
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::Minimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert!(
+        events.iter().all(|event| {
+            !matches!(
+                event.event_type,
+                JournalEventType::ImplementerIterationStarted
+                    | JournalEventType::ImplementerIterationCompleted
+                    | JournalEventType::ImplementerLoopExited
+            )
+        }),
+        "legacy minimal flow must not emit iterative_minimal journal events"
+    );
+    assert_eq!(
+        stage_events(
+            &events,
+            JournalEventType::StageEntered,
+            "plan_and_implement"
+        )
+        .len(),
+        1
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn resume_from_failed_quick_dev_run_skips_completed_stages() {
     let tmp = tempdir().unwrap();
@@ -3082,6 +3283,61 @@ impl AgentExecutionPort for RecordingAdapter {
                 context: request.payload.context.clone(),
                 invocation_id: request.invocation_id.clone(),
             });
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct IterativePlanAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+}
+
+impl IterativePlanAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn plan_calls(&self) -> u32 {
+        self.plan_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl AgentExecutionPort for IterativePlanAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 1 {
+                fs::write(
+                    request.working_dir.join("iterative-output.txt"),
+                    "changed once\n",
+                )
+                .expect("write iterative output");
+            }
+        }
+
         self.inner.invoke(request).await
     }
 

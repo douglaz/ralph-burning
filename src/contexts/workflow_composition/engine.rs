@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::adapters::fs::{
@@ -1461,6 +1463,7 @@ where
         &mut seq,
         &mut current_snapshot,
         semantics,
+        preset,
         &stage_plan,
         0,
         initial_cursor,
@@ -2257,6 +2260,7 @@ where
         &mut seq,
         &mut snapshot,
         semantics,
+        preset,
         &stage_plan,
         resume_state.stage_index,
         resume_state.cursor,
@@ -2370,6 +2374,7 @@ async fn execute_run_internal<A, R, S>(
     seq: &mut u64,
     snapshot: &mut RunSnapshot,
     semantics: FlowSemantics,
+    preset: FlowPreset,
     stage_plan: &[StagePlan],
     start_stage_index: usize,
     start_cursor: StageCursor,
@@ -4139,6 +4144,7 @@ where
             &project_root,
             prompt_reference,
             effective_config,
+            preset,
         )
         .await?;
 
@@ -5316,6 +5322,7 @@ async fn execute_stage_with_retry<A, R, S>(
     project_root: &Path,
     prompt_reference: &str,
     effective_config: &EffectiveConfig,
+    preset: FlowPreset,
 ) -> AppResult<(StageCursor, ValidatedBundle, RecordProducer)>
 where
     A: AgentExecutionPort,
@@ -5449,7 +5456,14 @@ where
             project_prompt_hash(project_root, prompt_reference)?,
             Some(resolution),
         )?);
-        snapshot.status_summary = format!("running: {}", stage_id.display_name());
+        snapshot.status_summary = stage_running_summary(
+            stage_id,
+            None,
+            effective_config
+                .run_policy()
+                .iterative_minimal
+                .max_consecutive_implementer_rounds,
+        );
         if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot) {
             return fail_run_result(
                 &AppError::StageCommitFailed {
@@ -5490,22 +5504,49 @@ where
             },
         );
 
-        let result = invoke_stage_on_backend(
-            agent_service,
-            base_dir,
-            execution_cwd,
-            project_root,
-            run_id,
-            stage_entry,
-            &cursor,
-            prompt,
-            execution_context,
-            pending_amendments,
-            cancellation_token.clone(),
-            resolved_target.clone(),
-            timeout,
-        )
-        .await;
+        let result =
+            if preset == FlowPreset::IterativeMinimal && stage_id == StageId::PlanAndImplement {
+                execute_iterative_plan_and_implement_stage(
+                    agent_service,
+                    run_snapshot_write,
+                    journal_store,
+                    base_dir,
+                    execution_cwd,
+                    project_root,
+                    project_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    stage_entry,
+                    &cursor,
+                    prompt,
+                    execution_context,
+                    pending_amendments,
+                    cancellation_token.clone(),
+                    resolved_target.clone(),
+                    timeout,
+                    effective_config,
+                )
+                .await
+            } else {
+                invoke_stage_on_backend(
+                    agent_service,
+                    base_dir,
+                    execution_cwd,
+                    project_root,
+                    run_id,
+                    stage_entry,
+                    &cursor,
+                    prompt,
+                    execution_context,
+                    pending_amendments,
+                    cancellation_token.clone(),
+                    resolved_target.clone(),
+                    timeout,
+                    None,
+                )
+                .await
+            };
 
         match result {
             Ok((bundle, producer)) => return Ok((cursor.clone(), bundle, producer)),
@@ -5732,6 +5773,372 @@ where
     }
 }
 
+fn invocation_id_for_stage(
+    run_id: &RunId,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    suffix: Option<&str>,
+) -> String {
+    let base = history_record_base_id(run_id, stage_id, cursor, 0);
+    match suffix {
+        Some(suffix) => format!("{base}-{suffix}"),
+        None => base,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IterativeLoopExitReason {
+    Stable,
+    MaxRounds,
+}
+
+impl IterativeLoopExitReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::MaxRounds => "max_rounds",
+        }
+    }
+}
+
+fn advance_iterative_loop_state(
+    stable_count: u32,
+    iteration: u32,
+    diff_changed: bool,
+    stable_rounds_required: u32,
+    max_rounds: u32,
+) -> (u32, Option<IterativeLoopExitReason>) {
+    let next_stable_count = if diff_changed {
+        0
+    } else {
+        stable_count.saturating_add(1)
+    };
+
+    if next_stable_count >= stable_rounds_required {
+        return (next_stable_count, Some(IterativeLoopExitReason::Stable));
+    }
+
+    if iteration >= max_rounds {
+        return (next_stable_count, Some(IterativeLoopExitReason::MaxRounds));
+    }
+
+    (next_stable_count, None)
+}
+
+fn stage_running_summary(stage_id: StageId, iteration: Option<u32>, max_rounds: u32) -> String {
+    match iteration {
+        Some(iteration) if stage_id == StageId::PlanAndImplement => format!(
+            "running: {} (iteration {iteration}/{max_rounds})",
+            stage_id.display_name()
+        ),
+        _ => format!("running: {}", stage_id.display_name()),
+    }
+}
+
+fn iterative_iteration_outcome(bundle: &ValidatedBundle) -> String {
+    serde_json::to_value(&bundle.payload)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("outcome")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "completed".to_owned())
+}
+
+fn is_non_git_workspace_error(message: &str) -> bool {
+    message.contains("not a git repository")
+        || message.contains("unable to find repository")
+        || message.contains("failed to discover repository")
+}
+
+fn hash_workspace_entries(
+    workspace_root: &Path,
+    current: &Path,
+    hasher: &mut Sha256,
+) -> AppResult<()> {
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(workspace_root)
+            .unwrap_or(path.as_path())
+            .to_string_lossy();
+
+        if relative == ".git"
+            || relative.starts_with(".git/")
+            || relative == ".ralph-burning"
+            || relative.starts_with(".ralph-burning/")
+        {
+            continue;
+        }
+
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.is_dir() {
+            hasher.update(b"dir\0");
+            hasher.update(relative.as_bytes());
+            hash_workspace_entries(workspace_root, &path, hasher)?;
+            continue;
+        }
+
+        if metadata.file_type().is_symlink() {
+            hasher.update(b"symlink\0");
+            hasher.update(relative.as_bytes());
+            hasher.update(fs::read_link(&path)?.to_string_lossy().as_bytes());
+            continue;
+        }
+
+        if metadata.is_file() {
+            hasher.update(b"file\0");
+            hasher.update(relative.as_bytes());
+            hasher.update(metadata.len().to_le_bytes());
+            hasher.update(fs::read(&path)?);
+        }
+    }
+
+    Ok(())
+}
+
+fn workspace_diff_fingerprint(workspace_root: &Path) -> AppResult<String> {
+    let mut hasher = Sha256::new();
+    hash_workspace_entries(workspace_root, workspace_root, &mut hasher)?;
+    Ok(format!("fs:{:x}", hasher.finalize()))
+}
+
+fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
+    let output = Command::new("git")
+        .args([
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ":(exclude).ralph-burning",
+        ])
+        .current_dir(repo_root)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let details = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("exit status {}", output.status)
+        };
+
+        if is_non_git_workspace_error(&details) {
+            return workspace_diff_fingerprint(repo_root);
+        }
+
+        return Err(AppError::StageCommitFailed {
+            stage_id: StageId::PlanAndImplement,
+            details: format!("git status for iterative_minimal diff detection failed: {details}"),
+        });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_iterative_plan_and_implement_stage<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    execution_cwd: Option<&Path>,
+    project_root: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    snapshot: &mut RunSnapshot,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    prompt: String,
+    execution_context: Option<&Value>,
+    pending_amendments: Option<&[QueuedAmendment]>,
+    cancellation_token: CancellationToken,
+    resolved_target: ResolvedBackendTarget,
+    timeout: Duration,
+    effective_config: &EffectiveConfig,
+) -> AppResult<(ValidatedBundle, RecordProducer)>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let repo_root = execution_cwd.unwrap_or(base_dir);
+    let max_rounds = effective_config
+        .run_policy()
+        .iterative_minimal
+        .max_consecutive_implementer_rounds
+        .max(1);
+    let stable_rounds_required = effective_config
+        .run_policy()
+        .iterative_minimal
+        .stable_rounds_required
+        .max(1);
+
+    let mut stable_count = 0;
+    let mut iteration = 0;
+    loop {
+        if cancellation_token.is_cancelled() {
+            return Err(AppError::InvocationCancelled {
+                backend: resolved_target.backend.family.to_string(),
+                contract_id: stage_entry.stage_id.to_string(),
+            });
+        }
+
+        iteration += 1;
+        snapshot.status_summary =
+            stage_running_summary(stage_entry.stage_id, Some(iteration), max_rounds);
+        run_snapshot_write
+            .write_run_snapshot(base_dir, project_id, snapshot)
+            .map_err(|error| AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to update snapshot for iterative_minimal iteration {iteration}: {error}"
+                ),
+            })?;
+
+        *seq += 1;
+        let started = journal::implementer_iteration_started_event(
+            *seq,
+            Utc::now(),
+            run_id,
+            stage_entry.stage_id,
+            cursor.cycle,
+            cursor.completion_round,
+            iteration,
+        );
+        let started_line = journal::serialize_event(&started)?;
+        if let Err(error) = journal_store.append_event(base_dir, project_id, &started_line) {
+            *seq -= 1;
+            return Err(AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to persist implementer_iteration_started event for iteration {iteration}: {error}"
+                ),
+            });
+        }
+
+        let diff_before = git_diff_fingerprint(repo_root)?;
+        let iteration_result = invoke_stage_on_backend(
+            agent_service,
+            base_dir,
+            execution_cwd,
+            project_root,
+            run_id,
+            stage_entry,
+            cursor,
+            prompt.clone(),
+            execution_context,
+            pending_amendments,
+            cancellation_token.clone(),
+            resolved_target.clone(),
+            timeout,
+            Some(&format!("it{iteration}")),
+        )
+        .await;
+
+        let (bundle, producer) = match iteration_result {
+            Ok(result) => result,
+            Err(error) => {
+                *seq += 1;
+                let exited = journal::implementer_loop_exited_event(
+                    *seq,
+                    Utc::now(),
+                    run_id,
+                    stage_entry.stage_id,
+                    cursor.cycle,
+                    cursor.completion_round,
+                    "error",
+                    iteration,
+                );
+                let exited_line = journal::serialize_event(&exited)?;
+                if let Err(append_error) =
+                    journal_store.append_event(base_dir, project_id, &exited_line)
+                {
+                    *seq -= 1;
+                    return Err(AppError::StageCommitFailed {
+                        stage_id: stage_entry.stage_id,
+                        details: format!(
+                            "failed to persist implementer_loop_exited error event: {append_error}"
+                        ),
+                    });
+                }
+                return Err(error);
+            }
+        };
+
+        let diff_after = git_diff_fingerprint(repo_root)?;
+        let diff_changed = diff_before != diff_after;
+        let outcome = iterative_iteration_outcome(&bundle);
+
+        *seq += 1;
+        let completed = journal::implementer_iteration_completed_event(
+            *seq,
+            Utc::now(),
+            run_id,
+            stage_entry.stage_id,
+            cursor.cycle,
+            cursor.completion_round,
+            iteration,
+            diff_changed,
+            &outcome,
+        );
+        let completed_line = journal::serialize_event(&completed)?;
+        if let Err(error) = journal_store.append_event(base_dir, project_id, &completed_line) {
+            *seq -= 1;
+            return Err(AppError::StageCommitFailed {
+                stage_id: stage_entry.stage_id,
+                details: format!(
+                    "failed to persist implementer_iteration_completed event for iteration {iteration}: {error}"
+                ),
+            });
+        }
+
+        let (next_stable_count, exit_reason) = advance_iterative_loop_state(
+            stable_count,
+            iteration,
+            diff_changed,
+            stable_rounds_required,
+            max_rounds,
+        );
+        stable_count = next_stable_count;
+
+        if let Some(reason) = exit_reason {
+            *seq += 1;
+            let exited = journal::implementer_loop_exited_event(
+                *seq,
+                Utc::now(),
+                run_id,
+                stage_entry.stage_id,
+                cursor.cycle,
+                cursor.completion_round,
+                reason.as_str(),
+                iteration,
+            );
+            let exited_line = journal::serialize_event(&exited)?;
+            if let Err(error) = journal_store.append_event(base_dir, project_id, &exited_line) {
+                *seq -= 1;
+                return Err(AppError::StageCommitFailed {
+                    stage_id: stage_entry.stage_id,
+                    details: format!(
+                        "failed to persist implementer_loop_exited event for iteration {iteration}: {error}"
+                    ),
+                });
+            }
+            return Ok((bundle, producer));
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn invoke_stage_on_backend<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
@@ -5747,6 +6154,7 @@ async fn invoke_stage_on_backend<A, R, S>(
     cancellation_token: CancellationToken,
     resolved_target: ResolvedBackendTarget,
     timeout: Duration,
+    invocation_suffix: Option<&str>,
 ) -> AppResult<(ValidatedBundle, RecordProducer)>
 where
     A: AgentExecutionPort,
@@ -5754,7 +6162,12 @@ where
     S: SessionStorePort,
 {
     let request = InvocationRequest {
-        invocation_id: history_record_base_id(run_id, stage_entry.stage_id, cursor, 0),
+        invocation_id: invocation_id_for_stage(
+            run_id,
+            stage_entry.stage_id,
+            cursor,
+            invocation_suffix,
+        ),
         project_root: project_root.to_path_buf(),
         working_dir: execution_cwd.unwrap_or(base_dir).to_path_buf(),
         contract: InvocationContract::Stage(stage_entry.contract),
@@ -8542,7 +8955,9 @@ pub fn emit_resume_drift_warning(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::Path;
+    use std::process::Command;
 
     use chrono::Utc;
     use serde_json::Value;
@@ -8583,11 +8998,12 @@ mod tests {
     use crate::shared::error::{AppError, AppResult};
 
     use super::{
-        build_final_review_snapshot, build_prompt_review_snapshot, complete_run,
-        drift_still_satisfies_requirements, mark_running_run_interrupted,
-        milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
-        resolution_has_drifted, resume_run_with_retry, sync_milestone_bead_start,
-        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate, QueuedAmendment,
+        advance_iterative_loop_state, build_final_review_snapshot, build_prompt_review_snapshot,
+        complete_run, drift_still_satisfies_requirements, git_diff_fingerprint,
+        mark_running_run_interrupted, milestone_lineage_plan_hash,
+        partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
+        resume_run_with_retry, sync_milestone_bead_start, FinalReviewQueuedAmendment,
+        InterruptedRunContext, InterruptedRunUpdate, IterativeLoopExitReason, QueuedAmendment,
         RunningAttemptIdentity,
     };
 
@@ -8610,6 +9026,108 @@ mod tests {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
         EffectiveConfig::load(temp_dir.path()).expect("load effective config")
+    }
+
+    fn run_git(repo_root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {:?} failed: stdout={} stderr={}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_git_repo(repo_root: &Path) {
+        run_git(repo_root, &["init"]);
+        run_git(repo_root, &["config", "user.name", "Test User"]);
+        run_git(repo_root, &["config", "user.email", "test@example.com"]);
+        fs::write(repo_root.join("tracked.txt"), "baseline\n").expect("write tracked file");
+        run_git(repo_root, &["add", "tracked.txt"]);
+        run_git(repo_root, &["commit", "-m", "initial"]);
+    }
+
+    #[test]
+    fn iterative_loop_state_stops_on_stability_or_max_rounds() {
+        assert_eq!(advance_iterative_loop_state(0, 1, false, 2, 10), (1, None));
+        assert_eq!(
+            advance_iterative_loop_state(1, 2, false, 2, 10),
+            (2, Some(IterativeLoopExitReason::Stable))
+        );
+        assert_eq!(
+            advance_iterative_loop_state(0, 10, true, 2, 10),
+            (0, Some(IterativeLoopExitReason::MaxRounds))
+        );
+        assert_eq!(advance_iterative_loop_state(1, 3, true, 2, 10), (0, None));
+    }
+
+    #[test]
+    fn git_diff_fingerprint_ignores_ralph_burning_state_but_detects_repo_changes() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.is_empty(),
+            "clean repo should have empty fingerprint"
+        );
+
+        fs::create_dir_all(temp_dir.path().join(".ralph-burning/projects/demo"))
+            .expect("create .ralph-burning");
+        fs::write(
+            temp_dir
+                .path()
+                .join(".ralph-burning/projects/demo/run.json"),
+            "{}\n",
+        )
+        .expect("write runtime state");
+        let ignored = git_diff_fingerprint(temp_dir.path()).expect("ignored fingerprint");
+        assert_eq!(baseline, ignored, ".ralph-burning changes must be ignored");
+
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\nchanged\n")
+            .expect("modify tracked file");
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "tracked repo changes must change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_falls_back_outside_git_repo_and_ignores_runtime_state() {
+        let temp_dir = tempdir().expect("create temp dir");
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\n").expect("write tracked file");
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.starts_with("fs:"),
+            "non-git workspaces should use the filesystem fallback"
+        );
+
+        fs::create_dir_all(temp_dir.path().join(".ralph-burning/projects/demo"))
+            .expect("create .ralph-burning");
+        fs::write(
+            temp_dir
+                .path()
+                .join(".ralph-burning/projects/demo/run.json"),
+            "{}\n",
+        )
+        .expect("write runtime state");
+        let ignored = git_diff_fingerprint(temp_dir.path()).expect("ignored fingerprint");
+        assert_eq!(baseline, ignored, ".ralph-burning changes must be ignored");
+
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\nchanged\n")
+            .expect("modify tracked file");
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "non-runtime workspace changes must change the fallback fingerprint"
+        );
     }
 
     #[test]

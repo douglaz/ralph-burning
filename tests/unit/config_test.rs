@@ -2,6 +2,10 @@ use std::fs;
 
 use chrono::TimeZone;
 use ralph_burning::adapters::fs::FileSystem;
+use ralph_burning::contexts::workspace_governance::config::{
+    DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS,
+    DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED,
+};
 use ralph_burning::contexts::workspace_governance::{
     ConfigValue, EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
 };
@@ -123,6 +127,20 @@ fn effective_config_loads_compiled_defaults() {
         config.get("default_flow").expect("default flow").source,
         ralph_burning::contexts::workspace_governance::ConfigValueSource::Default
     ));
+    assert_eq!(
+        ConfigValue::Integer(DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS as u64),
+        config
+            .get("workflow.iterative_minimal.max_consecutive_implementer_rounds")
+            .expect("iterative minimal max rounds")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Integer(DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED as u64),
+        config
+            .get("workflow.iterative_minimal.stable_rounds_required")
+            .expect("iterative minimal stable rounds")
+            .value
+    );
 }
 
 #[test]
@@ -231,6 +249,52 @@ mode = "repo_default"
     assert!(updated.contains("future_toggle = \"enabled\""));
     assert!(updated.contains("owner = \"ops\""));
     assert!(updated.contains("[routing]"));
+}
+
+#[test]
+fn config_set_updates_iterative_minimal_nested_values() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let max_entry = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "7",
+    )
+    .expect("set iterative max rounds");
+    assert_eq!(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        max_entry.key
+    );
+    assert_eq!("7", max_entry.value.display_value());
+
+    let stable_entry = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.iterative_minimal.stable_rounds_required",
+        "3",
+    )
+    .expect("set iterative stable rounds");
+    assert_eq!(
+        "workflow.iterative_minimal.stable_rounds_required",
+        stable_entry.key
+    );
+    assert_eq!("3", stable_entry.value.display_value());
+
+    let reloaded = EffectiveConfig::load(temp_dir.path()).expect("reload effective config");
+    assert_eq!(
+        ConfigValue::Integer(7),
+        reloaded
+            .get("workflow.iterative_minimal.max_consecutive_implementer_rounds")
+            .expect("reloaded iterative max rounds")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Integer(3),
+        reloaded
+            .get("workflow.iterative_minimal.stable_rounds_required")
+            .expect("reloaded iterative stable rounds")
+            .value
+    );
 }
 
 #[test]

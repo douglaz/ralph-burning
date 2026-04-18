@@ -1,0 +1,4 @@
+{"sequence":1,"timestamp":"2026-04-18T02:19:11.377193448Z","event_type":"project_created","details":{"flow":"minimal","project_id":"yrb-1"}}
+{"sequence":2,"timestamp":"2026-04-18T02:19:11.612527594Z","event_type":"run_started","details":{"first_stage":"plan_and_implement","max_completion_rounds":25,"run_id":"run-20260418021911"}}
+{"sequence":3,"timestamp":"2026-04-18T02:19:11.667021120Z","event_type":"stage_entered","details":{"attempt":1,"cycle":1,"run_id":"run-20260418021911","stage_id":"plan_and_implement"}}
+{"sequence":4,"timestamp":"2026-04-18T03:05:19.048578441Z","event_type":"stage_completed","details":{"artifact_id":"run-20260418021911-plan_and_implement-c1-a1-cr1-artifact","attempt":1,"cycle":1,"payload_id":"run-20260418021911-plan_and_implement-c1-a1-cr1","run_id":"run-20260418021911","stage_id":"plan_and_implement"}}
