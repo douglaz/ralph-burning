@@ -35,7 +35,7 @@ use ralph_burning::contexts::project_run_record::service::{
 };
 use ralph_burning::contexts::project_run_record::ArtifactStorePort;
 use ralph_burning::contexts::workflow_composition::engine;
-use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
+use ralph_burning::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
 use ralph_burning::shared::domain::{
@@ -2405,6 +2405,29 @@ async fn iterative_minimal_resume_skips_plan_preflight_when_terminal_output_is_r
         3,
         "resume must not re-invoke the implementer after terminal loop recovery"
     );
+
+    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).unwrap();
+    let plan_payload = payloads
+        .iter()
+        .find(|record| {
+            record.stage_id == StageId::PlanAndImplement
+                && record.record_kind == RecordKind::StagePrimary
+        })
+        .expect("plan_and_implement payload");
+    match plan_payload.producer.clone() {
+        Some(RecordProducer::Agent {
+            requested_backend_family,
+            requested_model_id,
+            actual_backend_family,
+            actual_model_id,
+        }) => {
+            assert_eq!(requested_backend_family, "codex");
+            assert_eq!(actual_backend_family, "codex");
+            assert_eq!(requested_model_id, actual_model_id);
+            assert_ne!(requested_backend_family, "claude");
+        }
+        other => panic!("expected agent producer metadata, got {other:?}"),
+    }
 }
 
 #[tokio::test]

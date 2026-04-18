@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 11
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-10-488bdb64",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "src/contexts/workflow_composition/engine.rs:5652-5669, 6172-6178, 6252-6301, and 6408-6440 recover a terminal iterative result from only the `*.parsed.json` sidecar and then fabricate `RecordProducer` from the current `resolved_target`. If the implementer backend/model drifts before `resume` (the new preflight-skip path explicitly allows that), or if the adapter reported a different actual model on the original invocation, the persisted `plan_and_implement` payload/artifact will be attributed to a backend/model that never actually ran. Persist the original producer metadata alongside the sidecar and restore it during recovery instead of synthesizing it from the current target.",
-        "created_at": "2026-04-18T08:22:41.538021918Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "047ad5715c5dc9afc23f32fe9af790958bb4b9d5a169f22c2c4e176bc331fc65"
-      },
-      {
-        "amendment_id": "fr-10-936c7269",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 10,
-        "body": "src/contexts/workflow_composition/engine.rs:6484-6556 falls back to a raw filesystem hash outside git, but that path excludes only `.git` and `.ralph-burning`. Unlike the git-specific path in src/contexts/workflow_composition/engine.rs:6687-6707, it does not ignore `target/`, `target-final`, or `result*`, so any build/test side effects in a non-git workspace will keep `diff_changed=true` and prevent the loop from ever reaching the intended \"stable\" stop condition. Apply the same build-artifact exclusions to the filesystem fallback hash.",
-        "created_at": "2026-04-18T08:22:41.538025565Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "374f256ba8a9509509a1a41b529014c24e7430b2a25eee7a97234b5945c88f9e"
-      }
-    ],
-    "processed_count": 26
+    "pending": [],
+    "processed_count": 28
   },
-  "status_summary": "running: final review restart round 11 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-18T08:05:59.636548780Z",

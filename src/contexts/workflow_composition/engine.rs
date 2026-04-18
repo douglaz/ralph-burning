@@ -5,6 +5,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -6190,18 +6191,29 @@ fn iterative_backend_parsed_output_path(project_root: &Path, invocation_id: &str
         .join(format!("{invocation_id}.parsed.json"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IterativeInvocationSidecar {
+    parsed_payload: Value,
+    producer: RecordProducer,
+}
+
 fn persist_invocation_parsed_payload(
     project_root: &Path,
     invocation_id: &str,
     stage_id: StageId,
     parsed_payload: &Value,
+    producer: &RecordProducer,
 ) -> AppResult<()> {
     let parsed_output_path = iterative_backend_parsed_output_path(project_root, invocation_id);
-    let serialized = serde_json::to_string_pretty(parsed_payload).map_err(|error| {
+    let serialized = serde_json::to_string_pretty(&IterativeInvocationSidecar {
+        parsed_payload: parsed_payload.clone(),
+        producer: producer.clone(),
+    })
+    .map_err(|error| {
         AppError::StageCommitFailed {
             stage_id,
             details: format!(
-                "failed to serialize parsed payload for invocation {invocation_id}: {error}"
+                "failed to serialize iterative parsed payload sidecar for invocation {invocation_id}: {error}"
             ),
         }
     })?;
@@ -6209,7 +6221,7 @@ fn persist_invocation_parsed_payload(
         AppError::StageCommitFailed {
             stage_id,
             details: format!(
-                "failed to persist parsed payload for invocation {invocation_id} at {}: {error}",
+                "failed to persist iterative parsed payload sidecar for invocation {invocation_id} at {}: {error}",
                 parsed_output_path.display()
             ),
         }
@@ -6221,19 +6233,28 @@ fn persist_invocation_parsed_payload_best_effort(
     invocation_id: &str,
     stage_id: StageId,
     parsed_payload: &Value,
+    producer: &RecordProducer,
 ) {
-    if let Err(first_error) =
-        persist_invocation_parsed_payload(project_root, invocation_id, stage_id, parsed_payload)
-    {
+    if let Err(first_error) = persist_invocation_parsed_payload(
+        project_root,
+        invocation_id,
+        stage_id,
+        parsed_payload,
+        producer,
+    ) {
         tracing::warn!(
             stage = %stage_id,
             invocation_id,
             error = %first_error,
             "failed to persist iterative parsed payload sidecar; retrying once and continuing with in-memory result"
         );
-        if let Err(retry_error) =
-            persist_invocation_parsed_payload(project_root, invocation_id, stage_id, parsed_payload)
-        {
+        if let Err(retry_error) = persist_invocation_parsed_payload(
+            project_root,
+            invocation_id,
+            stage_id,
+            parsed_payload,
+            producer,
+        ) {
             tracing::warn!(
                 stage = %stage_id,
                 invocation_id,
@@ -6265,7 +6286,7 @@ fn recover_iterative_iteration_result(
     );
     let raw_output_path = iterative_backend_raw_output_path(project_root, &invocation_id);
     let parsed_output_path = iterative_backend_parsed_output_path(project_root, &invocation_id);
-    let parsed_payload = fs::read_to_string(&parsed_output_path).map_err(|error| {
+    let parsed_sidecar = fs::read_to_string(&parsed_output_path).map_err(|error| {
         IterativeIterationRecoveryFailure::SidecarUnavailable {
             details: format!(
                 "failed to recover iterative_minimal parsed payload for iteration {iteration} from {}: {error}; raw output remains at {}",
@@ -6274,16 +6295,53 @@ fn recover_iterative_iteration_result(
             ),
         }
     })?;
-    let parsed_payload =
-        serde_json::from_str::<Value>(&parsed_payload).map_err(|error| {
-            IterativeIterationRecoveryFailure::SidecarUnavailable {
-                details: format!(
-                    "failed to parse recovered iterative_minimal parsed payload for iteration {iteration} from {}: {error}; inspect raw output at {}",
-                    parsed_output_path.display(),
-                    raw_output_path.display()
-                ),
-            }
-        })?;
+    let parsed_sidecar = serde_json::from_str::<Value>(&parsed_sidecar).map_err(|error| {
+        IterativeIterationRecoveryFailure::SidecarUnavailable {
+            details: format!(
+                "failed to parse recovered iterative_minimal parsed payload sidecar for iteration {iteration} from {}: {error}; inspect raw output at {}",
+                parsed_output_path.display(),
+                raw_output_path.display()
+            ),
+        }
+    })?;
+    let (parsed_payload, producer) = match parsed_sidecar {
+        Value::Object(mut object)
+            if object.contains_key("parsed_payload") || object.contains_key("producer") =>
+        {
+            let parsed_payload = object.remove("parsed_payload").ok_or_else(|| {
+                IterativeIterationRecoveryFailure::SidecarUnavailable {
+                    details: format!(
+                        "recovered iterative_minimal parsed payload sidecar for iteration {iteration} at {} is missing `parsed_payload`; inspect raw output at {}",
+                        parsed_output_path.display(),
+                        raw_output_path.display()
+                    ),
+                }
+            })?;
+            let producer = object.remove("producer").ok_or_else(|| {
+                IterativeIterationRecoveryFailure::SidecarUnavailable {
+                    details: format!(
+                        "recovered iterative_minimal parsed payload sidecar for iteration {iteration} at {} is missing producer metadata; inspect raw output at {}",
+                        parsed_output_path.display(),
+                        raw_output_path.display()
+                    ),
+                }
+            })?;
+            let producer = serde_json::from_value::<RecordProducer>(producer).map_err(|error| {
+                IterativeIterationRecoveryFailure::SidecarUnavailable {
+                    details: format!(
+                        "failed to parse producer metadata from iterative_minimal parsed payload sidecar for iteration {iteration} at {}: {error}; inspect raw output at {}",
+                        parsed_output_path.display(),
+                        raw_output_path.display()
+                    ),
+                }
+            })?;
+            (parsed_payload, producer)
+        }
+        legacy_payload => (
+            legacy_payload,
+            recovered_iterative_record_producer(resolved_target),
+        ),
+    };
     let bundle = stage_entry
         .contract
         .evaluate_permissive(&parsed_payload)
@@ -6298,7 +6356,7 @@ fn recover_iterative_iteration_result(
             })
         })?;
 
-    Ok((bundle, recovered_iterative_record_producer(resolved_target)))
+    Ok((bundle, producer))
 }
 
 fn reconstruct_iterative_state_before_iteration(
@@ -6522,6 +6580,9 @@ fn hash_workspace_entries(
         let relative = relative_path.to_string_lossy();
 
         let metadata = fs::symlink_metadata(&path)?;
+        if iterative_workspace_build_artifact(relative_path, &metadata) {
+            continue;
+        }
         if metadata.is_dir() {
             hasher.update(b"dir\0");
             hasher.update(relative.as_bytes());
@@ -6649,7 +6710,7 @@ fn hash_untracked_git_entry(
     let absolute_path = repo_root.join(relative_path);
     let metadata = fs::symlink_metadata(&absolute_path)?;
     if iterative_fingerprint_excludes_path(relative_path)
-        || iterative_untracked_build_artifact(relative_path, &metadata)
+        || iterative_build_artifact_path(relative_path, &metadata)
     {
         return Ok(());
     }
@@ -6684,7 +6745,7 @@ fn hash_untracked_git_entry(
     Ok(())
 }
 
-fn iterative_untracked_build_artifact(relative_path: &Path, metadata: &fs::Metadata) -> bool {
+fn iterative_build_artifact_path(relative_path: &Path, metadata: &fs::Metadata) -> bool {
     let Some(first_component) = relative_path.components().next() else {
         return false;
     };
@@ -6692,6 +6753,10 @@ fn iterative_untracked_build_artifact(relative_path: &Path, metadata: &fs::Metad
     matches!(first_component.as_ref(), "target" | "target-final")
         || ((first_component == "result" || first_component.starts_with("result-"))
             && (metadata.file_type().is_symlink() || metadata.is_dir()))
+}
+
+fn iterative_workspace_build_artifact(relative_path: &Path, metadata: &fs::Metadata) -> bool {
+    iterative_build_artifact_path(relative_path, metadata)
 }
 
 fn git_head_fingerprint(repo_root: &Path) -> Vec<u8> {
@@ -7077,6 +7142,7 @@ where
                 &invocation_id,
                 stage_entry.stage_id,
                 &envelope.parsed_payload,
+                &producer,
             );
         }
         Ok((bundle, producer))
@@ -9885,6 +9951,7 @@ mod tests {
         create_project, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     };
     use crate::contexts::workflow_composition::contracts;
+    use crate::contexts::workflow_composition::panel_contracts::RecordProducer;
     use crate::contexts::workflow_composition::payloads::StagePayload;
     use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
@@ -9903,8 +9970,8 @@ mod tests {
         resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
         role_for_stage, sync_milestone_bead_start, validate_iterative_minimal_loop_settings,
         FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
-        IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity, StagePlan,
-        TerminalIterativeResumeResult,
+        IterativeInvocationSidecar, IterativeLoopExitReason, QueuedAmendment,
+        RunningAttemptIdentity, StagePlan, TerminalIterativeResumeResult,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -10107,6 +10174,112 @@ mod tests {
         assert_eq!(exited_events.len(), 1);
         assert_eq!(exited_events[0].details["reason"], "stable");
         assert_eq!(exited_events[0].details["total_iterations"], 2);
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_original_producer_metadata() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-producer").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery producer metadata".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-producer").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let parsed_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.parsed.json"));
+        let payload = json!({
+            "change_summary": "Recovered iterative execution output",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from the terminal iteration",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered producer metadata"],
+            "outstanding_risks": []
+        });
+        let producer = RecordProducer::Agent {
+            requested_backend_family: "codex".to_owned(),
+            requested_model_id: "gpt-5.4".to_owned(),
+            actual_backend_family: "openrouter".to_owned(),
+            actual_model_id: "openai/gpt-4.1".to_owned(),
+        };
+        let sidecar = IterativeInvocationSidecar {
+            parsed_payload: payload.clone(),
+            producer: producer.clone(),
+        };
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&payload).expect("serialize raw payload"),
+        )
+        .expect("write raw output");
+        fs::write(
+            &parsed_output_path,
+            serde_json::to_string(&sidecar).expect("serialize parsed sidecar"),
+        )
+        .expect("write parsed sidecar");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-7"),
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (_bundle, recovered_producer) = *recovered;
+                assert_eq!(recovered_producer, producer);
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
     }
 
     #[test]
@@ -10534,7 +10707,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn git_diff_fingerprint_fallback_detects_build_artifact_named_paths() {
+    fn git_diff_fingerprint_fallback_ignores_build_artifact_named_paths() {
         let temp_dir = tempdir().expect("create temp dir");
         let store_dir = tempdir().expect("create store dir");
 
@@ -10555,9 +10728,9 @@ mod tests {
         std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
 
         let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
-        assert_ne!(
+        assert_eq!(
             baseline, changed,
-            "filesystem fallback must not hide top-level target/result changes"
+            "filesystem fallback must ignore top-level target/result build artifacts"
         );
     }
 
