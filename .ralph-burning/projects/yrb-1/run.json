@@ -2,34 +2,90 @@
   "active_run": {
     "run_id": "run-20260418021911",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 6
+      "completion_round": 7
     },
     "started_at": "2026-04-18T02:19:11.612527594Z",
     "prompt_hash_at_cycle_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "prompt_hash_at_stage_start": "55f2e9e422686af5db25d800adb4ff3d3f3c79bd3c050989368922ab9912cc72",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 5
+    "final_review_restart_count": 6
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 6,
+  "completion_rounds": 7,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-6-52c8f027",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "Finding: `iterative_minimal` carries `completed_iterations`/`stable_count` across stage retries, so a retryable failure can satisfy the stability stop condition too early. `carry_forward_iterative_state` only keys on stage/cycle/completion_round and ignores `attempt` (`src/contexts/workflow_composition/engine.rs:741-749`), the retry path restores that state before `cursor.retry()` (`src/contexts/workflow_composition/engine.rs:5776-5854`), and resume reconstruction also stitches `ImplementerIterationCompleted` events together without any attempt boundary (`src/contexts/workflow_composition/engine.rs:1162-1215`). In practice, one no-diff iteration, then a transport failure, then one more no-diff iteration on the next attempt will exit as `stable` even though there were not two consecutive successful implementer rounds in the retried attempt. Reset iterative loop state when `attempt` changes, and include attempt boundaries when rebuilding state from the journal.",
+        "created_at": "2026-04-18T06:10:33.301036190Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "10adf6f83296810d3d011ba92f5fce067e05db5e321391fb89375e68d21fad4c"
+      },
+      {
+        "amendment_id": "fr-6-d1b88b99",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "Finding: `run resume` still preflights the current implementer target before the code can recover a terminal iterative result from disk. `resume_run_with_retry_internal` unconditionally calls `preflight_check` on the remaining plan (`src/contexts/workflow_composition/engine.rs:2234-2243`), and preflight hard-fails on `check_availability` for non-panel stages (`src/contexts/workflow_composition/engine.rs:383-397`). But `resume_terminal_iterative_stage_result` can complete `plan_and_implement` from the persisted `itN.parsed.json` without re-invoking the implementer (`src/contexts/workflow_composition/engine.rs:6172-6203`). If the implementer backend becomes unavailable after the loop already reached `stable`/`max_rounds` but before `stage_completed` is durably recorded, resume incorrectly fails instead of finalizing the already-produced result.",
+        "created_at": "2026-04-18T06:10:33.301041380Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "42404bcf238a69fd9ff5ab63375f7c2357dc51a58995d7e547b49a25de899a9f"
+      },
+      {
+        "amendment_id": "fr-6-78326490",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "Finding: the new diff fingerprint unconditionally hides any top-level `target`, `target-final`, `result`, and `result-*` path from both git-based and filesystem-based change detection (`src/contexts/workflow_composition/engine.rs:6207-6231`, `src/contexts/workflow_composition/engine.rs:6426-6466`). Because `ralph-burning` runs against arbitrary repositories, that means tracked project files/directories with those names are invisible to `iterative_minimal`; edits there will be treated as \"no diff\" and can prematurely increment the stability counter or exit the loop. Restrict the ignore list to untracked/ignored build artifacts, or make it configurable instead of blanket-excluding tracked paths by name.",
+        "created_at": "2026-04-18T06:10:33.301045508Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "7bba168452af03aa14049d695062bbfe63d0079d8e9ea1ca32053eecb9af32e7"
+      },
+      {
+        "amendment_id": "fr-6-69f44ce9",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "git_diff_fingerprint in src/contexts/workflow_composition/engine.rs:6421-6494 combines `git diff --cached`, `git diff`, and untracked files. If an implementer commits its changes within a single iteration (a reasonable behavior for some agents), the post-commit fingerprint reverts to the pre-iteration baseline (zero working-tree diff) and the loop will exit 'stable' prematurely even though the implementer made real progress. Either (a) include the HEAD commit SHA in the fingerprint hash, (b) detect HEAD movement between iterations and treat it as diff_changed, or (c) document and enforce that the iterative implementer must not commit within iterations.",
+        "created_at": "2026-04-18T06:10:33.301049345Z",
+        "batch_sequence": 4,
+        "source": "workflow_stage",
+        "dedup_key": "085b8552a00475819446fa1587b448e72f002eafab53dfe37e286da7686e91b2"
+      },
+      {
+        "amendment_id": "fr-6-ceb6383f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "When the implementer fails AND the cascading ImplementerLoopExited append also fails (src/contexts/workflow_composition/engine.rs:6614-6642), the returned StageCommitFailed only carries the append error. The original implementer failure is lost, making operational diagnosis significantly harder. Chain or wrap the append error so the original implementer error context is preserved (e.g., via anyhow::Error::context or including a short summary of the original error in the cascading error message).",
+        "created_at": "2026-04-18T06:10:33.301052070Z",
+        "batch_sequence": 5,
+        "source": "workflow_stage",
+        "dedup_key": "bd6202378e9fd33f487495eff91ed65cc1831a55be65bc51eab44ba26ab74ba3"
+      }
+    ],
     "processed_count": 14
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 7 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-18T05:20:54.298969112Z",
+    "resolved_at": "2026-04-18T05:49:58.228870290Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
