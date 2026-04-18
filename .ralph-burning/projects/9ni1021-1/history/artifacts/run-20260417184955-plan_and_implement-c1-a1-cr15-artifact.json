@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260417184955-plan_and_implement-c1-a1-cr15-artifact",
+  "payload_id": "run-20260417184955-plan_and_implement-c1-a1-cr15",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T00:43:22.032239854Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/test_support/e2e_fixtures.rs` to close the two remaining production-parity gaps in `build_e2e_milestone_scenario_fixture()`. The fixture now derives `proposal:` labels by normalizing explicit bead ids through the same milestone-export path that strips the `milestone_id.` prefix, so staged `.beads/issues.jsonl` labels match real materialization semantics. It also changed the exhausted `bv --robot-next` path from a non-zero mock failure to the production-style success payload `{\"message\":\"No actionable items available\"}`. The smoke test was expanded to assert both the normalized proposal labels and the message-only no-recommendation behavior, including the parse-error branch the runtime uses to clear stale hints.\n\n## Steps\n\n1. [Completed] Inspected the current E2E fixture, the milestone export helpers, and the runtime `bv --robot-next` no-recommendation handling to confirm the fixture was using fully-qualified `proposal:` labels and a non-zero exhausted-queue response that diverged from production.\n2. [Completed] Patched `src/test_support/e2e_fixtures.rs` so `proposal_label()` normalizes explicit bead ids with `normalize_bead_reference(...)`, and so the mocked `bv --robot-next` exhaustion case returns the same message-only success JSON payload production code expects.\n3. [Completed] Expanded the smoke test to verify normalized `proposal:` labels on the persisted bead graph and to assert the exhausted `bv --robot-next` path succeeds with the message-only payload while `exec_json` surfaces the expected parse error branch.\n4. [Completed] Ran repository validation on the amended fixture: formatting, targeted smoke coverage, the full test suite, clippy with warnings denied, and a final `nix build` attempt whose output artifact appeared even though the client did not report a clean exit.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test build_e2e_milestone_scenario_fixture_smoke_test --lib` passed.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` produced `result -> /nix/store/qysyqnkgm5vrgp29rlcp484ivgxcmyn9-ralph-burning-static-x86_64-unknown-linux-musl-0.1.0`, and `result/bin/ralph-burning` exists on the final tree, but no clean client exit was captured.\n\n## Outstanding Risks\n\n- `nix build` was run on the final tree and produced a fresh `result` symlink with `result/bin/ralph-burning`, but the local `nix` client never emitted a clean completion line before stalling again. I am not claiming a captured successful `nix build` exit.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 15
+}

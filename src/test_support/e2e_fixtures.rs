@@ -15,7 +15,8 @@ use crate::adapters::fs::{
     FsMilestoneStore, FsTaskRunLineageStore,
 };
 use crate::contexts::milestone_record::bundle::{
-    AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+    normalize_bead_reference, AcceptanceCriterion, BeadProposal, MilestoneBundle,
+    MilestoneIdentity, Workstream,
 };
 use crate::contexts::milestone_record::model::MilestoneId;
 use crate::contexts::milestone_record::service::{
@@ -118,7 +119,9 @@ fn milestone_scope_label() -> String {
 }
 
 fn proposal_label(bead_id: &str) -> String {
-    format!("proposal:{bead_id}")
+    let proposal_id = normalize_bead_reference(MILESTONE_ID, bead_id)
+        .expect("scenario bead id must normalize like exported proposal ids");
+    format!("proposal:{proposal_id}")
 }
 
 fn scenario_bundle() -> MilestoneBundle {
@@ -848,7 +851,7 @@ fn scenario_bv_response(
             };
             Some(match maybe_issue {
                 Some(issue) => MockBvResponse::success(next_bead_json(&issue)),
-                None => MockBvResponse::exit_failure(1, "no ready bead"),
+                None => MockBvResponse::success(no_actionable_items_json()),
             })
         }
         _ => None,
@@ -1053,6 +1056,13 @@ fn next_bead_json(issue: &BeadGraphIssue) -> String {
     .to_string()
 }
 
+fn no_actionable_items_json() -> String {
+    json!({
+        "message": "No actionable items available",
+    })
+    .to_string()
+}
+
 fn br_ready_json(issues: &[BeadGraphIssue]) -> String {
     serde_json::to_string(
         &issues
@@ -1219,6 +1229,18 @@ mod tests {
                 .into_iter()
                 .collect::<BTreeSet<_>>()
         );
+        assert!(prepare_row["labels"]
+            .as_array()
+            .expect("prepare labels")
+            .iter()
+            .any(|label| label.as_str() == Some("proposal:task-prepare-workspace")));
+        assert!(!prepare_row["labels"]
+            .as_array()
+            .expect("prepare labels")
+            .iter()
+            .any(|label| {
+                label.as_str() == Some("proposal:ms-e2e-scenario.task-prepare-workspace")
+            }));
         let validate_row = initial_rows
             .iter()
             .find(|row| row["id"] == VALIDATE_TASK_ID)
@@ -1634,6 +1656,22 @@ mod tests {
             .expect("br ready after follow-up close");
         assert!(ready_after_follow_up_close.is_empty());
 
+        let no_recommendation = bv
+            .exec_read(&BvCommand::robot_next())
+            .await
+            .expect("bv robot-next should succeed with a message-only payload once exhausted");
+        assert_eq!(no_recommendation.stdout, no_actionable_items_json());
+
+        let no_recommendation_parse = bv
+            .exec_json::<NextBeadResponse>(&BvCommand::robot_next())
+            .await
+            .expect_err("message-only exhausted response should surface as a parse error");
+        assert!(matches!(
+            no_recommendation_parse,
+            BvError::BvParseError { raw_output, .. }
+                if raw_output == no_actionable_items_json()
+        ));
+
         let sync_output = br_mutation.sync_flush().await.expect("br sync");
         assert_eq!(sync_output.stdout, "synced");
 
@@ -1691,6 +1729,8 @@ mod tests {
                 .map(|call| call.args.clone())
                 .collect::<Vec<_>>(),
             vec![
+                vec!["--robot-next".to_owned()],
+                vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
                 vec!["--robot-next".to_owned()],
