@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-arbiter-c1-a1-cr14-artifact",
+  "payload_id": "run-20260418021911-final_review-arbiter-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T10:20:27.986955390Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth disputed amendments identify cleanup-worthy design issues, but neither demonstrates a present correctness, safety, or behavior bug in the current code. The hardcoded stage id is accurate on every live call path today, and the duplicated iterative-minimal validation is redundant but harmless because the engine already receives validated config.\n\n## Rulings\n\n- `fr-14-9a290c83`: Reject\n  `git_command_stdout` is a private helper, and in the current tree its only call sites are the three uses inside `git_diff_fingerprint`; that fingerprint helper is only used from the iterative `execute_iterative_plan_and_implement_stage` path. On the live code path, the hardcoded `StageId::PlanAndImplement` is therefore accurate today, so this does not establish a present misattribution bug. The concern is a future-reuse foot-gun because the helper name is generic, which is fair cleanup material, but still speculative. The `StageCommitFailed` complaint also does not tip this into an accept: that variant is already used broadly in `engine.rs` for many non-literal-commit stage-local IO/persistence failures, so introducing a narrower variant here would be error-taxonomy cleanup rather than fixing a current correctness issue.\n- `fr-14-5034444d`: Reject\n  The duplication is real, but the amendment does not show a current behavioral defect. `EffectiveConfig::load_for_project` validates iterative-minimal settings before constructing the effective policy, then validates the resolved `EffectiveIterativeMinimalPolicy` in `config.rs`; `EffectiveConfig` itself has private fields, so engine code receives these values through that validated constructor path. That makes `validate_iterative_minimal_loop_settings` in `engine.rs` redundant defense-in-depth, not a live source of invalid runtime state. The claimed skew is hypothetical, and today the duplicated checks even produce the same `AppError::InvalidConfigValue` wording for zero values and for `stable_rounds_required > max_rounds`. This is worth refactoring eventually, but it is not strong enough as a review amendment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}
