@@ -346,6 +346,7 @@ fn implementer_iteration_events_serialize_iteration_metadata() {
         &run_id,
         StageId::PlanAndImplement,
         2,
+        1,
         3,
         4,
     );
@@ -355,6 +356,7 @@ fn implementer_iteration_events_serialize_iteration_metadata() {
     );
     assert_eq!(started.details["stage_id"], "plan_and_implement");
     assert_eq!(started.details["cycle"], 2);
+    assert_eq!(started.details["attempt"], 1);
     assert_eq!(started.details["completion_round"], 3);
     assert_eq!(started.details["iteration"], 4);
 
@@ -364,6 +366,7 @@ fn implementer_iteration_events_serialize_iteration_metadata() {
         &run_id,
         StageId::PlanAndImplement,
         2,
+        1,
         3,
         4,
         true,
@@ -382,6 +385,7 @@ fn implementer_iteration_events_serialize_iteration_metadata() {
         &run_id,
         StageId::PlanAndImplement,
         2,
+        1,
         3,
         "stable",
         4,

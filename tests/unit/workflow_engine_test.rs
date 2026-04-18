@@ -2002,6 +2002,82 @@ async fn iterative_minimal_resume_after_terminal_loop_does_not_reinvoke_implemen
 }
 
 #[tokio::test]
+async fn iterative_minimal_resume_skips_plan_preflight_when_terminal_output_is_recoverable() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-preflight-skip",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &initial_config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit"
+        );
+    }
+
+    assert_eq!(adapter_handle.plan_calls(), 3);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.backends", r#"["codex"]"#).unwrap();
+    EffectiveConfig::set(base_dir, "final_review.arbiter_backend", "codex").unwrap();
+    EffectiveConfig::set(base_dir, "final_review.min_reviewers", "1").unwrap();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let resume_agent_service = build_agent_service_with_adapter(
+        UnavailableModelOnResumeAdapter::new(adapter_handle.clone(), BackendFamily::Claude),
+    );
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &resume_config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should recover the terminal iterative output without requiring the implementer backend: {resume_result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume must not re-invoke the implementer after terminal loop recovery"
+    );
+}
+
+#[tokio::test]
 async fn minimal_flow_remains_single_pass_without_iteration_events() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3554,6 +3630,54 @@ impl AgentExecutionPort for DirtyFileIterativePlanAdapter {
             }
         }
 
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct UnavailableModelOnResumeAdapter {
+    inner: IterativePlanAdapter,
+    unavailable_backend: BackendFamily,
+}
+
+impl UnavailableModelOnResumeAdapter {
+    fn new(inner: IterativePlanAdapter, unavailable_backend: BackendFamily) -> Self {
+        Self {
+            inner,
+            unavailable_backend,
+        }
+    }
+}
+
+impl AgentExecutionPort for UnavailableModelOnResumeAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        if backend.backend.family == self.unavailable_backend {
+            return Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.to_string(),
+                details: format!("backend {} is unavailable", backend.backend.family),
+                failure_class: Some(FailureClass::BinaryNotFound),
+            });
+        }
+
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         self.inner.invoke(request).await
     }
 

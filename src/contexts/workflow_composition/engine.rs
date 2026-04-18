@@ -744,6 +744,7 @@ fn carry_forward_iterative_state(
 ) -> Option<IterativeImplementerState> {
     (current.stage_cursor.stage == next_cursor.stage
         && current.stage_cursor.cycle == next_cursor.cycle
+        && current.stage_cursor.attempt == next_cursor.attempt
         && current.stage_cursor.completion_round == next_cursor.completion_round)
         .then(|| current.iterative_implementer_state.clone())
         .flatten()
@@ -1135,6 +1136,31 @@ fn event_detail_u32(event: &JournalEvent, key: &str) -> AppResult<u32> {
     })
 }
 
+fn optional_event_detail_u32(event: &JournalEvent, key: &str) -> AppResult<Option<u32>> {
+    let Some(value) = event.details.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event is missing numeric '{key}' detail",
+                event_type_label(event)
+            ),
+        });
+    };
+
+    Ok(Some(u32::try_from(value).map_err(|_| {
+        AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "{} event '{key}' detail is out of range for u32",
+                event_type_label(event)
+            ),
+        }
+    })?))
+}
+
 fn event_detail_bool(event: &JournalEvent, key: &str) -> AppResult<bool> {
     event
         .details
@@ -1159,18 +1185,52 @@ fn event_matches_stage_cursor(event: &JournalEvent, cursor: &StageCursor) -> App
         && event_detail_u32(event, "completion_round")? == cursor.completion_round)
 }
 
+fn event_matches_stage_attempt(event: &JournalEvent, cursor: &StageCursor) -> AppResult<bool> {
+    match optional_event_detail_u32(event, "attempt")? {
+        Some(attempt) => Ok(attempt == cursor.attempt),
+        None => Ok(true),
+    }
+}
+
+fn last_stage_attempt_entry_sequence(
+    events: &[JournalEvent],
+    run_id: &RunId,
+    cursor: &StageCursor,
+) -> Option<u64> {
+    events
+        .iter()
+        .filter(|event| {
+            event.event_type == JournalEventType::StageEntered
+                && event_matches_run(event, run_id)
+                && event.details.get("stage_id").and_then(Value::as_str)
+                    == Some(cursor.stage.as_str())
+                && event.details.get("cycle").and_then(Value::as_u64) == Some(cursor.cycle as u64)
+                && event.details.get("attempt").and_then(Value::as_u64)
+                    == Some(cursor.attempt as u64)
+        })
+        .map(|event| event.sequence)
+        .max()
+}
+
 fn reconstruct_iterative_state_from_events(
     events: &[JournalEvent],
+    run_id: &RunId,
     cursor: &StageCursor,
 ) -> AppResult<Option<IterativeImplementerState>> {
     let mut completed_iterations = 0;
     let mut stable_count = 0;
     let mut found = false;
+    let stage_attempt_boundary = last_stage_attempt_entry_sequence(events, run_id, cursor);
 
     for event in events {
         if event.event_type != JournalEventType::ImplementerIterationCompleted
+            || !event_matches_run(event, run_id)
             || !event_matches_stage_cursor(event, cursor)?
+            || !event_matches_stage_attempt(event, cursor)?
         {
+            continue;
+        }
+        if stage_attempt_boundary.is_some_and(|boundary| event.sequence <= boundary) {
             continue;
         }
 
@@ -1203,10 +1263,13 @@ fn resume_iteration_counters(
 
     let snapshot_state = (interrupted.stage_cursor.stage == resume_cursor.stage
         && interrupted.stage_cursor.cycle == resume_cursor.cycle
+        && interrupted.stage_cursor.attempt == resume_cursor.attempt
         && interrupted.stage_cursor.completion_round == resume_cursor.completion_round)
         .then(|| interrupted.iterative_implementer_state.clone())
         .flatten();
-    let recovered_state = reconstruct_iterative_state_from_events(resume_events, resume_cursor)?;
+    let run_id = RunId::new(&interrupted.run_id)?;
+    let recovered_state =
+        reconstruct_iterative_state_from_events(resume_events, &run_id, resume_cursor)?;
     let iterative_state = match (snapshot_state, recovered_state) {
         (Some(snapshot_state), Some(recovered_state))
             if recovered_state.completed_iterations >= snapshot_state.completed_iterations =>
@@ -2231,22 +2294,39 @@ where
         }
     }
 
-    preflight_check(
-        agent_service.adapter(),
-        effective_config,
-        resume_state.cursor.cycle,
-        &stage_plan[resume_state.stage_index..],
-    )
-    .await
-    .map_err(|error| AppError::ResumeFailed {
-        reason: error.to_string(),
-    })?;
+    let (qa_iterations_current_cycle, review_iterations_current_cycle, iterative_implementer_state) =
+        resume_iteration_counters(&snapshot, &resume_state.cursor, &resume_events)?;
+    let preflight_start_index = if preset == FlowPreset::IterativeMinimal
+        && resume_state.cursor.stage == StageId::PlanAndImplement
+        && resume_state.stage_index < stage_plan.len()
+        && iterative_resume_skips_current_stage_preflight(
+            &project_root,
+            &resume_state.run_id,
+            &stage_plan[resume_state.stage_index],
+            &resume_state.cursor,
+            iterative_implementer_state.as_ref(),
+            effective_config,
+        )? {
+        resume_state.stage_index + 1
+    } else {
+        resume_state.stage_index
+    };
+    if preflight_start_index < stage_plan.len() {
+        preflight_check(
+            agent_service.adapter(),
+            effective_config,
+            resume_state.cursor.cycle,
+            &stage_plan[preflight_start_index..],
+        )
+        .await
+        .map_err(|error| AppError::ResumeFailed {
+            reason: error.to_string(),
+        })?;
+    }
 
     // Seed the resumed ActiveRun with the (potentially updated) resolution
     // snapshot from drift detection so the stage can compare against it later.
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
-    let (qa_iterations_current_cycle, review_iterations_current_cycle, iterative_implementer_state) =
-        resume_iteration_counters(&snapshot, &resume_state.cursor, &resume_events)?;
     let final_review_restart_count = resume_final_review_restart_count(&snapshot, &resume_events)?;
     let resumed_at = Utc::now();
     snapshot.status = RunStatus::Running;
@@ -6010,6 +6090,7 @@ fn iterative_loop_exit_recorded(
         if event.event_type == JournalEventType::ImplementerLoopExited
             && event_matches_run(event, run_id)
             && event_matches_stage_cursor(event, cursor)?
+            && event_matches_stage_attempt(event, cursor)?
         {
             return Ok(true);
         }
@@ -6037,6 +6118,7 @@ fn append_implementer_loop_exited_event(
         run_id,
         stage_id,
         cursor.cycle,
+        cursor.attempt,
         cursor.completion_round,
         reason.as_str(),
         total_iterations,
@@ -6153,6 +6235,62 @@ fn recover_iterative_iteration_result(
     Ok((bundle, recovered_iterative_record_producer(resolved_target)))
 }
 
+fn iterative_terminal_resume_ready(
+    project_root: &Path,
+    run_id: &RunId,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    state: &IterativeImplementerState,
+    effective_config: &EffectiveConfig,
+) -> AppResult<bool> {
+    let stable_rounds_required = effective_config
+        .run_policy()
+        .iterative_minimal
+        .stable_rounds_required;
+    let max_rounds = effective_config
+        .run_policy()
+        .iterative_minimal
+        .max_consecutive_implementer_rounds;
+    let Some(_) = iterative_loop_exit_reason(
+        state.stable_count,
+        state.completed_iterations,
+        stable_rounds_required,
+        max_rounds,
+    ) else {
+        return Ok(false);
+    };
+
+    let invocation_id = invocation_id_for_stage(
+        run_id,
+        stage_entry.stage_id,
+        cursor,
+        Some(&format!("it{}", state.completed_iterations)),
+    );
+    Ok(iterative_backend_parsed_output_path(project_root, &invocation_id).is_file())
+}
+
+fn iterative_resume_skips_current_stage_preflight(
+    project_root: &Path,
+    run_id: &RunId,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    iterative_state: Option<&IterativeImplementerState>,
+    effective_config: &EffectiveConfig,
+) -> AppResult<bool> {
+    let Some(state) = iterative_state else {
+        return Ok(false);
+    };
+
+    iterative_terminal_resume_ready(
+        project_root,
+        run_id,
+        stage_entry,
+        cursor,
+        state,
+        effective_config,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resume_terminal_iterative_stage_result(
     journal_store: &dyn JournalStorePort,
@@ -6209,11 +6347,7 @@ fn iterative_fingerprint_excludes_path(relative_path: &Path) -> bool {
         return false;
     };
     let first_component = first_component.as_os_str().to_string_lossy();
-    matches!(
-        first_component.as_ref(),
-        ".git" | ".ralph-burning" | "target" | "target-final"
-    ) || first_component == "result"
-        || first_component.starts_with("result-")
+    matches!(first_component.as_ref(), ".git" | ".ralph-burning")
 }
 
 fn iterative_fingerprint_git_pathspecs() -> Vec<&'static str> {
@@ -6221,14 +6355,6 @@ fn iterative_fingerprint_git_pathspecs() -> Vec<&'static str> {
         ".",
         ":(top,exclude).ralph-burning",
         ":(top,glob,exclude).ralph-burning/**",
-        ":(top,exclude)target",
-        ":(top,glob,exclude)target/**",
-        ":(top,exclude)target-final",
-        ":(top,glob,exclude)target-final/**",
-        ":(top,exclude)result",
-        ":(top,glob,exclude)result/**",
-        ":(top,glob,exclude)result-*",
-        ":(top,glob,exclude)result-*/**",
     ]
 }
 
@@ -6381,12 +6507,13 @@ fn hash_untracked_git_entry(
     relative_path: &Path,
     hasher: &mut Sha256,
 ) -> AppResult<()> {
-    if iterative_fingerprint_excludes_path(relative_path) {
-        return Ok(());
-    }
-
     let absolute_path = repo_root.join(relative_path);
     let metadata = fs::symlink_metadata(&absolute_path)?;
+    if iterative_fingerprint_excludes_path(relative_path)
+        || iterative_untracked_build_artifact(relative_path, &metadata)
+    {
+        return Ok(());
+    }
     let display_path = relative_path.to_string_lossy();
 
     if metadata.file_type().is_symlink() {
@@ -6416,6 +6543,23 @@ fn hash_untracked_git_entry(
     }
 
     Ok(())
+}
+
+fn iterative_untracked_build_artifact(relative_path: &Path, metadata: &fs::Metadata) -> bool {
+    let Some(first_component) = relative_path.components().next() else {
+        return false;
+    };
+    let first_component = first_component.as_os_str().to_string_lossy();
+    matches!(first_component.as_ref(), "target" | "target-final")
+        || ((first_component == "result" || first_component.starts_with("result-"))
+            && (metadata.file_type().is_symlink() || metadata.is_dir()))
+}
+
+fn git_head_fingerprint(repo_root: &Path) -> Vec<u8> {
+    match run_git_output(repo_root, &["rev-parse", "--verify", "HEAD"]) {
+        Ok(output) if output.status.success() => output.stdout,
+        _ => b"unborn".to_vec(),
+    }
 }
 
 fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
@@ -6460,14 +6604,11 @@ fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
         .split(|byte| *byte == b'\0')
         .filter(|entry| !entry.is_empty())
         .map(|entry| PathBuf::from(String::from_utf8_lossy(entry).into_owned()))
-        .filter(|path| !iterative_fingerprint_excludes_path(path))
         .collect();
 
-    if staged.is_empty() && unstaged.is_empty() && untracked_paths.is_empty() {
-        return Ok(String::new());
-    }
-
     let mut hasher = Sha256::new();
+    hasher.update(b"head\0");
+    hasher.update(git_head_fingerprint(repo_root));
     hasher.update(b"staged\0");
     hasher.update(&staged);
     hasher.update(b"unstaged\0");
@@ -6578,6 +6719,7 @@ where
             run_id,
             stage_entry.stage_id,
             cursor.cycle,
+            cursor.attempt,
             cursor.completion_round,
             iteration,
         );
@@ -6621,6 +6763,7 @@ where
                     run_id,
                     stage_entry.stage_id,
                     cursor.cycle,
+                    cursor.attempt,
                     cursor.completion_round,
                     "error",
                     iteration,
@@ -6633,7 +6776,7 @@ where
                     return Err(AppError::StageCommitFailed {
                         stage_id: stage_entry.stage_id,
                         details: format!(
-                            "failed to persist implementer_loop_exited error event: {append_error}"
+                            "failed to persist implementer_loop_exited error event after implementer failure `{error}`: {append_error}"
                         ),
                     });
                 }
@@ -6652,6 +6795,7 @@ where
             run_id,
             stage_entry.stage_id,
             cursor.cycle,
+            cursor.attempt,
             cursor.completion_round,
             iteration,
             diff_changed,
@@ -9572,7 +9716,8 @@ mod tests {
     use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
-        BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, RunId, StageCursor, StageId,
+        BackendFamily, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId,
+        StageCursor, StageId,
     };
     use crate::shared::error::{AppError, AppResult};
 
@@ -9820,6 +9965,7 @@ mod tests {
             &old_run_id,
             StageId::PlanAndImplement,
             cursor.cycle,
+            cursor.attempt,
             cursor.completion_round,
             "stable",
             2,
@@ -9907,8 +10053,8 @@ mod tests {
 
         let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
         assert!(
-            baseline.is_empty(),
-            "clean repo should have empty fingerprint"
+            baseline.starts_with("git:"),
+            "repo fingerprint should be hashed"
         );
 
         fs::create_dir_all(temp_dir.path().join(".ralph-burning/projects/demo"))
@@ -9934,7 +10080,40 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn git_diff_fingerprint_ignores_build_artifact_paths_in_repo() {
+    fn git_diff_fingerprint_ignores_untracked_build_artifact_paths_in_repo() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let store_dir = tempdir().expect("create store dir");
+        init_git_repo(temp_dir.path());
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.starts_with("git:"),
+            "repo fingerprint should be hashed"
+        );
+
+        fs::create_dir_all(temp_dir.path().join("target/debug")).expect("create target dir");
+        fs::write(temp_dir.path().join("target/debug/build.log"), "artifact\n")
+            .expect("write build artifact");
+        let ignored_target = git_diff_fingerprint(temp_dir.path()).expect("target fingerprint");
+        assert_eq!(
+            baseline, ignored_target,
+            "target/ build artifacts must be ignored"
+        );
+
+        let result_path = temp_dir.path().join("result");
+        let store_a = store_dir.path().join("store-a");
+        fs::create_dir_all(&store_a).expect("create store-a");
+        std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
+        let ignored_result = git_diff_fingerprint(temp_dir.path()).expect("result fingerprint");
+        assert_eq!(
+            baseline, ignored_result,
+            "untracked result symlink churn must be ignored"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_detects_tracked_result_symlink_changes() {
         let temp_dir = tempdir().expect("create temp dir");
         let store_dir = tempdir().expect("create store dir");
         init_git_repo(temp_dir.path());
@@ -9949,26 +10128,13 @@ mod tests {
         run_git(temp_dir.path(), &["commit", "-m", "track result symlink"]);
 
         let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
-        assert!(
-            baseline.is_empty(),
-            "clean repo should have empty fingerprint"
-        );
-
-        fs::create_dir_all(temp_dir.path().join("target/debug")).expect("create target dir");
-        fs::write(temp_dir.path().join("target/debug/build.log"), "artifact\n")
-            .expect("write build artifact");
-        let ignored_target = git_diff_fingerprint(temp_dir.path()).expect("target fingerprint");
-        assert_eq!(
-            baseline, ignored_target,
-            "target/ build artifacts must be ignored"
-        );
-
         fs::remove_file(&result_path).expect("remove result symlink");
         std::os::unix::fs::symlink(&store_b, &result_path).expect("recreate result symlink");
-        let ignored_result = git_diff_fingerprint(temp_dir.path()).expect("result fingerprint");
-        assert_eq!(
-            baseline, ignored_result,
-            "tracked result symlink churn must be ignored"
+
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "tracked result symlink changes must remain visible"
         );
     }
 
@@ -10069,7 +10235,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn git_diff_fingerprint_fallback_ignores_build_artifact_paths() {
+    fn git_diff_fingerprint_fallback_detects_build_artifact_named_paths() {
         let temp_dir = tempdir().expect("create temp dir");
         let store_dir = tempdir().expect("create store dir");
 
@@ -10089,10 +10255,27 @@ mod tests {
         fs::create_dir_all(&store_a).expect("create store-a");
         std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
 
-        let ignored = git_diff_fingerprint(temp_dir.path()).expect("ignored fingerprint");
-        assert_eq!(
-            baseline, ignored,
-            "filesystem fallback must ignore build artifacts like target/ and result"
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "filesystem fallback must not hide top-level target/result changes"
+        );
+    }
+
+    #[test]
+    fn git_diff_fingerprint_changes_when_head_commit_changes_without_worktree_diff() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\ncommitted\n")
+            .expect("update tracked file");
+        run_git(temp_dir.path(), &["commit", "-am", "commit change"]);
+
+        let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
+        assert_ne!(
+            baseline, changed,
+            "HEAD movement without a remaining worktree diff must change the fingerprint"
         );
     }
 
@@ -10209,6 +10392,7 @@ mod tests {
                 &run_id,
                 StageId::PlanAndImplement,
                 2,
+                1,
                 3,
                 2,
                 true,
@@ -10220,6 +10404,7 @@ mod tests {
                 &run_id,
                 StageId::PlanAndImplement,
                 2,
+                1,
                 3,
                 3,
                 false,
@@ -10238,6 +10423,93 @@ mod tests {
                 completed_iterations: 3,
                 stable_count: 1,
             })
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_reset_iterative_loop_state_when_attempt_changes() {
+        let run_id = RunId::new("run-iter").expect("run id");
+        let interrupted_cursor =
+            StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let resume_cursor = StageCursor::new(StageId::PlanAndImplement, 2, 2, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: interrupted_cursor,
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: Some(IterativeImplementerState {
+                    completed_iterations: 6,
+                    stable_count: 1,
+                }),
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
+        let resume_events = vec![
+            journal::stage_entered_event(1, Utc::now(), &run_id, StageId::PlanAndImplement, 2, 1),
+            journal::implementer_iteration_completed_event(
+                2,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                3,
+                1,
+                false,
+                "completed",
+            ),
+            journal::stage_failed_event(
+                3,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                FailureClass::TransportFailure,
+                "retry me",
+                true,
+                "inv-1",
+            ),
+            journal::stage_entered_event(4, Utc::now(), &run_id, StageId::PlanAndImplement, 2, 2),
+            journal::implementer_iteration_completed_event(
+                5,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                2,
+                3,
+                1,
+                false,
+                "completed",
+            ),
+        ];
+
+        let (_, _, iterative_state) =
+            resume_iteration_counters(&snapshot, &resume_cursor, &resume_events)
+                .expect("resume counters");
+
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 1,
+                stable_count: 1,
+            }),
+            "retry attempts must rebuild only from the current attempt boundary"
         );
     }
 
