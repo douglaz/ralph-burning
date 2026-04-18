@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-plan_and_implement-c1-a1-cr17-artifact",
+  "payload_id": "run-20260418021911-plan_and_implement-c1-a1-cr17",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T11:53:19.635266968Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nResolved the two pending iterative_minimal amendments on the current tree. The retry path now carries iterative implementer progress across attempts for the same stage/cycle/completion round, so completed iterations and the stability streak survive retryable failures instead of resetting the loop budget. I also corrected the Claude raw-output recovery regression coverage so the terminal raw transcript stays aligned with the persisted implementer target metadata, which restores the `--features test-stub` path exercised by `nix build` without bringing `.ralph-burning/` state into scope.\n\n## Steps\n\n1. [Completed] Verify the pending iterative_minimal regressions against the current tree and inspect the workflow engine/test coverage around terminal raw-output recovery and retry-state carry-forward.\n2. [Completed] Carry iterative implementer state across retry attempts in the same stage/cycle/completion round by reusing persisted state and journal reconstruction up to the resumed attempt instead of resetting on attempt changes.\n3. [Completed] Fix the Claude terminal-raw recovery regression test so the initial run uses the persisted Claude target before the injected interruption, then resume under config drift to prove recovery honors persisted target metadata.\n4. [Completed] Run repository validation, including the iterative_minimal targeted feature test path and the final `nix build` gate.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- `cargo test --features test-stub --test unit iterative_minimal_ -- --nocapture` passed, including `workflow_engine_test::iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidecar_is_missing` and `workflow_engine_test::iterative_minimal_retries_preserve_loop_budget_and_stability_state`.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 17
+}

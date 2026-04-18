@@ -748,12 +748,19 @@ fn carry_forward_iterative_state(
     current: &ActiveRun,
     next_cursor: &StageCursor,
 ) -> Option<IterativeImplementerState> {
-    (current.stage_cursor.stage == next_cursor.stage
-        && current.stage_cursor.cycle == next_cursor.cycle
-        && current.stage_cursor.attempt == next_cursor.attempt
-        && current.stage_cursor.completion_round == next_cursor.completion_round)
+    (iterative_state_carries_into_cursor(&current.stage_cursor, next_cursor))
         .then(|| current.iterative_implementer_state.clone())
         .flatten()
+}
+
+fn iterative_state_carries_into_cursor(
+    source_cursor: &StageCursor,
+    target_cursor: &StageCursor,
+) -> bool {
+    source_cursor.stage == target_cursor.stage
+        && source_cursor.cycle == target_cursor.cycle
+        && source_cursor.completion_round == target_cursor.completion_round
+        && source_cursor.attempt <= target_cursor.attempt
 }
 
 fn current_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
@@ -1198,26 +1205,14 @@ fn event_matches_stage_attempt(event: &JournalEvent, cursor: &StageCursor) -> Ap
     }
 }
 
-fn last_stage_attempt_entry_sequence(
-    events: &[JournalEvent],
-    run_id: &RunId,
+fn event_matches_stage_attempt_up_to_cursor(
+    event: &JournalEvent,
     cursor: &StageCursor,
-    before_sequence: Option<u64>,
-) -> Option<u64> {
-    events
-        .iter()
-        .filter(|event| {
-            event.event_type == JournalEventType::StageEntered
-                && event_matches_run(event, run_id)
-                && event.details.get("stage_id").and_then(Value::as_str)
-                    == Some(cursor.stage.as_str())
-                && event.details.get("cycle").and_then(Value::as_u64) == Some(cursor.cycle as u64)
-                && event.details.get("attempt").and_then(Value::as_u64)
-                    == Some(cursor.attempt as u64)
-                && before_sequence.is_none_or(|limit| event.sequence < limit)
-        })
-        .map(|event| event.sequence)
-        .max()
+) -> AppResult<bool> {
+    match optional_event_detail_u32(event, "attempt")? {
+        Some(attempt) => Ok(attempt <= cursor.attempt),
+        None => Ok(true),
+    }
 }
 
 fn reconstruct_iterative_state_from_events(
@@ -1228,17 +1223,13 @@ fn reconstruct_iterative_state_from_events(
     let mut completed_iterations = 0;
     let mut stable_count = 0;
     let mut found = false;
-    let stage_attempt_boundary = last_stage_attempt_entry_sequence(events, run_id, cursor, None);
 
     for event in events {
         if event.event_type != JournalEventType::ImplementerIterationCompleted
             || !event_matches_run(event, run_id)
             || !event_matches_stage_cursor(event, cursor)?
-            || !event_matches_stage_attempt(event, cursor)?
+            || !event_matches_stage_attempt_up_to_cursor(event, cursor)?
         {
-            continue;
-        }
-        if stage_attempt_boundary.is_some_and(|boundary| event.sequence <= boundary) {
             continue;
         }
 
@@ -1273,8 +1264,8 @@ fn resume_iteration_counters(
 
     let snapshot_state = (interrupted.stage_cursor.stage == resume_cursor.stage
         && interrupted.stage_cursor.cycle == resume_cursor.cycle
-        && interrupted.stage_cursor.attempt == resume_cursor.attempt
-        && interrupted.stage_cursor.completion_round == resume_cursor.completion_round)
+        && interrupted.stage_cursor.completion_round == resume_cursor.completion_round
+        && interrupted.stage_cursor.attempt <= resume_cursor.attempt)
         .then(|| interrupted.iterative_implementer_state.clone())
         .flatten();
     let snapshot_loop_policy = snapshot_state
@@ -1323,10 +1314,7 @@ fn iterative_state_matches_cursor<'a>(
     active_run: &'a ActiveRun,
     cursor: &StageCursor,
 ) -> Option<&'a IterativeImplementerState> {
-    (active_run.stage_cursor.stage == cursor.stage
-        && active_run.stage_cursor.cycle == cursor.cycle
-        && active_run.stage_cursor.attempt == cursor.attempt
-        && active_run.stage_cursor.completion_round == cursor.completion_round)
+    (iterative_state_carries_into_cursor(&active_run.stage_cursor, cursor))
         .then_some(active_run.iterative_implementer_state.as_ref())
         .flatten()
 }
@@ -11539,7 +11527,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_iteration_counters_reset_iterative_loop_state_when_attempt_changes() {
+    fn resume_iteration_counters_preserve_iterative_loop_state_when_attempt_changes() {
         let run_id = RunId::new("run-iter").expect("run id");
         let interrupted_cursor =
             StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
@@ -11572,6 +11560,50 @@ mod tests {
             status_summary: "failed".to_owned(),
             last_stage_resolution_snapshot: None,
         };
+        let (_, _, iterative_state) =
+            resume_iteration_counters(&snapshot, &resume_cursor, &[]).expect("resume counters");
+
+        assert_eq!(
+            iterative_state,
+            Some(IterativeImplementerState {
+                completed_iterations: 6,
+                stable_count: 1,
+                loop_policy: None,
+                stage_target: None,
+            }),
+            "retry attempts must preserve the completed iterative budget and stability streak"
+        );
+    }
+
+    #[test]
+    fn resume_iteration_counters_reconstruct_iterative_loop_state_across_retry_attempts() {
+        let run_id = RunId::new("run-iter").expect("run id");
+        let interrupted_cursor =
+            StageCursor::new(StageId::PlanAndImplement, 2, 1, 3).expect("cursor");
+        let resume_cursor = StageCursor::new(StageId::PlanAndImplement, 2, 2, 3).expect("cursor");
+        let snapshot = RunSnapshot {
+            active_run: None,
+            interrupted_run: Some(ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: interrupted_cursor,
+                started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "cycle-hash".to_owned(),
+                prompt_hash_at_stage_start: "stage-hash".to_owned(),
+                qa_iterations_current_cycle: 4,
+                review_iterations_current_cycle: 5,
+                final_review_restart_count: 1,
+                iterative_implementer_state: None,
+                stage_resolution_snapshot: None,
+            }),
+            status: RunStatus::Failed,
+            cycle_history: Vec::new(),
+            completion_rounds: 3,
+            max_completion_rounds: Some(20),
+            rollback_point_meta: Default::default(),
+            amendment_queue: Default::default(),
+            status_summary: "failed".to_owned(),
+            last_stage_resolution_snapshot: None,
+        };
         let resume_events = vec![
             journal::stage_entered_event(1, Utc::now(), &run_id, StageId::PlanAndImplement, 2, 1),
             journal::implementer_iteration_completed_event(
@@ -11583,11 +11615,23 @@ mod tests {
                 1,
                 3,
                 1,
+                true,
+                "completed",
+            ),
+            journal::implementer_iteration_completed_event(
+                3,
+                Utc::now(),
+                &run_id,
+                StageId::PlanAndImplement,
+                2,
+                1,
+                3,
+                2,
                 false,
                 "completed",
             ),
             journal::stage_failed_event(
-                3,
+                4,
                 Utc::now(),
                 &run_id,
                 StageId::PlanAndImplement,
@@ -11598,16 +11642,16 @@ mod tests {
                 true,
                 "inv-1",
             ),
-            journal::stage_entered_event(4, Utc::now(), &run_id, StageId::PlanAndImplement, 2, 2),
+            journal::stage_entered_event(5, Utc::now(), &run_id, StageId::PlanAndImplement, 2, 2),
             journal::implementer_iteration_completed_event(
-                5,
+                6,
                 Utc::now(),
                 &run_id,
                 StageId::PlanAndImplement,
                 2,
                 2,
                 3,
-                1,
+                3,
                 false,
                 "completed",
             ),
@@ -11620,12 +11664,12 @@ mod tests {
         assert_eq!(
             iterative_state,
             Some(IterativeImplementerState {
-                completed_iterations: 1,
-                stable_count: 1,
+                completed_iterations: 3,
+                stable_count: 2,
                 loop_policy: None,
                 stage_target: None,
             }),
-            "retry attempts must rebuild only from the current attempt boundary"
+            "resume must accumulate iterative progress across retry attempts in the same stage round"
         );
     }
 

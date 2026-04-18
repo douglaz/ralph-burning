@@ -2296,6 +2296,7 @@ async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidec
     let adapter = ParsedPayloadPersistenceFailureAdapter::new();
     let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     {
@@ -2348,7 +2349,7 @@ async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidec
     });
     fs::write(&raw_output_path, raw_transcript.to_string()).expect("rewrite raw output");
 
-    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "claude").unwrap();
+    EffectiveConfig::set(base_dir, "workflow.implementer_backend", "codex").unwrap();
     let resume_config = EffectiveConfig::load(base_dir).unwrap();
     let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
     let resume_result = engine::resume_run(
@@ -2373,7 +2374,7 @@ async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidec
     assert_eq!(
         adapter_handle.plan_calls(),
         3,
-        "resume should not re-run the terminal implementer iteration when the rewritten Claude raw transcript is recoverable"
+        "resume should not re-run the terminal implementer iteration when the rewritten Claude raw transcript is recoverable under the persisted target metadata"
     );
 
     let resumed_snapshot = FsRunSnapshotStore
@@ -2392,6 +2393,98 @@ async fn iterative_minimal_resume_recovers_terminal_claude_raw_output_when_sidec
         1,
         "plan_and_implement should complete after recovering the Claude raw transcript"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn iterative_minimal_retries_preserve_loop_budget_and_stability_state() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "iter-retry-carry", FlowPreset::IterativeMinimal);
+
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        "3",
+    )
+    .unwrap();
+    EffectiveConfig::set(
+        base_dir,
+        "workflow.iterative_minimal.stable_rounds_required",
+        "2",
+    )
+    .unwrap();
+    let adapter = IterativeRetryCarryAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "iterative_minimal should complete after a retryable implementer failure by preserving prior loop progress: {result:?}"
+    );
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        4,
+        "retry should resume from iteration 3 instead of restarting the loop budget from iteration 1"
+    );
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .expect("read run snapshot");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let iteration_events: Vec<&JournalEvent> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerIterationCompleted)
+        .collect();
+    let iterations: Vec<u64> = iteration_events
+        .iter()
+        .map(|event| {
+            event.details["iteration"]
+                .as_u64()
+                .expect("iteration should be recorded")
+        })
+        .collect();
+    let attempts: Vec<u64> = iteration_events
+        .iter()
+        .map(|event| {
+            event.details["attempt"]
+                .as_u64()
+                .expect("attempt should be recorded")
+        })
+        .collect();
+    assert_eq!(iterations, vec![1, 2, 3]);
+    assert_eq!(attempts, vec![1, 1, 2]);
+
+    let stage_failed = stage_events(&events, JournalEventType::StageFailed, "plan_and_implement");
+    assert_eq!(stage_failed.len(), 1);
+    assert_eq!(stage_failed[0].details["will_retry"], true);
+
+    let loop_exits: Vec<&JournalEvent> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+        .collect();
+    assert_eq!(loop_exits.len(), 1);
+    assert_eq!(loop_exits[0].details["total_iterations"], 3);
+    assert_eq!(loop_exits[0].details["attempt"], 2);
 }
 
 #[tokio::test]
@@ -4677,6 +4770,69 @@ impl AgentExecutionPort for UnavailableModelOnResumeAdapter {
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
+struct IterativeRetryCarryAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+}
+
+impl IterativeRetryCarryAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn plan_calls(&self) -> u32 {
+        self.plan_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl AgentExecutionPort for IterativeRetryCarryAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == 1 {
+                fs::write(
+                    request.working_dir.join("iterative-output.txt"),
+                    "changed once\n",
+                )
+                .expect("write iterative output");
+            }
+            if call == 3 {
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: StageId::PlanAndImplement.to_string(),
+                    failure_class: FailureClass::TransportFailure,
+                    details: "transient iterative transport failure".to_owned(),
+                });
+            }
+        }
+
         self.inner.invoke(request).await
     }
 
