@@ -1988,7 +1988,7 @@ async fn iterative_minimal_stage_failed_records_iteration_invocation_id() {
 }
 
 #[tokio::test]
-async fn iterative_minimal_resume_reinvokes_terminal_iteration_when_sidecar_is_missing() {
+async fn iterative_minimal_resume_recovers_terminal_raw_output_when_sidecar_is_missing() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
@@ -2065,12 +2065,12 @@ async fn iterative_minimal_resume_reinvokes_terminal_iteration_when_sidecar_is_m
     .await;
     assert!(
         resume_result.is_ok(),
-        "resume should re-invoke the terminal implementer iteration instead of failing when the parsed sidecar is missing: {resume_result:?}"
+        "resume should recover the terminal raw output instead of replaying the last implementer iteration: {resume_result:?}"
     );
     assert_eq!(
         adapter_handle.plan_calls(),
-        4,
-        "resume should re-run only the terminal implementer iteration"
+        3,
+        "resume should not re-run the terminal implementer iteration when raw output is recoverable"
     );
 
     let resumed_snapshot = FsRunSnapshotStore
@@ -2085,7 +2085,7 @@ async fn iterative_minimal_resume_reinvokes_terminal_iteration_when_sidecar_is_m
             .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
             .count(),
         1,
-        "resume should reuse the existing loop-exit record while re-invoking the terminal iteration"
+        "resume should reuse the existing loop-exit record while recovering the terminal iteration output"
     );
     assert_eq!(
         stage_events(
@@ -2176,8 +2176,8 @@ async fn iterative_minimal_resume_appends_fresh_loop_exit_when_stale_exit_event_
     assert!(resume_result.is_ok(), "{resume_result:?}");
     assert_eq!(
         adapter_handle.plan_calls(),
-        4,
-        "resume should re-run the terminal implementer iteration"
+        3,
+        "resume should recover the terminal iteration output instead of re-running it"
     );
 
     let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
@@ -2188,7 +2188,7 @@ async fn iterative_minimal_resume_appends_fresh_loop_exit_when_stale_exit_event_
     assert_eq!(
         exited_events.len(),
         2,
-        "resume should append a fresh loop-exit event when the durable one no longer matches the rerun terminal state"
+        "resume should append a fresh loop-exit event when the durable one no longer matches the recovered terminal state"
     );
     assert_eq!(exited_events[0].details["reason"], "max_rounds");
     assert_eq!(exited_events[0].details["total_iterations"], 2);

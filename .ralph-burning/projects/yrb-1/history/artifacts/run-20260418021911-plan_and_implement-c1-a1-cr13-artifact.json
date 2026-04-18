@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-plan_and_implement-c1-a1-cr13-artifact",
+  "payload_id": "run-20260418021911-plan_and_implement-c1-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-18T09:35:09.820365980Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened `iterative_minimal` resume and diff detection additively. Terminal `plan_and_implement` resume no longer rewinds counters and replays the final implementer iteration on an already-mutated workspace when the parsed sidecar is missing: it now first recovers from durable raw output, preserves normal terminal recovery/preflight skipping when that recovery succeeds, and otherwise fails the resume with an explicit safety error instead of granting an extra implementer pass. In parallel, the git-aware iterative fingerprint now hashes visible empty directories from a filesystem walk so empty-directory creates/removals count as real workspace changes while `.ralph-burning/` and existing build-artifact exclusions remain out of scope. Updated unit and integration regressions to cover raw-output recovery, non-recoverable terminal resume failure, stale loop-exit recovery without replay, and empty-directory fingerprint changes.\n\n## Steps\n\n1. [Completed] Patch iterative terminal resume recovery so missing parsed sidecars fall back to durable raw output and otherwise fail safely instead of re-invoking the terminal implementer iteration on the post-iteration workspace.\n2. [Completed] Supplement git-based iterative diff fingerprinting with empty-directory hashing from the filesystem while continuing to exclude `.ralph-burning/` and existing ignored artifact paths.\n3. [Completed] Update and extend regression coverage for raw-output terminal recovery, unrecoverable terminal resume failure, stale loop-exit recovery, and empty-directory diff detection.\n4. [Completed] Run repository validation for formatting, tests, clippy, conformance, and nix build on the final tree.\n\n## Validation Evidence\n\n- `cargo fmt --check` passed.\n- Targeted engine regressions passed: `cargo test --lib resume_terminal_iterative_stage_result_ -- --nocapture` and `cargo test --lib git_diff_fingerprint_changes_when_empty_directory_is_created_or_removed -- --nocapture`.\n- Targeted workflow regressions passed: `cargo test --test unit --features test-stub iterative_minimal_resume_recovers_terminal_raw_output_when_sidecar_is_missing -- --nocapture`, `cargo test --test unit --features test-stub iterative_minimal_resume_appends_fresh_loop_exit_when_stale_exit_event_mismatches -- --nocapture`, and `cargo test --test unit --features test-stub iterative_minimal_resume_skips_plan_preflight_when_terminal_output_is_recoverable -- --nocapture`.\n- `cargo test` passed.\n- `cargo clippy -- -D warnings` passed.\n- `cargo run --features test-stub -- conformance run --filter SC-START-017` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high-fast",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high-fast"
+  },
+  "completion_round": 13
+}
