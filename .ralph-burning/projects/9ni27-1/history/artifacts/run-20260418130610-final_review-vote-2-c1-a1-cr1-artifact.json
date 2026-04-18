@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418130610-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418130610-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T13:39:29.371209287Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the amendment by reading tests/unit/milestone_store_integration_test.rs:906-994. The torn status.json written at lines 952-963 already contains status=\"running\" and updated_at=ts(9), so the post-call assertion `recovered_snapshot.status == Running` would pass even if load_snapshot() naively returned the torn on-disk file without performing recovery. Likewise, the journal and pending-sidecar assertions only run after read_journal(), so a buggy load_snapshot() that exposed partial state could be hidden if read_journal() performed the repair. The remediation (assert pending sidecar is gone immediately after load_snapshot()) is a small, targeted change that genuinely strengthens the guarantee the test claims to verify.\n\n## Votes\n\n- `fr-1-a2d2da06`: Accept\n  Finding is accurate: the torn status.json contains the same status/updated_at as the intended next snapshot, so the current assertions cannot distinguish a real load_snapshot() repair from load_snapshot() returning the partial file with read_journal() doing the recovery later. Asserting pending_path absence (and ideally snapshot equivalence) immediately after load_snapshot() is a low-cost, well-scoped fix that closes the verification gap and matches the test's stated promise.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

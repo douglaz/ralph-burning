@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418130610-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418130610-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T13:40:36.838790829Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The cited test is too weak to prove that the first plain snapshot read hides or repairs a torn cross-file commit; it only proves that the state is repaired by the time both reads complete.\n\n## Votes\n\n- `fr-1-a2d2da06`: Accept\n  `atomic_write_prevents_partial_state` writes a pending sidecar plus a partially published `status.json`, then calls `load_snapshot()` and immediately `read_journal()`. The assertions only check that the snapshot status is `Running`, the journal eventually contains the transition, and the sidecar is gone after the journal read. That can still pass if `load_snapshot()` returns the torn `status.json` and `read_journal()` performs the real repair afterward, especially because the hand-written partial snapshot matches the intended next snapshot on the fields this test inspects. The remediation is sound: add an assertion immediately after `load_snapshot()` that proves repair/masking already happened before any journal read, such as checking the sidecar is already removed or asserting a field combination that the torn snapshot could not satisfy.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
