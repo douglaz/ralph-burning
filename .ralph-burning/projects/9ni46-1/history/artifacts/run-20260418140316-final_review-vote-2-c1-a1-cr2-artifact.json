@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418140316-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:51:41.638595985Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify real test-quality defects verifiable in the current source: the br adapter test bypasses the real public DepTreeNode type (wrong field names and missing required fields), and the two bv no-work tests use identical fixtures/assertions so they do not distinguish the empty-graph vs blocked-graph contracts they claim to cover.\n\n## Votes\n\n- `fr-2-e946249d`: Accept\n  Verified in tests/unit/bv_adapter_test.rs:213-279: bv_empty_graph_reports_no_next_bead_gracefully and bv_blocked_graph_reports_all_beads_blocked use identical scripted input ('No actionable items available'), identical error type (BvParseError), and identical assertions. The two tests are functionally duplicates — neither exercises a graceful/no-recommendation success path, and the blocked-graph case is indistinguishable from the empty-graph case, so a regression flattening the two into a single undifferentiated parse error would not be caught. Differentiating fixtures/assertions is a valid correctness improvement.\n- `fr-2-db74ab47`: Accept\n  Verified: tests/unit/br_adapter_test.rs:112-116 defines a test-local DependencyTreeNode { id, dependencies } and uses it at line 304 to deserialize the br dep tree fixture. The real public model at src/adapters/br_models.rs:448-455 is DepTreeNode { id, title, status, children }, with 'children' (not 'dependencies') and required 'title'/'status'. The fixture uses 'dependencies' and omits title/status, so it cannot exercise the real DepTreeNode deserializer; the public contract could break without this test failing. Switching to the real type with a realistic fixture is a legitimate fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}

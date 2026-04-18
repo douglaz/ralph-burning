@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418140316-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260418140316-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T14:53:19.102504822Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the `br dep tree` contract-gap finding and rejected the `bv --robot-next` finding. The `bv` adapter intentionally treats message-only no-work payloads as parse errors at the `exec_json::<NextBeadResponse>` layer, with higher-level code translating that into a no-recommendation outcome. By contrast, the `br` adapter test does bypass the public `DepTreeNode` schema, so it would miss a real contract break.\n\n## Votes\n\n- `fr-2-e946249d`: Reject\n  At the adapter layer, `exec_json::<NextBeadResponse>` is expected to fail on the message-only `{\"message\":\"No actionable items available\"}` payload, because `NextBeadResponse` requires fields like `id` and `title`. That behavior is intentional and is relied on elsewhere: higher-level code in `success_reconciliation` and `cli/run.rs` explicitly converts the message-only payload into a no-recommendation outcome after raw-output handling, and `src/test_support/e2e_fixtures.rs` also expects a `BvParseError` for the exhausted `bv --robot-next` response. The amendment therefore characterizes the current adapter contract incorrectly. The two tests are somewhat redundant, but that is not the defect claimed here.\n- `fr-2-db74ab47`: Accept\n  The finding is technically sound. `tests/unit/br_adapter_test.rs` validates `br dep tree` using a local `DependencyTreeNode { id, dependencies }` shape, while the public model documented for that command is `DepTreeNode { id, title, status, children }` in `src/adapters/br_models.rs`. Because the adapter test does not deserialize into the real type or a fixture matching the real schema, it can still pass even if the command output no longer matches `DepTreeNode` or that deserialization path regresses. The separate model tests help, but they do not cover this adapter-level contract mismatch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
