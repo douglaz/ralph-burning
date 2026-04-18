@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260418130610-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260418130610-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T13:40:36.851289674Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-a2d2da06`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-a2d2da06`\n\nfinding_summary: `tests/unit/milestone_store_integration_test.rs:906-994` does not actually verify the promised \"no partial state\" guarantee. The test only asserts the final repaired snapshot/journal after it calls `read_journal()`, so it would still pass if `load_snapshot()` exposed the torn `status.json` first and the later journal read performed the repair. affected_files: [\"tests/unit/milestone_store_integration_test.rs:906-994\"] remediation_hint: Assert immediately after `load_snapshot()` that the pending sidecar is already gone, or otherwise verify that the first plain snapshot read masks or repairs the torn cross-file commit before any subsequent journal read.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
