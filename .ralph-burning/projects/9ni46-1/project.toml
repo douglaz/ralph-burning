@@ -1,0 +1,7 @@
+id = "9ni46-1"
+name = "9ni46 adapter tests"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "27776d05f54654c264f07addceabca434c1f667a52803c5bbba985a076e81a5f"
+created_at = "2026-04-18T14:03:08.918954691Z"
+status_summary = "created"

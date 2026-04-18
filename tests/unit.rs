@@ -50,6 +50,12 @@ mod rollback_test;
 #[path = "unit/adapter_contract_test.rs"]
 mod adapter_contract_test;
 
+#[path = "unit/br_adapter_test.rs"]
+mod br_adapter_test;
+
+#[path = "unit/bv_adapter_test.rs"]
+mod bv_adapter_test;
+
 #[cfg(feature = "test-stub")]
 #[path = "unit/agent_execution_test.rs"]
 mod agent_execution_test;
