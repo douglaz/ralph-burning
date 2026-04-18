@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260418021911-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T09:01:07.584546994Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nInspected the iterative_minimal flow changes and ran targeted iterative_minimal tests. Two fix-now correctness issues remain: terminal-sidecar recovery can replay an extra implementer pass on top of already-applied changes, and the git diff fingerprint does not detect empty-directory changes.\n\n## Amendments\n\n1. finding_summary: Resuming a terminal `iterative_minimal` stage with a missing parsed sidecar re-runs the last implementer iteration on top of the already-mutated workspace instead of restoring the pre-iteration tree. In `resume_terminal_iterative_stage_result` the code rewinds only the counters (`src/contexts/workflow_composition/engine.rs:6494-6545`), and `execute_iterative_plan_and_implement_stage` then immediately re-invokes iteration `N` after just persisting that rewound state (`src/contexts/workflow_composition/engine.rs:6926-6945`). If the terminal exit reason was `max_rounds`, this effectively gives the implementer an extra pass beyond the configured cap and can apply additional edits on a different input tree than the original final iteration. affected_files: [\"src/contexts/workflow_composition/engine.rs\"] remediation_hint: Either recover the terminal result from durable artifacts/raw output, or restore the worktree to the pre-iteration state before re-invoking; otherwise fail the run instead of replaying on top of the post-iteration workspace.\n   Rationale: This breaks the core stop-condition guarantee for `iterative_minimal` and can produce extra edits after the configured max-round budget is exhausted.\n2. finding_summary: The git-based diff fingerprint misses empty-directory creations and removals, so an `iterative_minimal` round can be counted as stable even when the workspace changed. `git_diff_fingerprint` only hashes tracked diffs plus paths returned by `git ls-files --others` (`src/contexts/workflow_composition/engine.rs:6797-6852`), but Git does not report empty directories there. Creating or deleting an empty directory in a git repo therefore leaves `diff_before == diff_after`, increments `stable_count`, and can terminate the loop early. affected_files: [\"src/contexts/workflow_composition/engine.rs\"] remediation_hint: Supplement the git-based fingerprint with a filesystem directory walk, or otherwise ensure empty directories participate in the fingerprint when git is available.\n   Rationale: This is a real false negative in the loop's change detector, so the workflow can misclassify a changed iteration as stable and exit too early.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

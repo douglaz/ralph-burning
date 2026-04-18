@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260418021911-final_review-vote-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260418021911-final_review-vote-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-18T09:06:10.613416607Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll four amendments describe real defects or robustness regressions in the current implementation. The strongest issues are the terminal resume path replaying an iteration on an already-mutated workspace, and workspace-level config writes becoming coupled to every project config parse.\n\n## Votes\n\n- `fr-12-02f3b47d`: Accept\n  `resume_terminal_iterative_stage_result` reconstructs only `IterativeImplementerState` from journal events; it does not restore the worktree or recover the terminal result from other durable artifacts. `execute_iterative_plan_and_implement_stage` then persists that rewound state and immediately runs iteration `N` again. Because the previous iteration `N` already completed and may already have modified the workspace, the resumed run re-executes the final implementer pass on a different input tree and can effectively exceed the configured max-round budget in terms of actual executions.\n- `fr-12-6cb15e7f`: Accept\n  The git-backed fingerprint only incorporates `git diff` output plus untracked paths reported by `git ls-files --others`. Empty directories are invisible to both, so creating or removing one leaves the fingerprint unchanged even though the workspace changed. Since iterative stability is driven directly from this fingerprint comparison, that can falsely increment `stable_count` and terminate the loop early.\n- `fr-12-1c8a584f`: Accept\n  `EffectiveConfig::set` now always calls `validate_workspace_iterative_minimal_settings`, and that validator enumerates projects and hard-fails on any `read_project_config` parse or I/O error. As a result, one malformed project config can block unrelated workspace config writes, which is a real coupling/regression from the prior behavior. The unconditional project walk also adds unnecessary O(projects) filesystem and TOML parsing cost to every workspace-level write, even when the edited key is unrelated to iterative-minimal settings.\n- `fr-12-10b1baae`: Accept\n  The filesystem fallback hashes file contents with `std::fs::read`, so peak memory is proportional to the largest included file. Because the exclusions only key off the first path component, nested `target` directories and other large files deeper in the tree are still read wholesale. When git is unavailable, that makes iterative fingerprinting needlessly vulnerable to very slow scans and memory exhaustion on large workspaces or large generated artifacts.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}
