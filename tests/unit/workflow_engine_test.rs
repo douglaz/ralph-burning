@@ -2007,7 +2007,8 @@ async fn minimal_flow_remains_single_pass_without_iteration_events() {
     let base_dir = tmp.path();
 
     setup_workspace(base_dir);
-    let pid = create_project_with_flow(base_dir, "minimal-plain", FlowPreset::Minimal);
+    let project_name = "minimal-plain";
+    let pid = create_project_with_flow(base_dir, project_name, FlowPreset::Minimal);
     let agent_service = build_agent_service();
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -2048,6 +2049,18 @@ async fn minimal_flow_remains_single_pass_without_iteration_events() {
         )
         .len(),
         1
+    );
+
+    let backend_dir = project_root(base_dir, project_name).join("runtime/backend");
+    let parsed_sidecars: Vec<_> = fs::read_dir(&backend_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with(".parsed.json"))
+        .collect();
+    assert!(
+        parsed_sidecars.is_empty(),
+        "non-iterative minimal flow must not persist parsed payload sidecars: {parsed_sidecars:?}"
     );
 }
 

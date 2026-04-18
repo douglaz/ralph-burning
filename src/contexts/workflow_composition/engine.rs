@@ -6083,19 +6083,22 @@ fn persist_invocation_parsed_payload(
     parsed_payload: &Value,
 ) -> AppResult<()> {
     let parsed_output_path = iterative_backend_parsed_output_path(project_root, invocation_id);
-    let serialized =
-        serde_json::to_vec_pretty(parsed_payload).map_err(|error| AppError::StageCommitFailed {
+    let serialized = serde_json::to_string_pretty(parsed_payload).map_err(|error| {
+        AppError::StageCommitFailed {
             stage_id,
             details: format!(
                 "failed to serialize parsed payload for invocation {invocation_id}: {error}"
             ),
-        })?;
-    fs::write(&parsed_output_path, serialized).map_err(|error| AppError::StageCommitFailed {
-        stage_id,
-        details: format!(
-            "failed to persist parsed payload for invocation {invocation_id} at {}: {error}",
-            parsed_output_path.display()
-        ),
+        }
+    })?;
+    FileSystem::write_atomic(&parsed_output_path, &serialized).map_err(|error| {
+        AppError::StageCommitFailed {
+            stage_id,
+            details: format!(
+                "failed to persist parsed payload for invocation {invocation_id} at {}: {error}",
+                parsed_output_path.display()
+            ),
+        }
     })
 }
 
@@ -6201,6 +6204,42 @@ fn resume_terminal_iterative_stage_result(
     .map(Some)
 }
 
+fn iterative_fingerprint_excludes_path(relative_path: &Path) -> bool {
+    let Some(first_component) = relative_path.components().next() else {
+        return false;
+    };
+    let first_component = first_component.as_os_str().to_string_lossy();
+    matches!(
+        first_component.as_ref(),
+        ".git" | ".ralph-burning" | "target" | "target-final"
+    ) || first_component == "result"
+        || first_component.starts_with("result-")
+}
+
+fn iterative_fingerprint_git_pathspecs() -> Vec<&'static str> {
+    vec![
+        ".",
+        ":(top,exclude).ralph-burning",
+        ":(top,glob,exclude).ralph-burning/**",
+        ":(top,exclude)target",
+        ":(top,glob,exclude)target/**",
+        ":(top,exclude)target-final",
+        ":(top,glob,exclude)target-final/**",
+        ":(top,exclude)result",
+        ":(top,glob,exclude)result/**",
+        ":(top,glob,exclude)result-*",
+        ":(top,glob,exclude)result-*/**",
+    ]
+}
+
+fn git_args_with_iterative_fingerprint_pathspecs<'a>(base_args: &'a [&'a str]) -> Vec<&'a str> {
+    base_args
+        .iter()
+        .copied()
+        .chain(iterative_fingerprint_git_pathspecs())
+        .collect()
+}
+
 fn hash_workspace_entries(
     workspace_root: &Path,
     current: &Path,
@@ -6211,18 +6250,11 @@ fn hash_workspace_entries(
 
     for entry in entries {
         let path = entry.path();
-        let relative = path
-            .strip_prefix(workspace_root)
-            .unwrap_or(path.as_path())
-            .to_string_lossy();
-
-        if relative == ".git"
-            || relative.starts_with(".git/")
-            || relative == ".ralph-burning"
-            || relative.starts_with(".ralph-burning/")
-        {
+        let relative_path = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
+        if iterative_fingerprint_excludes_path(relative_path) {
             continue;
         }
+        let relative = relative_path.to_string_lossy();
 
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.is_dir() {
@@ -6349,6 +6381,10 @@ fn hash_untracked_git_entry(
     relative_path: &Path,
     hasher: &mut Sha256,
 ) -> AppResult<()> {
+    if iterative_fingerprint_excludes_path(relative_path) {
+        return Ok(());
+    }
+
     let absolute_path = repo_root.join(relative_path);
     let metadata = fs::symlink_metadata(&absolute_path)?;
     let display_path = relative_path.to_string_lossy();
@@ -6389,40 +6425,34 @@ fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
 
     let staged = git_command_stdout(
         repo_root,
-        &[
+        &git_args_with_iterative_fingerprint_pathspecs(&[
             "diff",
             "--binary",
             "--cached",
             "--no-ext-diff",
             "--",
-            ".",
-            ":(exclude).ralph-burning",
-        ],
+        ]),
         "diff --cached",
     )?;
     let unstaged = git_command_stdout(
         repo_root,
-        &[
+        &git_args_with_iterative_fingerprint_pathspecs(&[
             "diff",
             "--binary",
             "--no-ext-diff",
             "--",
-            ".",
-            ":(exclude).ralph-burning",
-        ],
+        ]),
         "diff",
     )?;
     let untracked_listing = git_command_stdout(
         repo_root,
-        &[
+        &git_args_with_iterative_fingerprint_pathspecs(&[
             "ls-files",
             "--others",
             "--exclude-standard",
             "-z",
             "--",
-            ".",
-            ":(exclude).ralph-burning",
-        ],
+        ]),
         "ls-files --others",
     )?;
 
@@ -6430,6 +6460,7 @@ fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
         .split(|byte| *byte == b'\0')
         .filter(|entry| !entry.is_empty())
         .map(|entry| PathBuf::from(String::from_utf8_lossy(entry).into_owned()))
+        .filter(|path| !iterative_fingerprint_excludes_path(path))
         .collect();
 
     if staged.is_empty() && unstaged.is_empty() && untracked_paths.is_empty() {
@@ -6730,12 +6761,14 @@ where
                 failure_class: contract_error.failure_class(),
                 details: contract_error.to_string(),
             })?;
-        persist_invocation_parsed_payload(
-            project_root,
-            &invocation_id,
-            stage_entry.stage_id,
-            &envelope.parsed_payload,
-        )?;
+        if invocation_suffix.is_some() {
+            persist_invocation_parsed_payload(
+                project_root,
+                &invocation_id,
+                stage_entry.stage_id,
+                &envelope.parsed_payload,
+            )?;
+        }
         Ok((bundle, producer))
     })
 }
@@ -9899,6 +9932,46 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_ignores_build_artifact_paths_in_repo() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let store_dir = tempdir().expect("create store dir");
+        init_git_repo(temp_dir.path());
+
+        let result_path = temp_dir.path().join("result");
+        let store_a = store_dir.path().join("store-a");
+        let store_b = store_dir.path().join("store-b");
+        fs::create_dir_all(&store_a).expect("create store-a");
+        fs::create_dir_all(&store_b).expect("create store-b");
+        std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
+        run_git(temp_dir.path(), &["add", "result"]);
+        run_git(temp_dir.path(), &["commit", "-m", "track result symlink"]);
+
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.is_empty(),
+            "clean repo should have empty fingerprint"
+        );
+
+        fs::create_dir_all(temp_dir.path().join("target/debug")).expect("create target dir");
+        fs::write(temp_dir.path().join("target/debug/build.log"), "artifact\n")
+            .expect("write build artifact");
+        let ignored_target = git_diff_fingerprint(temp_dir.path()).expect("target fingerprint");
+        assert_eq!(
+            baseline, ignored_target,
+            "target/ build artifacts must be ignored"
+        );
+
+        fs::remove_file(&result_path).expect("remove result symlink");
+        std::os::unix::fs::symlink(&store_b, &result_path).expect("recreate result symlink");
+        let ignored_result = git_diff_fingerprint(temp_dir.path()).expect("result fingerprint");
+        assert_eq!(
+            baseline, ignored_result,
+            "tracked result symlink churn must be ignored"
+        );
+    }
+
     #[test]
     fn git_diff_fingerprint_changes_when_dirty_tracked_content_changes_again() {
         let temp_dir = tempdir().expect("create temp dir");
@@ -9991,6 +10064,35 @@ mod tests {
         assert_ne!(
             baseline, changed,
             "non-runtime workspace changes must change the fallback fingerprint"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_diff_fingerprint_fallback_ignores_build_artifact_paths() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let store_dir = tempdir().expect("create store dir");
+
+        fs::write(temp_dir.path().join("tracked.txt"), "baseline\n").expect("write tracked file");
+        let baseline = git_diff_fingerprint(temp_dir.path()).expect("baseline fingerprint");
+        assert!(
+            baseline.starts_with("fs:"),
+            "non-git workspaces should use the filesystem fallback"
+        );
+
+        fs::create_dir_all(temp_dir.path().join("target/debug")).expect("create target dir");
+        fs::write(temp_dir.path().join("target/debug/build.log"), "artifact\n")
+            .expect("write build artifact");
+
+        let result_path = temp_dir.path().join("result");
+        let store_a = store_dir.path().join("store-a");
+        fs::create_dir_all(&store_a).expect("create store-a");
+        std::os::unix::fs::symlink(&store_a, &result_path).expect("create result symlink");
+
+        let ignored = git_diff_fingerprint(temp_dir.path()).expect("ignored fingerprint");
+        assert_eq!(
+            baseline, ignored,
+            "filesystem fallback must ignore build artifacts like target/ and result"
         );
     }
 
