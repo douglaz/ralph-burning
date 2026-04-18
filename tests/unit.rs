@@ -110,3 +110,6 @@ mod template_catalog_test;
 
 #[path = "unit/controller_runtime_test.rs"]
 mod controller_runtime_test;
+
+#[path = "unit/milestone_store_integration_test.rs"]
+mod milestone_store_integration_test;
