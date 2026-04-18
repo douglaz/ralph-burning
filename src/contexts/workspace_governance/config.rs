@@ -172,6 +172,7 @@ impl EffectiveConfig {
             Some(project_id) => FileSystem::read_project_config(base_dir, project_id)?,
             None => ProjectConfig::default(),
         };
+        validate_iterative_minimal_settings(&workspace_config, &project_config)?;
 
         let run_policy = EffectiveRunPolicy {
             default_flow: resolve_scalar(
@@ -1849,7 +1850,7 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
             }
         }
         ["workflow", "iterative_minimal", "max_consecutive_implementer_rounds"] => {
-            apply_optional_u64(
+            apply_optional_positive_u64(
                 document,
                 &[
                     "workflow",
@@ -1860,7 +1861,7 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
                 raw_value,
             )?
         }
-        ["workflow", "iterative_minimal", "stable_rounds_required"] => apply_optional_u64(
+        ["workflow", "iterative_minimal", "stable_rounds_required"] => apply_optional_positive_u64(
             document,
             &["workflow", "iterative_minimal", "stable_rounds_required"],
             key,
@@ -2050,6 +2051,22 @@ fn apply_optional_u64(
     Ok(())
 }
 
+fn apply_optional_positive_u64(
+    document: &mut DocumentMut,
+    path: &[&str],
+    key: &str,
+    raw_value: &str,
+) -> AppResult<()> {
+    if is_unset(raw_value) {
+        set_item(document, path, Item::None);
+        return Ok(());
+    }
+
+    let parsed = parse_positive_u64(key, raw_value)?;
+    set_item(document, path, value(parsed as i64));
+    Ok(())
+}
+
 fn apply_optional_float(
     document: &mut DocumentMut,
     path: &[&str],
@@ -2114,6 +2131,67 @@ fn parse_u64(key: &str, raw_value: &str) -> AppResult<u64> {
             value: raw_value.to_owned(),
             reason: "expected a non-negative integer".to_owned(),
         })
+}
+
+fn parse_positive_u64(key: &str, raw_value: &str) -> AppResult<u64> {
+    let parsed = parse_u64(key, raw_value)?;
+    if parsed == 0 {
+        return Err(AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+            reason: "expected a positive integer".to_owned(),
+        });
+    }
+
+    Ok(parsed)
+}
+
+fn validate_optional_positive_u32(key: &str, value: Option<u32>) -> AppResult<()> {
+    if value == Some(0) {
+        return Err(AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: "0".to_owned(),
+            reason: "expected a positive integer".to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_iterative_minimal_settings(
+    workspace_config: &WorkspaceConfig,
+    project_config: &ProjectConfig,
+) -> AppResult<()> {
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+    )?;
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.max_consecutive_implementer_rounds",
+        project_config
+            .workflow
+            .iterative_minimal
+            .max_consecutive_implementer_rounds,
+    )?;
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.stable_rounds_required",
+        workspace_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+    validate_optional_positive_u32(
+        "workflow.iterative_minimal.stable_rounds_required",
+        project_config
+            .workflow
+            .iterative_minimal
+            .stable_rounds_required,
+    )?;
+
+    Ok(())
 }
 
 fn parse_f64(key: &str, raw_value: &str) -> AppResult<f64> {

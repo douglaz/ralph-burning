@@ -1897,6 +1897,111 @@ async fn iterative_minimal_detects_changes_to_already_dirty_files() {
 }
 
 #[tokio::test]
+async fn iterative_minimal_resume_after_terminal_loop_does_not_reinvoke_implementer() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    init_git_repo(base_dir);
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-resume-terminal",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = IterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 9);
+        let first_result = engine::execute_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::IterativeMinimal,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "failpoint should interrupt stage commit"
+        );
+    }
+
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "initial run should stop after the stable loop finishes"
+    );
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        failed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "terminal loop exit must already be durable before resume"
+    );
+    assert_eq!(
+        stage_events(
+            &failed_events,
+            JournalEventType::StageCompleted,
+            "plan_and_implement"
+        )
+        .len(),
+        0,
+        "stage commit should not have completed under the failpoint"
+    );
+
+    let resume_agent_service = build_agent_service_with_adapter(adapter_handle.clone());
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        3,
+        "resume should reuse the terminal iteration output instead of invoking the implementer again"
+    );
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        resumed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::ImplementerLoopExited)
+            .count(),
+        1,
+        "resume should not append a duplicate loop exit event when one is already durable"
+    );
+}
+
+#[tokio::test]
 async fn minimal_flow_remains_single_pass_without_iteration_events() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
