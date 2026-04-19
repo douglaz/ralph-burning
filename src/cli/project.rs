@@ -1037,11 +1037,7 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
         );
     }
     if recovered_flush.includes_owned_update_status(&claim_owner_token, bead_id, "in_progress") {
-        match br
-            .inner()
-            .exec_json::<BeadDetail>(&BrCommand::show(bead_id.to_owned()))
-            .await
-        {
+        match load_exact_bead_detail_for_claim(&br, bead_id).await {
             Ok(detail) if detail.status == BeadStatus::InProgress => {
                 ensure_beads_claim_post_flush_health(base_dir, bead_id)?;
                 tracing::info!(
@@ -1071,14 +1067,16 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
     }
 
     ensure_beads_claim_health(base_dir, bead_id)?;
-    br.update_bead_status(bead_id, "in_progress")
-        .await
-        .map_err(|update_error| {
-            AppError::Io(std::io::Error::other(format!(
+    if let Err(update_error) = br.update_bead_status(bead_id, "in_progress").await {
+        if !recover_claim_after_false_missing_update(&br, bead_id, claim_owner, &update_error)
+            .await?
+        {
+            return Err(AppError::Io(std::io::Error::other(format!(
                 "failed to claim bead '{bead_id}' via br update --status=in_progress: \
                  {update_error}"
-            )))
-        })?;
+            ))));
+        }
+    }
     match br.sync_own_dirty_if_beads_healthy(base_dir).await {
         Ok(_) => {}
         Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
@@ -1098,6 +1096,107 @@ async fn claim_bead_in_br(base_dir: &Path, bead_id: &str, claim_owner: &str) -> 
         }
     }
     Ok(())
+}
+
+fn br_update_error_indicates_missing_bead(error: &BrError) -> bool {
+    match error {
+        BrError::BrExitError { stderr, stdout, .. } => {
+            br_show_output_indicates_missing(stderr, stdout)
+        }
+        _ => false,
+    }
+}
+
+async fn recover_claim_after_false_missing_update(
+    br: &BrMutationAdapter,
+    bead_id: &str,
+    claim_owner: &str,
+    update_error: &BrError,
+) -> AppResult<bool> {
+    if !br_update_error_indicates_missing_bead(update_error) {
+        return Ok(false);
+    }
+
+    match load_exact_bead_detail_for_claim(br, bead_id).await {
+        Ok(detail) if detail.status == BeadStatus::InProgress => {
+            br.restore_pending_status_update(bead_id, "in_progress")
+                .await
+                .map_err(|restore_error| {
+                    AppError::Io(std::io::Error::other(format!(
+                        "bead '{bead_id}' was locally claimed despite a false `br update` \
+                         failure, but Ralph could not restore its pending mutation journal: \
+                         {restore_error}"
+                    )))
+                })?;
+            tracing::warn!(
+                bead_id = bead_id,
+                claim_owner = claim_owner,
+                %update_error,
+                "br update reported a missing bead even though br show confirmed in_progress; restored the pending mutation record and continuing with guarded sync"
+            );
+            Ok(true)
+        }
+        Ok(detail) => {
+            tracing::warn!(
+                bead_id = bead_id,
+                claim_owner = claim_owner,
+                current_status = %detail.status,
+                %update_error,
+                "br update reported a missing bead but br show did not confirm an in_progress claim"
+            );
+            Ok(false)
+        }
+        Err(show_error) => {
+            tracing::warn!(
+                bead_id = bead_id,
+                claim_owner = claim_owner,
+                %update_error,
+                %show_error,
+                "br update reported a missing bead and Ralph could not verify the bead state afterward"
+            );
+            Ok(false)
+        }
+    }
+}
+
+async fn load_exact_bead_detail_for_claim(
+    br: &BrMutationAdapter,
+    bead_id: &str,
+) -> Result<BeadDetail, BrError> {
+    let detail = br
+        .inner()
+        .exec_json::<BeadDetail>(&BrCommand::show(bead_id.to_owned()))
+        .await?;
+    if detail.id == bead_id {
+        return Ok(detail);
+    }
+    if bead_id.contains('.') {
+        return Err(BrError::BrParseError {
+            details: format!(
+                "br show returned bead '{}' while claiming exact bead '{bead_id}'",
+                detail.id
+            ),
+            raw_output: String::new(),
+            command: format!("br show {bead_id} --json"),
+        });
+    }
+
+    let detail = br
+        .inner()
+        .exec_json::<BeadDetail>(&BrCommand::show_no_db(bead_id.to_owned()))
+        .await?;
+    if detail.id == bead_id {
+        return Ok(detail);
+    }
+
+    Err(BrError::BrParseError {
+        details: format!(
+            "br show --no-db returned bead '{}' while claiming exact bead '{bead_id}'",
+            detail.id
+        ),
+        raw_output: String::new(),
+        command: format!("br show {bead_id} --json --no-db"),
+    })
 }
 
 fn claim_owner_token(claim_owner: &str, bead_id: &str) -> String {
@@ -1136,46 +1235,60 @@ async fn load_bead_detail(
     milestone_id: &MilestoneId,
     bead_id: &str,
 ) -> AppResult<BeadDetail> {
-    let response: BrShowResponse = BrAdapter::new()
-        .with_working_dir(base_dir.to_path_buf())
+    let br = BrAdapter::new().with_working_dir(base_dir.to_path_buf());
+    let response: BrShowResponse = br
         .exec_json(&BrCommand::show(bead_id))
         .await
-        .map_err(|error| match error {
-            BrError::BrExitError { stderr, stdout, .. }
-                if br_show_output_indicates_missing(&stderr, &stdout) =>
-            {
-                AppError::Io(std::io::Error::other(format!(
-                    "failed to load bead '{bead_id}': bead not found"
-                )))
-            }
-            BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
-                "failed to load bead '{bead_id}': {stderr}"
-            ))),
-            other => AppError::Io(std::io::Error::other(format!(
-                "failed to load bead '{bead_id}': {other}"
-            ))),
-        })?;
+        .map_err(|error| map_br_show_error(bead_id, error))?;
 
+    if let Some(bead) = select_matching_bead_from_show_response(milestone_id, bead_id, response)? {
+        return Ok(bead);
+    }
+
+    if !bead_id.contains('.') {
+        let response: BrShowResponse = br
+            .exec_json(&BrCommand::show_no_db(bead_id))
+            .await
+            .map_err(|error| map_br_show_error(bead_id, error))?;
+        if let Some(bead) =
+            select_matching_bead_from_show_response(milestone_id, bead_id, response)?
+        {
+            return Ok(bead);
+        }
+    }
+
+    Err(unmatched_br_show_error(milestone_id, bead_id))
+}
+
+fn map_br_show_error(bead_id: &str, error: BrError) -> AppError {
+    match error {
+        BrError::BrExitError { stderr, stdout, .. }
+            if br_show_output_indicates_missing(&stderr, &stdout) =>
+        {
+            AppError::Io(std::io::Error::other(format!(
+                "failed to load bead '{bead_id}': bead not found"
+            )))
+        }
+        BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
+            "failed to load bead '{bead_id}': {stderr}"
+        ))),
+        other => AppError::Io(std::io::Error::other(format!(
+            "failed to load bead '{bead_id}': {other}"
+        ))),
+    }
+}
+
+fn select_matching_bead_from_show_response(
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    response: BrShowResponse,
+) -> AppResult<Option<BeadDetail>> {
     match response {
         BrShowResponse::Single(bead) => {
             if bead_id.contains('.') {
-                if bead.id != bead_id {
-                    return Err(AppError::Io(std::io::Error::other(format!(
-                        "failed to load bead '{bead_id}': br show returned bead '{}'",
-                        bead.id
-                    ))));
-                }
-                return Ok(bead);
+                return Ok((bead.id == bead_id).then_some(bead));
             }
-
-            if milestone_bead_refs_match(milestone_id, &bead.id, bead_id) {
-                return Ok(bead);
-            }
-
-            Err(AppError::Io(std::io::Error::other(format!(
-                "failed to load bead '{bead_id}': br show returned bead '{}'",
-                bead.id
-            ))))
+            Ok(milestone_bead_refs_match(milestone_id, &bead.id, bead_id).then_some(bead))
         }
         BrShowResponse::Many(beads) => {
             let mut matches = beads.into_iter().filter(|bead| {
@@ -1185,19 +1298,7 @@ async fn load_bead_detail(
                     milestone_bead_refs_match(milestone_id, &bead.id, bead_id)
                 }
             });
-            let bead = matches.next().ok_or_else(|| {
-                let detail = if bead_id.contains('.') {
-                    "br show returned no matching bead".to_owned()
-                } else {
-                    format!(
-                        "br show returned no matching bead in milestone '{}'",
-                        milestone_id
-                    )
-                };
-                AppError::Io(std::io::Error::other(format!(
-                    "failed to load bead '{bead_id}': {detail}"
-                )))
-            })?;
+            let bead = matches.next();
             if matches.next().is_some() {
                 return Err(AppError::Io(std::io::Error::other(format!(
                     "failed to load bead '{bead_id}': br show returned multiple matching beads"
@@ -1206,6 +1307,20 @@ async fn load_bead_detail(
             Ok(bead)
         }
     }
+}
+
+fn unmatched_br_show_error(milestone_id: &MilestoneId, bead_id: &str) -> AppError {
+    let detail = if bead_id.contains('.') {
+        "br show returned no matching bead".to_owned()
+    } else {
+        format!(
+            "br show returned no matching bead in milestone '{}'",
+            milestone_id
+        )
+    };
+    AppError::Io(std::io::Error::other(format!(
+        "failed to load bead '{bead_id}': {detail}"
+    )))
 }
 
 async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, BeadSummary>> {
@@ -1325,7 +1440,7 @@ fn ensure_bead_belongs_to_milestone(
     bead: &BeadDetail,
 ) -> AppResult<()> {
     let expected_prefix = format!("{}.", milestone_id.as_str());
-    if bead.id.starts_with(&expected_prefix) {
+    if bead.id.starts_with(&expected_prefix) || !bead.id.contains('.') {
         return Ok(());
     }
 
@@ -3812,6 +3927,31 @@ mod tests {
     }
 
     #[test]
+    fn ensure_bead_belongs_to_milestone_accepts_unqualified_explicit_id() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bead = sample_bead();
+        bead.id = "ralph-burning-evi".to_owned();
+
+        ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect("unqualified explicit bead id should pass");
+    }
+
+    #[test]
+    fn ensure_bead_belongs_to_milestone_rejects_foreign_qualified_id() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let mut bead = sample_bead();
+        bead.id = "other-ms.bead-2".to_owned();
+
+        let error = ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect_err("foreign qualified bead id should fail");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+        assert!(error
+            .to_string()
+            .contains("expected bead id to belong to milestone 'ms-alpha'"));
+    }
+
+    #[test]
     fn validate_milestone_plan_snapshot_rejects_stale_hash() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let error =
@@ -3880,6 +4020,74 @@ mod tests {
             assert!(error
                 .to_string()
                 .contains(&format!("bead is already {status}")));
+        }
+    }
+
+    #[cfg(unix)]
+    mod load_bead_detail_tests {
+        use std::os::unix::fs::PermissionsExt;
+
+        use super::*;
+        use crate::test_support::env::{lock_path_mutex, PathGuard};
+
+        fn install_fake_br_show_retry_no_db(
+            base_dir: &std::path::Path,
+            bead_id: &str,
+            foreign_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    for arg in "$@"; do
+      if [ "$arg" = "--no-db" ]; then
+        cat <<'BEAD_JSON'
+{{"id":"{bead_id}","title":"Expected explicit bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+        exit 0
+      fi
+    done
+    cat <<'BEAD_JSON'
+{{"id":"{foreign_id}","title":"Foreign bead","status":"closed","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_retries_no_db_for_unqualified_explicit_ids(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_retry_no_db(base_dir, "ralph-burning-evi", "ralph-burning-pfr");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("ms-explicit")?;
+            let bead = super::super::load_bead_detail(base_dir, &milestone_id, "ralph-burning-evi")
+                .await?;
+
+            assert_eq!(bead.id, "ralph-burning-evi");
+            assert_eq!(bead.status, BeadStatus::InProgress);
+            Ok(())
         }
     }
 
@@ -3971,6 +4179,68 @@ case "$1" in
     ;;
 esac
 "#;
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        /// Install a fake `br` where `update` applies the local status change
+        /// but still exits non-zero with a false "issue not found" error.
+        fn install_fake_br_claim_false_missing_after_local_update(
+            base_dir: &std::path::Path,
+            bead_id: &str,
+        ) {
+            write_beads_export(base_dir, "{\"id\":\"seed-bead\"}\n");
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+set -eu
+
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  update)
+    count=0
+    if [ -f .beads/update-count ]; then
+      count=$(cat .beads/update-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/update-count
+    echo "in_progress" > .beads/{bead_id}.status
+    echo "Error: Issue not found: {bead_id}" >&2
+    exit 3
+    ;;
+  sync)
+    count=0
+    if [ -f .beads/sync-count ]; then
+      count=$(cat .beads/sync-count)
+    fi
+    count=$((count + 1))
+    echo "$count" > .beads/sync-count
+    echo "Synced"
+    exit 0
+    ;;
+  show)
+    status="open"
+    if [ -f .beads/{bead_id}.status ]; then
+      status=$(cat .beads/{bead_id}.status)
+    fi
+    cat <<BEAD_JSON
+{{"id":"{bead_id}","title":"Test bead","status":"$status","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+    exit 0
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
             let br_path = fake_bin.join("br");
             std::fs::write(&br_path, script).expect("write fake br");
             std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
@@ -4397,6 +4667,33 @@ esac
             assert!(
                 error.contains("failed to claim bead 'bead-1'"),
                 "error should mention the bead id: {error}"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn claim_bead_in_br_recovers_when_update_false_reports_missing_after_local_claim(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_claim_false_missing_after_local_update(base_dir, "bead-1");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            super::super::claim_bead_in_br(base_dir, "bead-1", claim_owner()).await?;
+
+            let update_count = std::fs::read_to_string(base_dir.join(".beads/update-count"))?;
+            assert_eq!(
+                update_count.trim(),
+                "1",
+                "the false-negative update path should not retry the mutation"
+            );
+            let sync_count = std::fs::read_to_string(base_dir.join(".beads/sync-count"))?;
+            assert_eq!(
+                sync_count.trim(),
+                "1",
+                "the recovered pending journal should still drive a final guarded sync"
             );
             Ok(())
         }

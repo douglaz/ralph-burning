@@ -1243,8 +1243,12 @@ impl FileSystem {
         Ok(())
     }
 
+    pub(crate) fn seed_live_workspace(base_dir: &Path) -> AppResult<()> {
+        Self::ensure_live_workspace_seeded(base_dir)
+    }
+
     fn ensure_live_project_root(base_dir: &Path, project_id: &ProjectId) -> AppResult<PathBuf> {
-        Self::ensure_live_workspace_seeded(base_dir)?;
+        Self::seed_live_workspace(base_dir)?;
         let live_root = Self::live_project_root(base_dir, project_id);
         if live_root.join(PROJECT_CONFIG_FILE).is_file() {
             return Ok(live_root);
@@ -1564,11 +1568,7 @@ impl ProjectStorePort for FsProjectStore {
                 continue;
             }
             if !project_root.join(PROJECT_CONFIG_FILE).is_file() {
-                return Err(AppError::CorruptRecord {
-                    file: format!("projects/{id}/project.toml"),
-                    details: "project directory exists but canonical project.toml is missing"
-                        .to_owned(),
-                });
+                continue;
             }
             ids.push(pid);
         }

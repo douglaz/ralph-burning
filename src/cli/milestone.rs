@@ -615,8 +615,19 @@ async fn handle_next(milestone_id: Option<String>, json: bool) -> AppResult<()> 
     validate_workspace(&current_dir)?;
 
     let store = FsMilestoneStore;
+    let snapshot_store = FsMilestoneSnapshotStore;
+    let plan_store = FsMilestonePlanStore;
+    let requirements_store = FsRequirementsStore;
     let milestone_id = resolve_requested_milestone(&store, &current_dir, milestone_id)?;
     workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
+    ensure_execution_plan_available(
+        &snapshot_store,
+        &plan_store,
+        &requirements_store,
+        &current_dir,
+        &milestone_id,
+        "next",
+    )?;
 
     let outcome = inspect_next_milestone_action(&current_dir, &milestone_id).await?;
     let failure =
@@ -639,8 +650,19 @@ async fn handle_run(milestone_id: Option<String>, json: bool) -> AppResult<()> {
     validate_workspace(&current_dir)?;
 
     let store = FsMilestoneStore;
+    let snapshot_store = FsMilestoneSnapshotStore;
+    let plan_store = FsMilestonePlanStore;
+    let requirements_store = FsRequirementsStore;
     let milestone_id = resolve_requested_milestone(&store, &current_dir, milestone_id)?;
     workspace_governance::set_active_milestone(&current_dir, &milestone_id)?;
+    ensure_execution_plan_available(
+        &snapshot_store,
+        &plan_store,
+        &requirements_store,
+        &current_dir,
+        &milestone_id,
+        "run",
+    )?;
 
     let outcome = execute_milestone_run(&current_dir, &milestone_id).await?;
     let failure = milestone_command_failure(&milestone_id, "run", outcome.status, &outcome.message);
@@ -1422,10 +1444,30 @@ fn load_bead_detail_from_br(
     milestone_id: &MilestoneId,
     bead_id: &str,
 ) -> AppResult<Option<BeadDetail>> {
-    let output = std::process::Command::new("br")
+    let primary = std::process::Command::new("br")
         .args(["show", bead_id, "--json"])
         .current_dir(base_dir)
         .output()?;
+    if let Some(result) = parse_bead_detail_from_br_output(&primary, milestone_id, bead_id)? {
+        return Ok(Some(result));
+    }
+
+    if bead_id.contains('.') {
+        return Ok(None);
+    }
+
+    let no_db = std::process::Command::new("br")
+        .args(["show", bead_id, "--json", "--no-db"])
+        .current_dir(base_dir)
+        .output()?;
+    parse_bead_detail_from_br_output(&no_db, milestone_id, bead_id)
+}
+
+fn parse_bead_detail_from_br_output(
+    output: &std::process::Output,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<Option<BeadDetail>> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
@@ -1452,21 +1494,9 @@ fn load_bead_detail_from_br(
     match response {
         BrShowResponse::Single(detail) => {
             if bead_id.contains('.') {
-                if detail.id != bead_id {
-                    return Err(AppError::Io(std::io::Error::other(format!(
-                        "br show {bead_id} --json returned bead '{}'",
-                        detail.id
-                    ))));
-                }
-                Ok(Some(detail))
-            } else if milestone_bead_refs_match(milestone_id, &detail.id, bead_id) {
-                Ok(Some(detail))
-            } else {
-                Err(AppError::Io(std::io::Error::other(format!(
-                    "br show {bead_id} --json returned bead '{}'",
-                    detail.id
-                ))))
+                return Ok((detail.id == bead_id).then_some(detail));
             }
+            Ok(milestone_bead_refs_match(milestone_id, &detail.id, bead_id).then_some(detail))
         }
         BrShowResponse::Many(details) => {
             let mut matches = details.into_iter().filter(|detail| {
@@ -1476,15 +1506,13 @@ fn load_bead_detail_from_br(
                     milestone_bead_refs_match(milestone_id, &detail.id, bead_id)
                 }
             });
-            let Some(detail) = matches.next() else {
-                return Ok(None);
-            };
+            let detail = matches.next();
             if matches.next().is_some() {
                 return Err(AppError::Io(std::io::Error::other(format!(
                     "br show {bead_id} --json returned multiple matching beads"
                 ))));
             }
-            Ok(Some(detail))
+            Ok(detail)
         }
     }
 }
@@ -1686,6 +1714,46 @@ fn load_milestone_detail(
         created_at: record.created_at,
         updated_at: inspection.snapshot.updated_at,
         has_plan,
+    })
+}
+
+fn ensure_execution_plan_available(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    plan_store: &impl MilestonePlanPort,
+    requirements_store: &impl RequirementsStorePort,
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    action: &str,
+) -> AppResult<()> {
+    let inspection = load_inspection_state(
+        snapshot_store,
+        plan_store,
+        requirements_store,
+        base_dir,
+        milestone_id,
+    )
+    .map_err(|error| map_action_error(milestone_id, action, error))?;
+
+    if inspection.plan.is_some() {
+        return Ok(());
+    }
+
+    let details = if inspection.display_status == MilestoneStatus::Planning.to_string() {
+        format!(
+            "milestone is still planning and has no plan.json yet; run `ralph-burning milestone plan {}` and retry",
+            milestone_id
+        )
+    } else {
+        format!(
+            "milestone has no live plan.json; run `ralph-burning milestone plan {}` and retry",
+            milestone_id
+        )
+    };
+
+    Err(AppError::MilestoneOperationFailed {
+        milestone_id: milestone_id.to_string(),
+        action: action.to_owned(),
+        details,
     })
 }
 
@@ -1939,6 +2007,17 @@ fn map_inspection_error(milestone_id: &MilestoneId, error: AppError) -> AppError
         other => AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: "inspection".to_owned(),
+            details: other.to_string(),
+        },
+    }
+}
+
+fn map_action_error(milestone_id: &MilestoneId, action: &str, error: AppError) -> AppError {
+    match error {
+        AppError::MilestoneNotFound { .. } | AppError::MilestoneOperationFailed { .. } => error,
+        other => AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: action.to_owned(),
             details: other.to_string(),
         },
     }
