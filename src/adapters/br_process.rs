@@ -354,6 +354,11 @@ impl BrCommand {
         Self::new("show").arg(id).json()
     }
 
+    /// `br show <id> --json --no-db`
+    pub fn show_no_db(id: impl Into<String>) -> Self {
+        Self::new("show").arg(id).json().flag("no-db")
+    }
+
     /// `br ready --json`
     pub fn ready() -> Self {
         Self::new("ready").json()
@@ -1385,6 +1390,34 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
             "updated bead status"
         );
         Ok(output)
+    }
+
+    /// Recreate this adapter's pending status-update journal after an
+    /// externally observed local status change proved the subprocess mutated
+    /// bead state before exiting non-zero.
+    pub async fn restore_pending_status_update(
+        &self,
+        id: &str,
+        status: &str,
+    ) -> Result<(), BrError> {
+        let _operation_guard = self.operation_lock.lock().await;
+        let _repo_guard = self.acquire_repo_operation_lock()?;
+        let record = PendingMutationRecord::new(
+            self.adapter_id.clone(),
+            "update_bead_status",
+            Some(id),
+            Some(status),
+        );
+        self.persist_pending_mutation_record(&record)?;
+        self.has_unsync_mutations.store(true, Ordering::Release);
+        tracing::warn!(
+            operation = "update_bead_status",
+            bead_id = id,
+            status = status,
+            outcome = "recovered_pending_record",
+            "restored br pending mutation record after a subprocess reported failure despite an observed local status change"
+        );
+        Ok(())
     }
 
     /// Close a bead with a reason.

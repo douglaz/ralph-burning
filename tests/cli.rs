@@ -1666,6 +1666,89 @@ fn milestone_next_returns_blocked_json_and_nonzero_status() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("milestone 'ms-blocked' next failed"));
 }
 
+#[test]
+fn milestone_next_claims_ready_fallback_when_bv_recommends_foreign_bead() {
+    let temp_dir = initialize_workspace_fixture();
+    write_single_bead_milestone_fixture(temp_dir.path(), "ms-single");
+
+    let ready_payload = r#"[{"id":"bead-1","title":"Execute the only bead","priority":"P1","issue_type":"task","labels":["single"]}]"#;
+    let show_payload = r#"[
+  {
+    "id": "other-ms.bead-9",
+    "title": "Wrong milestone bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Belongs elsewhere.",
+    "acceptance_criteria": "- Wrong milestone",
+    "dependencies": [],
+    "dependents": []
+  },
+  {
+    "id": "ms-single.bead-1",
+    "title": "Execute the only bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Create and run a single bead-backed project.",
+    "acceptance_criteria": "- Single bead completes",
+    "dependencies": [],
+    "dependents": []
+  }
+]"#;
+    let list_payload = r#"{"issues":[{"id":"ms-single.bead-1","title":"Execute the only bead","status":"open","priority":"P1","issue_type":"task","labels":["single"]}]}"#;
+    write_br_milestone_selection_script(temp_dir.path(), ready_payload, show_payload, list_payload);
+    write_bv_next_script(temp_dir.path(), "other-ms.bead-9", "Wrong milestone bead");
+
+    let output = Command::new(binary())
+        .args(["milestone", "next", "ms-single", "--json"])
+        .env("PATH", prepend_path(temp_dir.path()))
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone next with foreign recommendation");
+
+    assert!(
+        output.status.success(),
+        "milestone next should succeed via ready fallback: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse milestone next json");
+    assert_eq!(json["status"], "success");
+    assert_eq!(json["bead"]["id"], "ms-single.bead-1");
+}
+
+#[test]
+fn milestone_next_rejects_execution_when_plan_json_is_missing_during_planning() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["milestone", "create", "Alpha Plan"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+    assert!(
+        output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(binary())
+        .args(["milestone", "next", "ms-alpha-plan", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone next without a plan");
+
+    assert!(
+        !output.status.success(),
+        "milestone next should fail when plan.json is missing"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha-plan' next failed"));
+    assert!(stderr.contains("still planning"));
+    assert!(stderr.contains("milestone plan ms-alpha-plan"));
+}
+
 #[cfg(feature = "test-stub")]
 #[test]
 fn milestone_run_ignores_malformed_active_milestone_pointer_and_adopts_existing_project() {
@@ -1742,6 +1825,39 @@ fn milestone_run_ignores_malformed_active_milestone_pointer_and_adopts_existing_
         fs::read_to_string(milestone_root(temp_dir.path(), "ms-single").join("task-runs.ndjson"))
             .expect("read milestone task-runs");
     assert!(task_runs.contains("\"project_id\":\"custom-bead-run\""));
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn milestone_run_rejects_execution_when_plan_json_is_missing_during_planning() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["milestone", "create", "Alpha Plan"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+    assert!(
+        output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let output = Command::new(binary())
+        .args(["milestone", "run", "ms-alpha-plan", "--json"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone run without a plan");
+
+    assert!(
+        !output.status.success(),
+        "milestone run should fail when plan.json is missing"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha-plan' run failed"));
+    assert!(stderr.contains("still planning"));
+    assert!(stderr.contains("milestone plan ms-alpha-plan"));
 }
 
 #[cfg(feature = "test-stub")]
@@ -6367,7 +6483,7 @@ exit 1
 
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("br show returned bead 'ms-alpha.bead-200'"));
+    assert!(stderr.contains("br show returned no matching bead"));
 }
 
 #[test]
@@ -12039,7 +12155,7 @@ fn project_show_fails_fast_when_project_toml_is_missing() {
 }
 
 #[test]
-fn project_list_fails_fast_when_project_toml_is_missing() {
+fn project_list_skips_partial_project_when_project_toml_is_missing() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());
 
@@ -12070,10 +12186,16 @@ fn project_list_fails_fast_when_project_toml_is_missing() {
         .output()
         .expect("run project list");
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("project.toml"));
-    assert!(stderr.contains("missing"));
+    assert!(
+        output.status.success(),
+        "project list should skip partial projects: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("good-proj"),
+        "project list should not surface the partial project: {stdout}"
+    );
 }
 
 #[test]

@@ -26,7 +26,7 @@ use rustix::process::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapters::br_models::{BeadDetail, BeadStatus, DependencyKind, ReadyBead};
+use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, DependencyKind, ReadyBead};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrError, ProcessRunner};
 use crate::adapters::bv_process::{BvAdapter, BvCommand, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
@@ -274,6 +274,35 @@ impl ProjectMilestoneControllerRuntime<'_> {
     fn planned_bead_membership_refs(&self) -> AppResult<HashSet<String>> {
         load_planned_bead_membership_refs(self.base_dir, self.milestone_id)
     }
+
+    fn exact_bead_status_from_list(
+        &self,
+        bead_id: &str,
+    ) -> AppResult<Option<ControllerBeadStatus>> {
+        let response: BrListResponse = self.query_br_json(
+            &["list", "--all", "--deferred", "--limit=0", "--json"],
+            "milestone controller resume",
+        )?;
+        let issues = match response {
+            BrListResponse::Envelope { issues } => issues,
+            BrListResponse::Many(issues) => issues,
+        };
+        let mut matches = issues
+            .into_iter()
+            .filter(|issue| milestone_bead_refs_match(self.milestone_id, &issue.id, bead_id));
+        let issue = matches.next();
+        if matches.next().is_some() {
+            return Err(AppError::ResumeFailed {
+                reason: format!(
+                    "milestone controller resume found multiple exact-list matches for '{bead_id}'"
+                ),
+            });
+        }
+        Ok(issue.map(|issue| match issue.status {
+            BeadStatus::Closed => ControllerBeadStatus::Closed,
+            _ => ControllerBeadStatus::Open,
+        }))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,6 +317,13 @@ struct BvMessageOnlyResponse {
 enum BrShowResponse {
     Single(BeadDetail),
     Many(Vec<BeadDetail>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BrListResponse {
+    Envelope { issues: Vec<BeadSummary> },
+    Many(Vec<BeadSummary>),
 }
 
 #[derive(Debug, Clone)]
@@ -333,6 +369,15 @@ fn summarize_bead_ids(ids: &[String]) -> String {
     } else {
         format!("{} (and {} more)", shown.join(", "), ids.len() - MAX_IDS)
     }
+}
+
+fn preferred_ready_milestone_bead(ready_beads: &[ReadyBead]) -> Option<&ReadyBead> {
+    ready_beads.iter().min_by(|left, right| {
+        left.priority
+            .value()
+            .cmp(&right.priority.value())
+            .then_with(|| left.id.cmp(&right.id))
+    })
 }
 
 fn br_show_error_is_missing(error: &BrError) -> bool {
@@ -621,6 +666,20 @@ async fn complete_next_milestone_bead_selection<R: ProcessRunner>(
                 milestone_id,
                 &recommendation.id,
             ) {
+                if let Some(fallback_bead) = preferred_ready_milestone_bead(&ready_beads) {
+                    return transition_controller_for_selection_outcome(
+                        base_dir,
+                        milestone_id,
+                        MilestoneControllerState::Claimed,
+                        Some(&fallback_bead.id),
+                        format!(
+                            "bv recommended bead '{}', but it is not part of milestone '{}'; claiming ready milestone bead '{}' instead",
+                            recommendation.id, milestone_id, fallback_bead.id
+                        ),
+                        now,
+                    );
+                }
+
                 let ready_ids = ready_beads
                     .iter()
                     .map(|bead| bead.id.clone())
@@ -667,6 +726,20 @@ async fn complete_next_milestone_bead_selection<R: ProcessRunner>(
             )
         }
         NextRecommendationOutcome::NoRecommendation => {
+            if let Some(fallback_bead) = preferred_ready_milestone_bead(&ready_beads) {
+                return transition_controller_for_selection_outcome(
+                    base_dir,
+                    milestone_id,
+                    MilestoneControllerState::Claimed,
+                    Some(&fallback_bead.id),
+                    format!(
+                        "bv reported no actionable bead; claiming ready milestone bead '{}' instead",
+                        fallback_bead.id
+                    ),
+                    now,
+                );
+            }
+
             let ready_ids = ready_beads
                 .iter()
                 .map(|bead| bead.id.clone())
@@ -949,10 +1022,23 @@ impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
                     ),
                 }
             })?;
-        let detail = match response {
-            BrShowResponse::Single(detail) => {
-                milestone_bead_refs_match(self.milestone_id, &detail.id, bead_id).then_some(detail)
+        match response {
+            BrShowResponse::Single(detail)
+                if milestone_bead_refs_match(self.milestone_id, &detail.id, bead_id) =>
+            {
+                Ok(match detail.status {
+                    BeadStatus::Closed => ControllerBeadStatus::Closed,
+                    _ => ControllerBeadStatus::Open,
+                })
             }
+            BrShowResponse::Single(detail) => self
+                .exact_bead_status_from_list(bead_id)?
+                .ok_or_else(|| AppError::ResumeFailed {
+                    reason: format!(
+                        "milestone controller resume asked for bead '{bead_id}' but br show returned '{}' and the exact list lookup found no match",
+                        detail.id
+                    ),
+                }),
             BrShowResponse::Many(details) => {
                 let mut matches = details.into_iter().filter(|detail| {
                     milestone_bead_refs_match(self.milestone_id, &detail.id, bead_id)
@@ -965,16 +1051,21 @@ impl MilestoneControllerResumePort for ProjectMilestoneControllerRuntime<'_> {
                         ),
                     });
                 }
-                detail
+                match detail {
+                    Some(detail) => Ok(match detail.status {
+                        BeadStatus::Closed => ControllerBeadStatus::Closed,
+                        _ => ControllerBeadStatus::Open,
+                    }),
+                    None => self
+                        .exact_bead_status_from_list(bead_id)?
+                        .ok_or_else(|| AppError::ResumeFailed {
+                            reason: format!(
+                                "milestone controller resume asked for bead '{bead_id}' but br show returned no matching bead and the exact list lookup found no match"
+                            ),
+                        }),
+                }
             }
-        };
-        let Some(detail) = detail else {
-            return Ok(ControllerBeadStatus::Missing);
-        };
-        Ok(match detail.status {
-            BeadStatus::Closed => ControllerBeadStatus::Closed,
-            _ => ControllerBeadStatus::Open,
-        })
+        }
     }
 
     fn task_status(&self, task_id: &str) -> AppResult<ControllerTaskStatus> {
@@ -3598,8 +3689,10 @@ pub(crate) async fn execute_start(
     }
 
     let amendment_queue = FsAmendmentQueueStore;
-    let retry_policy = RetryPolicy::default_policy()
-        .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations);
+    let retry_policy = apply_test_retry_policy_overrides(
+        RetryPolicy::default_policy()
+            .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
+    );
     let run_result = run_with_termination_signal(
         cancellation_token.clone(),
         RunSignalCleanupContext {
@@ -3845,8 +3938,10 @@ pub(crate) async fn execute_resume(
     }
 
     let amendment_queue = FsAmendmentQueueStore;
-    let retry_policy = RetryPolicy::default_policy()
-        .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations);
+    let retry_policy = apply_test_retry_policy_overrides(
+        RetryPolicy::default_policy()
+            .with_max_remediation_cycles(effective_config.run_policy().max_review_iterations),
+    );
     let run_result = run_with_termination_signal(
         cancellation_token.clone(),
         RunSignalCleanupContext {
@@ -4364,7 +4459,8 @@ pub(crate) async fn execute_sync_milestone(emit_output: bool) -> AppResult<()> {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        persist_next_step_recommendation, prepare_milestone_controller_for_execution,
+        apply_test_retry_policy_overrides, persist_next_step_recommendation,
+        prepare_milestone_controller_for_execution,
         repair_missing_interrupted_handoff_run_failed_event,
         repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot,
         resume_attempt_has_exact_lineage, run_with_termination_signal_waiter,
@@ -4377,6 +4473,8 @@ mod tests {
     use std::collections::BTreeMap;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+    use std::time::Duration;
 
     use crate::adapters::bv_process::NextBeadResponse;
     use crate::adapters::fs::{
@@ -4413,12 +4511,43 @@ mod tests {
         self as project_service, CreateProjectInput, JournalStorePort, RunSnapshotPort,
         RunSnapshotWritePort,
     };
-    use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
+    use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
+    use crate::shared::domain::{FailureClass, FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
     use crate::test_support::br::{MockBrAdapter, MockBrResponse};
     use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
     use crate::test_support::env::{lock_path_mutex, PathGuard};
     use tokio::sync::oneshot;
+
+    static RETRY_POLICY_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.original {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     fn sample_bundle(id: &str, name: &str) -> MilestoneBundle {
         MilestoneBundle {
@@ -4469,6 +4598,39 @@ mod tests {
             default_flow: FlowPreset::DocsChange,
             agents_guidance: None,
         }
+    }
+
+    #[cfg(feature = "test-stub")]
+    #[test]
+    fn apply_test_retry_policy_overrides_disables_backoff_for_fail_invoke_env() {
+        let _env_lock = RETRY_POLICY_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _fail_stage = EnvVarGuard::set("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review");
+        let _explicit_override = EnvVarGuard::remove("RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF");
+
+        let policy = apply_test_retry_policy_overrides(RetryPolicy::default_policy());
+
+        assert_eq!(policy.backoff_for_attempt(1), Duration::ZERO);
+        assert_eq!(policy.max_attempts(FailureClass::TransportFailure), 5);
+    }
+
+    #[cfg(feature = "test-stub")]
+    #[test]
+    fn apply_test_retry_policy_overrides_preserves_default_backoff_without_env() {
+        let _env_lock = RETRY_POLICY_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _fail_stage = EnvVarGuard::remove("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE");
+        let _explicit_override = EnvVarGuard::remove("RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF");
+
+        let policy = apply_test_retry_policy_overrides(RetryPolicy::default_policy());
+        let backoff = policy.backoff_for_attempt(1);
+
+        assert!(
+            backoff >= Duration::from_millis(3750) && backoff < Duration::from_millis(6250),
+            "expected jittered default backoff near 5s, got {backoff:?}"
+        );
     }
 
     fn single_bead_bundle(id: &str, name: &str) -> MilestoneBundle {
@@ -4720,6 +4882,26 @@ mod tests {
             .expect("chmod fake br");
     }
 
+    #[cfg(unix)]
+    fn install_fake_br_show_and_list_script(
+        base_dir: &std::path::Path,
+        show_json: &str,
+        list_json: &str,
+    ) {
+        let fake_bin = base_dir.join("fake-bin");
+        std::fs::create_dir_all(&fake_bin).expect("create fake bin");
+
+        let escaped_show_json = show_json.replace('\'', "'\"'\"'");
+        let escaped_list_json = list_json.replace('\'', "'\"'\"'");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf '%s\\n' 'br test stub'\n  exit 0\nfi\nif [ \"$1\" = \"show\" ] && [ \"$3\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_show_json}'\n  exit 0\nfi\nif [ \"$1\" = \"list\" ] && [ \"$5\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_list_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
+        );
+        let br_path = fake_bin.join("br");
+        std::fs::write(&br_path, script).expect("write fake br");
+        std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake br");
+    }
+
     #[test]
     fn prepare_milestone_controller_for_execution_initializes_claimed_state() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
@@ -4892,6 +5074,69 @@ mod tests {
 
         assert_eq!(
             runtime.bead_status("bead-2").expect("query bead status"),
+            milestone_controller::ControllerBeadStatus::Open
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn milestone_controller_bead_status_falls_back_to_exact_list_lookup_after_wrong_show_result() {
+        let _path_lock = lock_path_mutex();
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_explicit_bead_milestone_with_plan(
+            base_dir,
+            now,
+            "ms-explicit",
+            "ralph-burning-evi",
+        );
+        install_fake_br_show_and_list_script(
+            base_dir,
+            r#"{
+  "id": "ralph-burning-pfr",
+  "title": "Foreign bead",
+  "status": "closed",
+  "priority": 1,
+  "bead_type": "task",
+  "labels": [],
+  "dependencies": [],
+  "dependents": [],
+  "acceptance_criteria": []
+}"#,
+            r#"{
+  "issues": [
+    {
+      "id": "ralph-burning-pfr",
+      "title": "Foreign bead",
+      "status": "closed",
+      "priority": 1,
+      "bead_type": "task",
+      "labels": []
+    },
+    {
+      "id": "ralph-burning-evi",
+      "title": "Expected explicit bead",
+      "status": "open",
+      "priority": 1,
+      "bead_type": "task",
+      "labels": []
+    }
+  ]
+}"#,
+        );
+        let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+        let runtime = ProjectMilestoneControllerRuntime {
+            base_dir,
+            milestone_id: &milestone.id,
+        };
+
+        assert_eq!(
+            runtime
+                .bead_status("ralph-burning-evi")
+                .expect("the exact list lookup should recover from the wrong show result"),
             milestone_controller::ControllerBeadStatus::Open
         );
     }
@@ -5419,7 +5664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_next_milestone_bead_blocks_when_bv_recommendation_is_outside_the_milestone_plan(
+    async fn select_next_milestone_bead_claims_ready_fallback_when_bv_recommendation_is_outside_the_milestone_plan(
     ) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
@@ -5446,7 +5691,11 @@ mod tests {
 
         assert_eq!(
             controller.state,
-            milestone_controller::MilestoneControllerState::Blocked
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-2")
         );
         assert!(controller
             .last_transition_reason
@@ -5454,7 +5703,7 @@ mod tests {
             .is_some_and(|reason| {
                 reason.contains("ms-foreign.bead-9")
                     && reason.contains("not part of milestone 'ms-alpha'")
-                    && reason.contains("ready milestone beads: ms-alpha.bead-2")
+                    && reason.contains("claiming ready milestone bead 'ms-alpha.bead-2' instead")
             }));
         assert_eq!(br.calls().len(), 1);
         assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
@@ -5494,7 +5743,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_next_milestone_bead_blocks_when_bv_has_no_recommendation_but_br_ready_is_nonempty(
+    async fn select_next_milestone_bead_claims_ready_fallback_when_bv_has_no_recommendation_but_br_ready_is_nonempty(
     ) {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let base_dir = temp_dir.path();
@@ -5519,14 +5768,18 @@ mod tests {
 
         assert_eq!(
             controller.state,
-            milestone_controller::MilestoneControllerState::Blocked
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-2")
         );
         assert!(controller
             .last_transition_reason
             .as_deref()
             .is_some_and(|reason| {
                 reason.contains("bv reported no actionable bead")
-                    && reason.contains("ms-alpha.bead-2")
+                    && reason.contains("claiming ready milestone bead 'ms-alpha.bead-2' instead")
             }));
         assert_eq!(br.calls().len(), 1);
         assert_eq!(br.calls()[0].args, vec!["ready", "--json"]);
@@ -12151,6 +12404,19 @@ fn parse_cli_backend_overrides(args: &RunBackendOverrideArgs) -> AppResult<CliBa
             .transpose()?,
         stream_output: args.stream_output,
     })
+}
+
+fn apply_test_retry_policy_overrides(retry_policy: RetryPolicy) -> RetryPolicy {
+    #[cfg(feature = "test-stub")]
+    {
+        if std::env::var_os("RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF").is_some()
+            || std::env::var_os("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE").is_some()
+        {
+            return retry_policy.with_no_backoff();
+        }
+    }
+
+    retry_policy
 }
 
 fn parse_backend_selection_arg(

@@ -1672,7 +1672,12 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::remove_file(conformance_project_root(&ws, "corrupt-list").join("project.toml"))
             .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "list"], ws.path())?;
-        assert_failure(&out)?;
+        assert_success(&out)?;
+        assert_not_contains(
+            &out.stdout,
+            "corrupt-list",
+            "project list should skip partial projects",
+        )?;
         Ok(())
     });
 

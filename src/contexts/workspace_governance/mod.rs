@@ -45,12 +45,23 @@ pub fn initialize_workspace(
     }
 
     if workspace_root.exists() || audit_root.exists() {
-        return Err(AppError::WorkspaceConflict {
-            path: if workspace_root.exists() {
-                workspace_root
-            } else {
-                audit_root
-            },
+        let config = WorkspaceConfig::new(created_at);
+        let rendered = FileSystem::render_workspace_config(&config)?;
+
+        FileSystem::create_workspace(&audit_root, &rendered, REQUIRED_WORKSPACE_DIRECTORIES)?;
+        FileSystem::seed_live_workspace(base_dir)?;
+
+        if !config_path.is_file() {
+            FileSystem::create_workspace(
+                &workspace_root,
+                &rendered,
+                REQUIRED_WORKSPACE_DIRECTORIES,
+            )?;
+        }
+
+        return Ok(WorkspaceInitialization {
+            workspace_root,
+            config,
         });
     }
 

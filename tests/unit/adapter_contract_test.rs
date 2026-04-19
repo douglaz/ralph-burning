@@ -275,14 +275,14 @@ fn project_store_exists_with_missing_project_toml_returns_corrupt() {
 }
 
 #[test]
-fn project_store_list_with_corrupt_project_toml_returns_error() {
+fn project_store_list_skips_partial_project_without_project_toml() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
     fs::create_dir_all(audit_project_root(tmp.path(), "alpha")).unwrap();
 
     let store = FsProjectStore;
-    let err = store.list_project_ids(tmp.path()).unwrap_err();
-    assert!(matches!(err, AppError::CorruptRecord { .. }));
+    let ids = store.list_project_ids(tmp.path()).unwrap();
+    assert!(ids.is_empty());
 }
 
 #[cfg(unix)]

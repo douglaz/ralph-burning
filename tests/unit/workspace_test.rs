@@ -80,6 +80,34 @@ fn initialize_workspace_fails_when_workspace_already_exists() {
     assert!(second_attempt.is_err());
 }
 
+#[test]
+fn initialize_workspace_repairs_legacy_audit_only_workspace() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let created_at = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 11, 17, 50, 55)
+        .single()
+        .expect("valid timestamp");
+    let audit_root = audit_workspace_root(temp_dir.path());
+    std::fs::create_dir_all(audit_root.join("projects/legacy-project"))
+        .expect("create legacy project directory");
+    std::fs::write(
+        audit_root.join("projects/legacy-project/project.toml"),
+        "id = \"legacy-project\"\nname = \"Legacy\"\nflow = \"minimal\"\nprompt_reference = \"prompt.md\"\nprompt_hash = \"hash\"\ncreated_at = \"2026-03-11T17:50:55Z\"\nstatus_summary = \"created\"\n",
+    )
+    .expect("write legacy project config");
+
+    let result = initialize_workspace(temp_dir.path(), created_at).expect("repair workspace");
+
+    assert_eq!(live_workspace_root(temp_dir.path()), result.workspace_root);
+    assert!(audit_root.join("workspace.toml").is_file());
+    assert!(live_workspace_root(temp_dir.path())
+        .join("workspace.toml")
+        .is_file());
+    assert!(live_workspace_root(temp_dir.path())
+        .join("projects/legacy-project/project.toml")
+        .is_file());
+}
+
 pub(crate) fn initialize_workspace_fixture(base_dir: &Path) -> PathBuf {
     let created_at = chrono::Utc
         .with_ymd_and_hms(2026, 3, 11, 17, 50, 55)
