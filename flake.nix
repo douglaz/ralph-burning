@@ -60,8 +60,25 @@
           '';
         });
 
+        staticRunPackage = pkgs.pkgsStatic.rustPlatform.buildRustPackage (commonArgs // {
+          doCheck = false;
+          postInstall = ''
+            echo "verifying static linkage..."
+            file_output="$(${pkgs.file}/bin/file "$out/bin/ralph-burning")"
+            echo "$file_output"
+            if ! echo "$file_output" | grep -Eq "statically linked|static-pie linked"; then
+              echo "FAIL: binary is NOT statically linked"
+              exit 1
+            fi
+          '';
+        });
+
         dynamicPackage = pkgs.rustPlatform.buildRustPackage (commonArgs // {
           cargoTestFlags = [ "--features" "test-stub" ];
+        });
+
+        dynamicRunPackage = pkgs.rustPlatform.buildRustPackage (commonArgs // {
+          doCheck = false;
         });
       in
       {
@@ -69,13 +86,16 @@
           {
             default = if isLinux then staticPackage else dynamicPackage;
             dynamic = dynamicPackage;
+            run = if isLinux then staticRunPackage else dynamicRunPackage;
+            dynamic-run = dynamicRunPackage;
           }
           // pkgs.lib.optionalAttrs isLinux {
             static = staticPackage;
+            static-run = staticRunPackage;
           };
 
         apps.default = flake-utils.lib.mkApp {
-          drv = self.packages.${system}.default;
+          drv = self.packages.${system}.run;
         };
 
         devShells.default = pkgs.mkShell {
