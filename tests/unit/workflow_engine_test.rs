@@ -3029,6 +3029,71 @@ async fn iterative_minimal_detects_changes_to_already_dirty_files() {
 }
 
 #[tokio::test]
+async fn iterative_minimal_amendment_round_stabilizes_on_change_scope() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    init_git_repo(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "iter-amendment-scope",
+        FlowPreset::IterativeMinimal,
+    );
+
+    let adapter = AmendmentRoundDirtyFileIterativePlanAdapter::new();
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::IterativeMinimal,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(
+        adapter_handle.plan_calls(),
+        6,
+        "the amendment round should converge once the rewritten path scope stops expanding"
+    );
+    assert_eq!(adapter_handle.amendment_round_calls(), 3);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let round_two_completed: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event_type == JournalEventType::ImplementerIterationCompleted
+                && event.details["completion_round"].as_u64() == Some(2)
+        })
+        .collect();
+    assert_eq!(round_two_completed.len(), 3);
+    assert_eq!(round_two_completed[0].details["diff_changed"], true);
+    assert_eq!(round_two_completed[1].details["diff_changed"], false);
+    assert_eq!(round_two_completed[2].details["diff_changed"], false);
+
+    let round_two_exit = events
+        .iter()
+        .find(|event| {
+            event.event_type == JournalEventType::ImplementerLoopExited
+                && event.details["completion_round"].as_u64() == Some(2)
+        })
+        .expect("round-two implementer_loop_exited event");
+    assert_eq!(round_two_exit.details["reason"], "stable");
+    assert_eq!(round_two_exit.details["total_iterations"], 3);
+}
+
+#[tokio::test]
 async fn iterative_minimal_resume_after_terminal_loop_does_not_reinvoke_implementer() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3638,11 +3703,7 @@ async fn preflight_check_validates_final_review_arbiter_member() {
 
     let workspace_toml = workspace_config_path(temp.path());
     let content = fs::read_to_string(&workspace_toml).unwrap();
-    let patched = if content.contains("[workflow]") {
-        format!("{content}\n[final_review]\narbiter_backend = \"openrouter\"\n")
-    } else {
-        format!("{content}\n[final_review]\narbiter_backend = \"openrouter\"\n")
-    };
+    let patched = format!("{content}\n[final_review]\narbiter_backend = \"openrouter\"\n");
     fs::write(&workspace_toml, patched).unwrap();
 
     let config = EffectiveConfig::load(temp.path()).unwrap();
@@ -4807,6 +4868,77 @@ impl AgentExecutionPort for DirtyFileIterativePlanAdapter {
 }
 
 #[derive(Clone)]
+struct AmendmentRoundDirtyFileIterativePlanAdapter {
+    inner: StubBackendAdapter,
+    plan_calls: Arc<AtomicU32>,
+    amendment_round_calls: Arc<AtomicU32>,
+}
+
+impl AmendmentRoundDirtyFileIterativePlanAdapter {
+    fn new() -> Self {
+        Self {
+            inner: StubBackendAdapter::default().with_stage_payload_sequence(
+                StageId::FinalReview,
+                vec![
+                    conditionally_approved_payload(&["fix something"]),
+                    approved_validation_payload(),
+                ],
+            ),
+            plan_calls: Arc::new(AtomicU32::new(0)),
+            amendment_round_calls: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn plan_calls(&self) -> u32 {
+        self.plan_calls.load(Ordering::SeqCst)
+    }
+
+    fn amendment_round_calls(&self) -> u32 {
+        self.amendment_round_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl AgentExecutionPort for AmendmentRoundDirtyFileIterativePlanAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        if request.contract.stage_id() == Some(StageId::PlanAndImplement) {
+            let call = self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1;
+            let path = request.working_dir.join("iterative-output.txt");
+            if request.invocation_id.contains("-cr2-") {
+                let amendment_call = self.amendment_round_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                fs::write(
+                    &path,
+                    format!("changed in amendment round {amendment_call}\n"),
+                )
+                .expect("write amendment-round iterative output");
+            } else if call == 1 {
+                fs::write(&path, "changed once\n").expect("write first iterative output");
+            }
+        }
+
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
 struct ParsedPayloadPersistenceFailureAdapter {
     inner: StubBackendAdapter,
     plan_calls: Arc<AtomicU32>,
@@ -4847,9 +4979,11 @@ impl AgentExecutionPort for ParsedPayloadPersistenceFailureAdapter {
         let project_root = request.project_root.clone();
         let working_dir = request.working_dir.clone();
 
-        let call = is_plan
-            .then(|| self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1)
-            .unwrap_or(0);
+        let call = if is_plan {
+            self.plan_calls.fetch_add(1, Ordering::SeqCst) + 1
+        } else {
+            0
+        };
         if call == 1 {
             fs::write(working_dir.join("iterative-output.txt"), "changed once\n")
                 .expect("write iterative output");

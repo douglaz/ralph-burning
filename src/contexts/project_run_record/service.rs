@@ -2800,7 +2800,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: FlowPreset::QuickDev,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: None,
         }
     }

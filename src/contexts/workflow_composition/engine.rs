@@ -6786,11 +6786,35 @@ fn iterative_fingerprint_excludes_path(relative_path: &Path) -> bool {
     matches!(first_component.as_ref(), ".git" | ".ralph-burning")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IterativeFingerprintMode {
+    Content,
+    ChangeScope,
+}
+
+fn iterative_stability_fingerprint_mode(
+    pending_amendments: Option<&[QueuedAmendment]>,
+) -> IterativeFingerprintMode {
+    if pending_amendments.is_some_and(|amendments| !amendments.is_empty()) {
+        IterativeFingerprintMode::ChangeScope
+    } else {
+        IterativeFingerprintMode::Content
+    }
+}
+
 fn iterative_fingerprint_git_pathspecs() -> Vec<&'static str> {
     vec![
         ".",
         ":(top,exclude).ralph-burning",
         ":(top,glob,exclude).ralph-burning/**",
+        ":(top,exclude)target",
+        ":(top,glob,exclude)target/**",
+        ":(top,exclude)target-final",
+        ":(top,glob,exclude)target-final/**",
+        ":(top,exclude)result",
+        ":(top,glob,exclude)result/**",
+        ":(top,glob,exclude)result-*",
+        ":(top,glob,exclude)result-*/**",
     ]
 }
 
@@ -6867,6 +6891,57 @@ fn workspace_diff_fingerprint(workspace_root: &Path) -> AppResult<String> {
     let mut hasher = Sha256::new();
     hash_workspace_entries(workspace_root, workspace_root, &mut hasher)?;
     Ok(format!("fs:{:x}", hasher.finalize()))
+}
+
+fn hash_workspace_entries_for_change_scope(
+    workspace_root: &Path,
+    current: &Path,
+    hasher: &mut Sha256,
+) -> AppResult<()> {
+    let mut entries = fs::read_dir(current)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative_path = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
+        if iterative_fingerprint_excludes_path(relative_path) {
+            continue;
+        }
+        let relative = relative_path.to_string_lossy();
+
+        let metadata = fs::symlink_metadata(&path)?;
+        if iterative_workspace_build_artifact(relative_path, &metadata) {
+            continue;
+        }
+        if metadata.is_dir() {
+            hasher.update(b"dir\0");
+            hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
+            hash_workspace_entries_for_change_scope(workspace_root, &path, hasher)?;
+            continue;
+        }
+
+        if metadata.file_type().is_symlink() {
+            hasher.update(b"symlink\0");
+            hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
+            continue;
+        }
+
+        if metadata.is_file() {
+            hasher.update(b"file\0");
+            hasher.update(relative.as_bytes());
+            hash_metadata_mode(&metadata, hasher);
+        }
+    }
+
+    Ok(())
+}
+
+fn workspace_change_scope_fingerprint(workspace_root: &Path) -> AppResult<String> {
+    let mut hasher = Sha256::new();
+    hash_workspace_entries_for_change_scope(workspace_root, workspace_root, &mut hasher)?;
+    Ok(format!("fs-scope:{:x}", hasher.finalize()))
 }
 
 fn git_command_for_program(program: &str) -> Command {
@@ -7111,6 +7186,43 @@ fn git_diff_fingerprint(repo_root: &Path) -> AppResult<String> {
     Ok(format!("git:{:x}", hasher.finalize()))
 }
 
+fn git_change_scope_fingerprint(repo_root: &Path) -> AppResult<String> {
+    if !git_repo_available(repo_root)? {
+        return workspace_change_scope_fingerprint(repo_root);
+    }
+
+    let status = git_command_stdout(
+        repo_root,
+        &git_args_with_iterative_fingerprint_pathspecs(&[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+        ]),
+        "status --porcelain",
+    )?;
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"head\0");
+    hasher.update(git_head_fingerprint(repo_root));
+    hasher.update(b"status\0");
+    hasher.update(&status);
+    hash_git_empty_directories(repo_root, repo_root, &mut hasher)?;
+
+    Ok(format!("git-scope:{:x}", hasher.finalize()))
+}
+
+fn iterative_loop_fingerprint(
+    repo_root: &Path,
+    mode: IterativeFingerprintMode,
+) -> AppResult<String> {
+    match mode {
+        IterativeFingerprintMode::Content => git_diff_fingerprint(repo_root),
+        IterativeFingerprintMode::ChangeScope => git_change_scope_fingerprint(repo_root),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn execute_iterative_plan_and_implement_stage<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
@@ -7156,6 +7268,7 @@ where
         &resolved_target,
         stage_entry.stage_id,
     )?;
+    let fingerprint_mode = iterative_stability_fingerprint_mode(pending_amendments);
     let mut stable_count = persisted_state.stable_count;
     let mut iteration = persisted_state.completed_iterations;
     loop {
@@ -7219,7 +7332,7 @@ where
             });
         }
 
-        let diff_before = git_diff_fingerprint(repo_root)?;
+        let diff_before = iterative_loop_fingerprint(repo_root, fingerprint_mode)?;
         let iterative_invocation_context = json!({
             "iteration": iteration,
             "iterative_minimal": {
@@ -7251,7 +7364,7 @@ where
             Err(error) => return Err(error),
         };
 
-        let diff_after = git_diff_fingerprint(repo_root)?;
+        let diff_after = iterative_loop_fingerprint(repo_root, fingerprint_mode)?;
         let diff_changed = diff_before != diff_after;
         let outcome = iterative_iteration_outcome(&bundle);
 
@@ -10211,11 +10324,12 @@ mod tests {
     use super::{
         advance_iterative_loop_state, build_final_review_snapshot, build_prompt_review_snapshot,
         complete_run, drift_still_satisfies_requirements, failed_invocation_id_for_stage,
-        git_diff_fingerprint, git_repo_available_with_program, invocation_id_for_stage,
-        iterative_loop_exit_reason, mark_running_run_interrupted, milestone_lineage_plan_hash,
-        partition_final_review_amendments_by_route, pause_run, resolution_has_drifted,
-        resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
-        role_for_stage, stage_running_summary_for_active_run, sync_milestone_bead_start,
+        git_change_scope_fingerprint, git_diff_fingerprint, git_repo_available_with_program,
+        invocation_id_for_stage, iterative_loop_exit_reason, mark_running_run_interrupted,
+        milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
+        resolution_has_drifted, resume_iteration_counters, resume_run_with_retry,
+        resume_terminal_iterative_stage_result, role_for_stage,
+        stage_running_summary_for_active_run, sync_milestone_bead_start,
         validate_iterative_minimal_loop_settings, FinalReviewQueuedAmendment,
         InterruptedRunContext, InterruptedRunUpdate, IterativeInvocationSidecar,
         IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity, StagePlan,
@@ -11170,7 +11284,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn git_diff_fingerprint_detects_tracked_result_symlink_changes() {
+    fn git_diff_fingerprint_ignores_tracked_result_symlink_changes() {
         let temp_dir = tempdir().expect("create temp dir");
         let store_dir = tempdir().expect("create store dir");
         init_git_repo(temp_dir.path());
@@ -11189,9 +11303,9 @@ mod tests {
         std::os::unix::fs::symlink(&store_b, &result_path).expect("recreate result symlink");
 
         let changed = git_diff_fingerprint(temp_dir.path()).expect("changed fingerprint");
-        assert_ne!(
+        assert_eq!(
             baseline, changed,
-            "tracked result symlink changes must remain visible"
+            "tracked result symlink churn must be ignored for iterative stability"
         );
     }
 
@@ -11217,6 +11331,53 @@ mod tests {
         assert_ne!(
             first, second,
             "tracked content changes on an already-dirty file must change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn git_change_scope_fingerprint_ignores_dirty_tracked_content_rewrites() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "baseline\nchanged once\n",
+        )
+        .expect("modify tracked file");
+        let first = git_change_scope_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "baseline\nchanged twice\n",
+        )
+        .expect("modify tracked file again");
+        let second = git_change_scope_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_eq!(
+            first, second,
+            "change-scope fingerprint should stay stable when the dirty path set is unchanged"
+        );
+    }
+
+    #[test]
+    fn git_change_scope_fingerprint_changes_when_dirty_path_set_expands() {
+        let temp_dir = tempdir().expect("create temp dir");
+        init_git_repo(temp_dir.path());
+
+        fs::write(
+            temp_dir.path().join("tracked.txt"),
+            "baseline\nchanged once\n",
+        )
+        .expect("modify tracked file");
+        let first = git_change_scope_fingerprint(temp_dir.path()).expect("first fingerprint");
+
+        fs::write(temp_dir.path().join("second.txt"), "new dirty path\n")
+            .expect("modify second tracked file");
+        let second = git_change_scope_fingerprint(temp_dir.path()).expect("second fingerprint");
+
+        assert_ne!(
+            first, second,
+            "change-scope fingerprint must still react when a new dirty path is introduced"
         );
     }
 

@@ -223,7 +223,7 @@ fn scenario_bundle() -> MilestoneBundle {
                 }],
             },
         ],
-        default_flow: FlowPreset::QuickDev,
+        default_flow: FlowPreset::Minimal,
         agents_guidance: Some(
             "Use the staged milestone artifacts and shared mock adapter state instead of real tooling."
                 .to_owned(),

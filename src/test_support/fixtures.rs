@@ -505,7 +505,7 @@ impl MilestoneFixtureBuilder {
                     flow_override: None,
                 }],
             }],
-            default_flow: FlowPreset::QuickDev,
+            default_flow: FlowPreset::Minimal,
             status: MilestoneStatus::Ready,
             created_at: fixture_timestamp(),
             task_runs: Vec::new(),

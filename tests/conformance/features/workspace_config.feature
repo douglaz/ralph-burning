@@ -15,7 +15,7 @@ Feature: Workspace effective configuration
   Scenario: get a known key
     Given the current directory contains an initialized ".ralph-burning" workspace
     When I run "ralph-burning config get default_flow"
-    Then the output should include "standard"
+    Then the output should include "minimal"
     And the command should exit successfully
 
   @workspace-config-get-unknown

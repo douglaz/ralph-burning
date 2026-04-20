@@ -73,7 +73,7 @@ impl MilestoneBundle {
             constraints: Vec::new(),
             acceptance_map: Vec::new(),
             workstreams: Vec::new(),
-            default_flow: FlowPreset::QuickDev,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: None,
         }
     }
@@ -1999,7 +1999,7 @@ mod tests {
                     },
                 ],
             }],
-            default_flow: FlowPreset::QuickDev,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: Some("Follow existing patterns in src/contexts/.".to_owned()),
         }
     }
@@ -3062,7 +3062,7 @@ mod tests {
                     ],
                 },
             ],
-            default_flow: FlowPreset::QuickDev,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: None,
         };
 
@@ -3185,7 +3185,7 @@ mod tests {
                     }],
                 },
             ],
-            default_flow: FlowPreset::QuickDev,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: None,
         };
 
@@ -3292,7 +3292,7 @@ mod tests {
         assert!(md.contains("## Execution Defaults"));
         assert!(md.contains("## AGENTS Guidance"));
         assert!(md.contains("- **Milestone ID:** ms-alpha"));
-        assert!(md.contains("quick_dev"));
+        assert!(md.contains("minimal"));
         Ok(())
     }
 

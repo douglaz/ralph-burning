@@ -1137,7 +1137,19 @@ fn prepare_milestone_controller_for_execution(
         chrono::Utc::now(),
     )
     .map_err(|error| origin.error(error.to_string()))?;
-    if controller.state == MilestoneControllerState::NeedsOperator {
+    let explicit_resume_retries_same_bead =
+        matches!(origin, MilestoneControllerExecutionOrigin::Resume)
+            && controller.state == MilestoneControllerState::NeedsOperator
+            && controller.active_task_id.as_deref() == Some(project_id.as_str())
+            && controller
+                .active_bead_id
+                .as_deref()
+                .is_some_and(|active_bead_id| {
+                    milestone_bead_refs_match(&milestone_id, active_bead_id, &task_source.bead_id)
+                });
+    if controller.state == MilestoneControllerState::NeedsOperator
+        && !explicit_resume_retries_same_bead
+    {
         return Err(origin.error(
             controller.last_transition_reason.unwrap_or_else(|| {
                 "milestone controller requires operator intervention".to_owned()
@@ -4955,6 +4967,134 @@ mod tests {
             controller.active_task_id.as_deref(),
             Some(project_id.as_str())
         );
+    }
+
+    #[test]
+    fn prepare_milestone_controller_for_resume_allows_operator_retry_on_same_bead() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: now,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: milestone.id.to_string(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+
+        milestone_controller::transition_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::NeedsOperator,
+                "bead ms-alpha.bead-2 failed 3 times: transient backend cancellation",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task(project_id.as_str()),
+            now,
+        )
+        .expect("seed needs-operator controller");
+
+        prepare_milestone_controller_for_execution(
+            base_dir,
+            &project_id,
+            &project_record,
+            MilestoneControllerExecutionOrigin::Resume,
+        )
+        .expect("operator resume should be allowed");
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(
+            controller.state,
+            milestone_controller::MilestoneControllerState::Claimed
+        );
+        assert_eq!(
+            controller.active_bead_id.as_deref(),
+            Some("ms-alpha.bead-2")
+        );
+        assert_eq!(
+            controller.active_task_id.as_deref(),
+            Some(project_id.as_str())
+        );
+        assert!(controller.last_transition_reason.as_deref().is_some_and(
+            |reason| reason.contains("preparing the bead-linked project to resume execution")
+        ));
+    }
+
+    #[test]
+    fn prepare_milestone_controller_for_resume_rejects_mismatched_operator_state() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+
+        let milestone = create_milestone_with_plan(base_dir, now);
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::DocsChange,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: now,
+            status_summary: ProjectStatusSummary::Active,
+            task_source: Some(TaskSource {
+                milestone_id: milestone.id.to_string(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: Some("plan-v1".to_owned()),
+                plan_version: Some(2),
+            }),
+        };
+
+        milestone_controller::transition_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone.id,
+            milestone_controller::ControllerTransitionRequest::new(
+                milestone_controller::MilestoneControllerState::NeedsOperator,
+                "controller is already tracking a different task",
+            )
+            .with_bead("ms-alpha.bead-2")
+            .with_task("other-task"),
+            now,
+        )
+        .expect("seed mismatched needs-operator controller");
+
+        let error = prepare_milestone_controller_for_execution(
+            base_dir,
+            &project_id,
+            &project_record,
+            MilestoneControllerExecutionOrigin::Resume,
+        )
+        .expect_err("mismatched operator state must still fail");
+
+        match error {
+            AppError::ResumeFailed { reason } => {
+                assert!(reason.contains("different task"));
+            }
+            other => panic!("expected resume failure, got {other:?}"),
+        }
     }
 
     #[cfg(unix)]

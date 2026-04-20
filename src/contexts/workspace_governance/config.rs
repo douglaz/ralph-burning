@@ -20,8 +20,8 @@ use super::{load_workspace_config, workspace_config_path};
 
 /// Default: enabled.
 pub const DEFAULT_PROMPT_REVIEW_ENABLED: bool = true;
-/// Default: quick_dev.
-pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::QuickDev;
+/// Default: minimal.
+pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::Minimal;
 pub const DEFAULT_MAX_QA_ITERATIONS: u32 = 3;
 pub const DEFAULT_MAX_REVIEW_ITERATIONS: u32 = 3;
 pub const DEFAULT_PROMPT_REVIEW_MIN_REVIEWERS: usize = 2;
@@ -616,7 +616,7 @@ impl EffectiveConfig {
         self.prompt_review_policy.enabled
     }
 
-    /// Default: `standard`.
+    /// Default: `minimal`.
     pub fn default_flow(&self) -> FlowPreset {
         self.run_policy.default_flow
     }
