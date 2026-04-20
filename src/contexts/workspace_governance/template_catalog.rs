@@ -224,8 +224,9 @@ const FINAL_REVIEW_REVIEWER_DEFAULT: &str = "\
 You are a code reviewer. Review the changes in this project for correctness, \
 safety, and robustness.
 
-Run `git diff` to see all changes, then read the key implementation files \
-end-to-end. For each issue found, cite specific files and line numbers.
+{{review_scope_guidance}}\
+\n\n\
+For each issue found, cite specific files and line numbers.
 
 Ignore style and cosmetics — only report real bugs, safety problems, \
 correctness gaps, and significant maintainability risks.
@@ -458,7 +459,11 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
         "final_review_reviewer" => Some(TemplateManifest {
             template_id: "final_review_reviewer",
             required_placeholders: &["project_prompt", "json_schema"],
-            optional_placeholders: &["task_prompt_contract", "classification_guidance"],
+            optional_placeholders: &[
+                "task_prompt_contract",
+                "classification_guidance",
+                "review_scope_guidance",
+            ],
             built_in_default: FINAL_REVIEW_REVIEWER_DEFAULT,
         }),
         "final_review_voter" => Some(TemplateManifest {
