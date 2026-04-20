@@ -775,7 +775,7 @@ fn canned_requirements_payload(label: &str) -> serde_json::Value {
                     "flow_override": null
                 }]
             }],
-            "default_flow": "quick_dev",
+            "default_flow": "minimal",
             "agents_guidance": "Follow the milestone plan."
         })
     } else if label.contains("ideation") {

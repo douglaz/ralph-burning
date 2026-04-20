@@ -217,6 +217,7 @@ async fn handle_create(args: ProjectCreateArgs) -> AppResult<()> {
     // Validate workspace version
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
+    let effective_config = EffectiveConfig::load(&current_dir)?;
 
     // Validate project ID
     let project_id = ProjectId::new(args.id.expect("clap should require --id"))?;
@@ -226,7 +227,7 @@ async fn handle_create(args: ProjectCreateArgs) -> AppResult<()> {
         .as_deref()
         .map(str::parse)
         .transpose()?
-        .unwrap_or(FlowPreset::Minimal);
+        .unwrap_or_else(|| effective_config.default_flow());
 
     let prompt_arg = args.prompt.expect("clap should require --prompt");
     let prompt_path = if prompt_arg.is_absolute() {
@@ -2892,7 +2893,7 @@ mod tests {
                     flow_override: Some(FlowPreset::DocsChange),
                 }],
             }],
-            default_flow: FlowPreset::QuickDev,
+            default_flow: FlowPreset::Minimal,
             agents_guidance: None,
         }
     }

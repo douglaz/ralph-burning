@@ -691,7 +691,7 @@ created_at = "2026-04-01T10:00:00Z"
                 },
             ],
         }],
-        default_flow: FlowPreset::QuickDev,
+        default_flow: FlowPreset::Minimal,
         agents_guidance: Some("Keep changes inspectable and deterministic.".to_owned()),
     };
     let plan_json = render_plan_json(&bundle).expect("render plan json");
@@ -769,7 +769,7 @@ created_at = "2026-04-01T10:00:00Z"
                 flow_override: Some(FlowPreset::DocsChange),
             }],
         }],
-        default_flow: FlowPreset::QuickDev,
+        default_flow: FlowPreset::Minimal,
         agents_guidance: Some("Run the single bead deterministically.".to_owned()),
     };
     let plan_json = render_plan_json(&bundle).expect("render plan json");
@@ -3199,7 +3199,7 @@ fn config_show_prints_effective_values_and_sources() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[settings]"));
     assert!(stdout.contains("prompt_review.enabled = true # source: default"));
-    assert!(stdout.contains("default_flow = \"quick_dev\" # source: default"));
+    assert!(stdout.contains("default_flow = \"minimal\" # source: default"));
     assert!(stdout.contains("default_backend = \"claude\" # source: default"));
 }
 
@@ -3809,7 +3809,7 @@ fn config_get_prints_known_values_and_rejects_unknown_keys() {
         .output()
         .expect("run config get");
     assert!(known.status.success());
-    assert_eq!("quick_dev\n", String::from_utf8_lossy(&known.stdout));
+    assert_eq!("minimal\n", String::from_utf8_lossy(&known.stdout));
 
     let unknown = Command::new(binary())
         .args(["config", "get", "unknown.key"])
@@ -4150,6 +4150,53 @@ fn project_create_defaults_to_minimal_flow_without_flag() {
 }
 
 #[test]
+fn project_create_uses_workspace_configured_default_flow_without_flag() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    let config = Command::new(binary())
+        .args(["config", "set", "default_flow", "standard"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("set workspace default flow");
+    assert!(
+        config.status.success(),
+        "config set failed: {}",
+        String::from_utf8_lossy(&config.stderr)
+    );
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "workspace-default",
+            "--name",
+            "Workspace Default",
+            "--prompt",
+            prompt.to_str().unwrap(),
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Created project 'workspace-default'"));
+    assert!(stdout.contains("standard"));
+
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "workspace-default").join("project.toml"))
+            .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"standard\""));
+}
+
+#[test]
 fn project_create_accepts_iterative_minimal_flow() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());
@@ -4182,6 +4229,41 @@ fn project_create_accepts_iterative_minimal_flow() {
     )
     .expect("read project.toml");
     assert!(project_toml.contains("flow = \"iterative_minimal\""));
+}
+
+#[test]
+fn project_create_accepts_standard_flow_override() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "standard-override-project",
+            "--name",
+            "Standard Override Project",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "standard-override-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"standard\""));
 }
 
 #[test]
@@ -4519,6 +4601,96 @@ exit 1
     assert!(prompt.contains(
         "Summary:\n    Capture the operator-facing workflow once project creation is stable."
     ));
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_create_from_bead_uses_stub_generated_milestone_default_flow_without_override() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let create_output = Command::new(binary())
+        .args([
+            "milestone",
+            "create",
+            "Alpha Plan",
+            "--from-idea",
+            "Plan the alpha milestone in milestone mode.",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone create");
+    assert!(
+        create_output.status.success(),
+        "milestone create should succeed: {}",
+        String::from_utf8_lossy(&create_output.stderr)
+    );
+
+    let plan_output = Command::new(binary())
+        .args(["milestone", "plan", "ms-alpha-plan"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run milestone plan");
+    assert!(
+        plan_output.status.success(),
+        "milestone plan should succeed: {}",
+        String::from_utf8_lossy(&plan_output.stderr)
+    );
+
+    let plan_json =
+        fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha-plan").join("plan.json"))
+            .expect("read plan json");
+    let plan: serde_json::Value = serde_json::from_str(&plan_json).expect("parse plan json");
+    let bead = &plan["workstreams"][0]["beads"][0];
+    let bead_id = bead["bead_id"].as_str().expect("stub milestone bead id");
+    let bead_title = bead["title"].as_str().expect("stub milestone bead title");
+
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        bead_id,
+        &format!(
+            r#"[
+  {{
+    "id": "{bead_id}",
+    "title": "{bead_title}",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Carry the milestone plan into execution.",
+    "acceptance_criteria": "- Milestone can be executed from structured plan output.",
+    "dependencies": []
+  }}
+]"#
+        ),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha-plan",
+            "--bead-id",
+            bead_id,
+            "--project-id",
+            "stub-generated-default",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+    assert!(
+        output.status.success(),
+        "project create-from-bead should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "stub-generated-default").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"minimal\""));
 }
 
 #[cfg(feature = "test-stub")]
@@ -5928,7 +6100,7 @@ fn project_create_from_bead_treats_legacy_qualified_canonical_slot_ids_as_unconf
         project_root(temp_dir.path(), "legacy-qualified-slot-id-project").join("project.toml"),
     )
     .expect("read project.toml");
-    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(project_toml.contains("flow = \"minimal\""));
     assert!(!project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
     assert!(!project_toml.contains("plan_version = "));
 }
@@ -6027,7 +6199,7 @@ fn project_create_from_bead_treats_legacy_short_canonical_slot_ids_as_unconfirme
         project_root(temp_dir.path(), "legacy-short-bead-id-project").join("project.toml"),
     )
     .expect("read project.toml");
-    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(project_toml.contains("flow = \"minimal\""));
     assert!(!project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
     assert!(!project_toml.contains("plan_version = "));
 }
@@ -6295,7 +6467,7 @@ fn project_create_from_bead_allows_unconfirmed_fallback_when_status_metadata_is_
         project_root(temp_dir.path(), "stale-status-unconfirmed-fallback").join("project.toml"),
     )
     .expect("read project.toml");
-    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(project_toml.contains("flow = \"minimal\""));
     assert!(!project_toml.contains("plan_version = "));
     assert!(!project_toml.contains("plan_hash = "));
 }
@@ -6588,7 +6760,7 @@ fn project_create_from_bead_falls_back_to_milestone_default_flow_when_title_drif
         project_root(temp_dir.path(), "renamed-live-bead-default-flow").join("project.toml"),
     )
     .expect("read project.toml");
-    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(project_toml.contains("flow = \"minimal\""));
     assert!(!project_toml.contains("plan_version = "));
     assert!(!project_toml.contains("plan_hash = "));
 
@@ -6966,7 +7138,7 @@ fn project_create_from_bead_does_not_confirm_title_fallback_against_mismatched_e
         project_root(temp_dir.path(), "mismatched-explicit-bead-id").join("project.toml"),
     )
     .expect("read project.toml");
-    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(project_toml.contains("flow = \"minimal\""));
     assert!(!project_toml.contains("plan_version = "));
     assert!(!project_toml.contains("plan_hash = "));
 
@@ -17268,6 +17440,7 @@ fn backend_check_nonzero_exit_on_failure() {
 created_at = "2026-03-19T03:28:00Z"
 
 [settings]
+default_flow = "standard"
 default_backend = "openrouter"
 
 [backends.openrouter]
@@ -17325,6 +17498,7 @@ fn backend_probe_nonzero_exit_on_disabled_backend() {
 created_at = "2026-03-19T03:28:00Z"
 
 [settings]
+default_flow = "standard"
 default_backend = "openrouter"
 
 [backends.openrouter]
@@ -17402,6 +17576,7 @@ fn backend_check_nonzero_exit_json_reports_failures() {
 created_at = "2026-03-19T03:28:00Z"
 
 [settings]
+default_flow = "standard"
 default_backend = "openrouter"
 
 [backends.openrouter]

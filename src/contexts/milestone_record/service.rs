@@ -5465,7 +5465,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         }
     }
@@ -5634,7 +5634,7 @@ mod tests {
                     ],
                 },
             ],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         }
     }

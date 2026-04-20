@@ -2172,7 +2172,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -2401,7 +2401,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -2567,7 +2567,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -2806,7 +2806,7 @@ mod tests {
                     },
                 ],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -2987,7 +2987,7 @@ mod tests {
                     },
                 ],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -3160,7 +3160,7 @@ mod tests {
                     },
                 ],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -3305,7 +3305,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -3501,7 +3501,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -3697,7 +3697,7 @@ mod tests {
                     flow_override: None,
                 }],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(
@@ -3869,7 +3869,7 @@ mod tests {
                     },
                 ],
             }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         };
         persist_plan(

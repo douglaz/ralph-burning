@@ -2888,11 +2888,11 @@ sleep 99999
         .expect("child PID file should contain an integer");
 
     wait_for_condition(Duration::from_secs(1), Duration::from_millis(25), || {
-        !nix::sys::signal::kill(
+        nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(child_pid),
             None, // signal 0
         )
-        .is_ok()
+        .is_err()
     })
     .await;
 
