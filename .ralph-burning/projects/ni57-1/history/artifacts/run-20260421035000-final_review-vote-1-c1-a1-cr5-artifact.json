@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T08:56:13.743018209Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects. The duplicate-active-bead check in `project create-from-bead` is still exposed to a race because it reads lineage before any serialized mutation path, and the `RunStatus::NotStarted` handling misclassifies inconsistent lineage as a normal duplicate-active conflict while directing operators to a recovery command that cannot work for that state.\n\n## Votes\n\n- `fr-5-b697d3ee`: Accept\n  `execute_create_from_bead` performs `reject_duplicate_active_bead_creation` before `claim_bead_in_br` and before project creation, and `active_task_runs_for_bead` is just an unlocked read of `task-runs.ndjson`. The lineage mutation path that establishes active ownership is serialized later in `record_task_run_start`, not here. That leaves a real TOCTOU window where another operator can start the bead after the read and before this call finishes, while this path can still claim/create a second project. The later run-start lock only prevents a second active attempt; it does not prevent the duplicate project creation that this guard is supposed to stop.\n- `fr-5-44f0c2bb`: Accept\n  `reject_duplicate_active_bead_creation` currently groups `RunStatus::NotStarted` with `Running` and `Paused` and returns `DuplicateActiveBead`, whose user-facing guidance says to use `ralph-burning run resume`. But `execute_resume` explicitly rejects `NotStarted` and tells the operator to use `run start` instead. Also, normal start flow writes the project snapshot as `Running` before recording bead start, so an active lineage row paired with a `NotStarted` snapshot is not a normal active-task state. Treating it as an ordinary duplicate-active conflict is therefore misleading, and the current recovery guidance is unusable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

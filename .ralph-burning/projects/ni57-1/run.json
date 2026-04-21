@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-21T03:50:00.987751574Z",
     "prompt_hash_at_cycle_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "prompt_hash_at_stage_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-b697d3ee",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "## Finding Summary\n`project create-from-bead` still has a TOCTOU race around the new duplicate-active-bead guard. `execute_create_from_bead` performs the duplicate scan before `claim_bead_in_br` (`src/cli/project.rs:444-455`, `src/cli/project.rs:592-597`), and the helper it calls is only an unlocked read of `task-runs.ndjson` (`src/adapters/fs.rs:5095-5108`, `src/adapters/fs.rs:4325-4359`). Another operator can start or create the same bead after this read and before the claim/project side effects land, so the branch can still mint a second project for an already-active bead.\n\n## Affected Files\n- `src/cli/project.rs`\n- `src/adapters/fs.rs`\n\n## Remediation Hint\nSerialize create-time validation with the lineage mutation path, or write a provisional same-bead reservation under the task-run lock before releasing control back to the async claim/create flow, so the duplicate check and subsequent side effects are atomic.",
+        "created_at": "2026-04-21T09:05:22.650229774Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "1e7ab975bca39859cadf6a3c60000f163c88c4b1535fa135edebd82084cc017a"
+      },
+      {
+        "amendment_id": "fr-5-44f0c2bb",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "## Finding Summary\nThe new `reject_duplicate_active_bead_creation` branch treats `RunStatus::NotStarted` as a normal `DuplicateActiveBead` conflict (`src/cli/project.rs:654-664`). That state is already inconsistent if `task-runs.ndjson` contains an active row, so it should be surfaced as orphaned/corrupt lineage with a repair hint instead. Right now the emitted message sends the operator to `ralph-burning run resume`, but `run resume` explicitly rejects `not_started` projects (`src/cli/run.rs:3820-3824`). In the exact repair case this bead is supposed to handle, the CLI points users at a command that cannot work.\n\n## Affected Files\n- `src/cli/project.rs`\n- `src/cli/run.rs`\n\n## Remediation Hint\nHandle `RunStatus::NotStarted` like the other broken-lineage cases: return a repair-oriented error that names the stale lineage row and tells the operator to repair `milestones/<id>/task-runs.ndjson` or restore the project snapshot, instead of emitting `DuplicateActiveBead`.",
+        "created_at": "2026-04-21T09:05:22.650235364Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "37f235d7732d21c46d899ce8dfb04533c0913276572d5456d65182dd38470d11"
+      }
+    ],
     "processed_count": 5
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-21T07:55:30.369403197Z",
+    "resolved_at": "2026-04-21T08:38:28.016412022Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
