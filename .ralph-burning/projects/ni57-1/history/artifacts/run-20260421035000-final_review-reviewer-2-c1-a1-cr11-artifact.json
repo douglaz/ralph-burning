@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T15:46:38.129506099Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed branch delta against origin/master fork point. The implementation fully addresses bead 9ni.5.7: (1) create-from-bead acquires a task-runs lock and rejects duplicate active-bead creation before any br claim side effect via new `reject_duplicate_active_bead_creation` / `reject_existing_same_bead_project_creation` guards; (2) new `active_task_runs_for_bead` helper on the lineage port reuses existing `running_task_runs_for_bead` + `collapse_task_run_attempts`; (3) new `DuplicateActiveBead` and `DuplicateBeadProject` AppError variants carry bead/project/run identifiers so callers (including `find_existing_bead_project`) can special-case them; (4) `record_task_run_start` pre-repair cross-project check was moved before the legacy-runless repair so corrupt active lineage surfaces actionable remediation instead of being silently rewritten, and a same-bead cross-project retry now rejects with DuplicateActiveBead rather than silently superseding (replacement test `retry_start_on_same_bead_rejects_other_project_while_attempt_is_active` codifies this); (5) `find_existing_bead_project` now prefers active-lineage-backed candidates, rejects ambiguous non-terminal matches, and surfaces stale-lineage inconsistencies with repair guidance. Tests cover duplicate rejection, terminal retry allowance, legacy runless repair, orphan project, corrupt/missing run snapshot, not-started/failed/running project states, mismatched task_source, ambiguous same-bead projects, different-bead guard preservation, all-terminal history allowance, and concurrent lock serialization. Minor non-blocking observations: an unreachable `unwrap_or_else` fallback for `existing_run_id` in `active_same_bead_conflict_error` (none-case handled earlier) and a pre-existing ambiguous error message using the new run_id instead of existing entries. No critical, high, medium, or low severity findings warranting amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 11
+}

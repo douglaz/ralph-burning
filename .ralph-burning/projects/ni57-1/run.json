@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 11
+      "completion_round": 12
     },
     "started_at": "2026-04-21T03:50:00.987751574Z",
     "prompt_hash_at_cycle_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "prompt_hash_at_stage_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 10
+    "final_review_restart_count": 11
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 11,
+  "completion_rounds": 12,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-11-ebb654a2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 11,
+        "body": "Finding: `ensure_project_for_controller` still retries only on `AppError::DuplicateProject` (`src/cli/milestone.rs:1169-1195`), but `execute_create_from_bead` now rejects same-bead duplicates earlier via `DuplicateBeadProject` / `DuplicateActiveBead` before it ever reaches the generic `project_exists` branch (`src/cli/project.rs:444-457`, `src/cli/project.rs:664-680`). That regresses the existing duplicate-project race recovery: if another process creates or starts the bead-backed project after the initial `find_existing_bead_project()` scan but before `execute_create_from_bead()` runs, milestone execution now aborts instead of re-scanning and adopting the already-created project. A second `find_existing_bead_project()` call would recover that project (`src/cli/project.rs:837-950`), so the new error shapes need to be folded into the same recovery path. Affected files: `src/cli/milestone.rs`, `src/cli/project.rs`. Remediation hint: treat `DuplicateBeadProject` / `DuplicateActiveBead` (and any equivalent same-bead create-time duplicate outcome) like the old `DuplicateProject` race and re-run `find_existing_bead_project()` before failing the milestone command.",
+        "created_at": "2026-04-21T15:48:43.309579620Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "7faf28b6f0bc4302c718157f094b56e9f652b03dfc992e025bf2067f77ed5452"
+      }
+    ],
     "processed_count": 16
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 12 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-21T14:17:16.667597148Z",
+    "resolved_at": "2026-04-21T15:35:44.700467779Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

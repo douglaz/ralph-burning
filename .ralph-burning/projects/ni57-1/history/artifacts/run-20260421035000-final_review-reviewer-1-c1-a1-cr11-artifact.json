@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T15:47:04.445601689Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against `808707cede105036103429ccad825cf9faddd8f6` and found 1 medium-severity fix-now issue: milestone-run recovery was not updated for the new same-bead duplicate error variants returned by `execute_create_from_bead()`. I did not run `cargo`/`nix` verification here because those binaries are unavailable in this environment.\n\n## Amendments\n\n1. Finding: `ensure_project_for_controller` still retries only on `AppError::DuplicateProject` (`src/cli/milestone.rs:1169-1195`), but `execute_create_from_bead` now rejects same-bead duplicates earlier via `DuplicateBeadProject` / `DuplicateActiveBead` before it ever reaches the generic `project_exists` branch (`src/cli/project.rs:444-457`, `src/cli/project.rs:664-680`). That regresses the existing duplicate-project race recovery: if another process creates or starts the bead-backed project after the initial `find_existing_bead_project()` scan but before `execute_create_from_bead()` runs, milestone execution now aborts instead of re-scanning and adopting the already-created project. A second `find_existing_bead_project()` call would recover that project (`src/cli/project.rs:837-950`), so the new error shapes need to be folded into the same recovery path. Affected files: `src/cli/milestone.rs`, `src/cli/project.rs`. Remediation hint: treat `DuplicateBeadProject` / `DuplicateActiveBead` (and any equivalent same-bead create-time duplicate outcome) like the old `DuplicateProject` race and re-run `find_existing_bead_project()` before failing the milestone command.\n   Rationale: The bead intentionally moved duplicate detection ahead of `project_exists`, but the higher-level milestone runner still only recognizes the old duplicate-project error. That leaves a real race/regression in automated milestone execution.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}
