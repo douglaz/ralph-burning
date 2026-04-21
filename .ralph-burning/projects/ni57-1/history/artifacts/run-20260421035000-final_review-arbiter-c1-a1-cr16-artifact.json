@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-arbiter-c1-a1-cr16-artifact",
+  "payload_id": "run-20260421035000-final_review-arbiter-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T21:37:25.056040603Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the amendment because it treats task-run lineage as the canonical source for terminal same-bead recovery, but this codebase intentionally treats `run.json` as canonical run state once no active lineage row exists. The cited failed-lineage/completed-snapshot mismatch is a known reconciliation state that existing code repairs from the completed snapshot, not evidence of a reopened active double-claim hole.\n\n## Rulings\n\n- `fr-16-38bedf35`: Reject\n  `src/cli/project.rs:648-665`, `861-890`, and `960-986` do rely on `run.json` after the active-lineage gate, but that matches the repository’s stated ownership of run state: `RunSnapshot` is documented as the canonical run state and “single source of truth” in `src/contexts/project_run_record/model.rs:81-82`. The real double-claim hole is the active-attempt case, and that is already fail-closed through `reject_duplicate_active_bead_creation` / `active_same_bead_conflict_resolution` (`src/cli/project.rs:583-605`, `895-936`; `src/contexts/milestone_record/service.rs:2690-2868`). For terminal mismatches, the codebase explicitly treats `completed snapshot + stale failed lineage` as a supported reconciliation state: `src/cli/run.rs:7727-7778` and `8312-8368` create stale failed lineage rows, then repair them from a `RunStatus::Completed` snapshot, and `src/contexts/automation_runtime/daemon_loop.rs:4885-4895` treats `RunStatus::Completed` as a reconciliation retry path rather than something to resume. That makes the amendment’s proposed “trust lineage, steer to run resume/repair” direction incorrect for this state; it would reject a supported recovery path. The amendment also overstates the paused case, because once the active-lineage check is clear there is no terminal `Paused` lineage outcome (`TaskRunOutcome` has no paused variant at `src/contexts/milestone_record/model.rs:734-745`).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

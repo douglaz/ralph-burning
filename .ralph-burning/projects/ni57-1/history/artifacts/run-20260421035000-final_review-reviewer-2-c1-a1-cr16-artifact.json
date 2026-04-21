@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr16-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T21:21:26.634612904Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed branch delta for bead 9ni.5.7. Implementation adds DuplicateActiveBead and DuplicateBeadProject AppError variants, a reject_duplicate_active_bead_creation guard in execute_create_from_bead_in_dir that acquires the task-runs lock before checking active lineage via FsTaskRunLineageStore::active_task_runs_for_bead, and a reject_existing_same_bead_project_creation guard that classifies same-bead projects by RunStatus (NotStarted routes to DuplicateBeadProject, Failed/Paused with resumable metadata redirect to `run resume`, ambiguous non-terminal states surface a repair hint). The task-runs lock is held across the external br claim and project creation so the active-lineage check and subsequent record_task_run_start remain race-safe. The existing different-bead run-start guard at record_task_run_start is preserved (a test explicitly documents this is intentional). The milestone controller's ensure_project_for_controller wraps the creation path with recover_existing_bead_project_after_create_conflict to adopt existing bead-backed projects when create-time duplicate detection fires. CLI tests cover all four acceptance criteria from the bead: duplicate-active rejection naming the existing project and run-id, terminal-attempt allowance, orphan lineage repair guidance, and preservation of the different-bead guard; additional tests cover unresumable failures, ambiguous non-terminal states, mismatched task_source, running-without-lineage inconsistency, pending-lineage-reset clearing, and legacy runless entries. Error messages consistently name the existing project and run and direct operators to `ralph-burning project select`, `ralph-burning run resume`, or `ralph-burning run start`. No fix-now, planned-elsewhere, or propose-new-bead findings.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 16
+}

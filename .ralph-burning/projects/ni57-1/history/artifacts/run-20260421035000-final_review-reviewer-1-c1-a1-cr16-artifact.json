@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T21:26:48.527861350Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 correctness gap in the same-bead recovery policy; otherwise the new create-time duplicate checks and run-start protections look aligned with the requested hardening.\n\n## Amendments\n\n1. finding_summary: `src/cli/project.rs:648-665`, `src/cli/project.rs:861-890`, and `src/cli/project.rs:960-986` decide whether a same-bead project can be recreated or adopted by looking only at each project's current `run.json` once the active-lineage check is out of the way. `task-runs.ndjson` is only used to discover legacy task-source-less projects, not to validate whether the latest canonical attempt for that bead/project actually failed, paused, or completed. In an inconsistent-but-real recovery state where the lineage's latest attempt is `failed`/`paused` but `projects/<id>/run.json` has drifted to `completed`, `project create-from-bead` will incorrectly allow a brand-new parallel project, and milestone-controller recovery will adopt the stale completed project instead of steering the operator to `run resume`/repair. That reopens the same double-claim hole this bead is meant to close. Remediation hint: derive same-bead state from the latest canonical lineage attempt (or cross-check snapshot status against it) before treating a project as terminal; if lineage and snapshot disagree, fail closed with a repair hint instead of allowing/adopting a new project.\n   Rationale: The new duplicate checks fail closed for active-lineage corruption, but the fallback same-bead project scan still trusts snapshot status over canonical lineage. A stale or manually repaired `run.json` can therefore bypass the intended retry/resume policy and permit a second project for the same bead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}
