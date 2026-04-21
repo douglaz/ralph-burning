@@ -1165,13 +1165,16 @@ async fn ensure_project_for_controller(
         base_dir,
         milestone_id,
         bead_id,
-        project::execute_create_from_bead(project::CreateFromBeadArgs {
-            milestone_id: milestone_id.to_string(),
-            bead_id: bead_id.to_owned(),
-            project_id: Some(create_project_id.to_string()),
-            prompt_file: None,
-            flow: None,
-        })
+        project::execute_create_from_bead_in_dir(
+            base_dir,
+            project::CreateFromBeadArgs {
+                milestone_id: milestone_id.to_string(),
+                bead_id: bead_id.to_owned(),
+                project_id: Some(create_project_id.to_string()),
+                prompt_file: None,
+                flow: None,
+            },
+        )
         .await,
     )
 }
@@ -2578,6 +2581,7 @@ mod tests {
     use crate::contexts::project_run_record::service::{
         self as project_service, CreateProjectInput, RunSnapshotWritePort,
     };
+    use crate::contexts::workspace_governance;
     use crate::shared::domain::FlowPreset;
     use crate::shared::error::AppError;
     #[cfg(unix)]
@@ -2588,6 +2592,8 @@ mod tests {
         milestone_id: &MilestoneId,
         now: chrono::DateTime<Utc>,
     ) {
+        workspace_governance::initialize_workspace(base_dir, now)
+            .expect("initialize controller test workspace");
         milestone_service::create_milestone(
             &FsMilestoneStore,
             base_dir,
@@ -3234,6 +3240,69 @@ mod tests {
             updated_controller.last_transition_reason.as_deref(),
             Some("adopted existing bead-backed project")
         );
+    }
+
+    #[tokio::test]
+    async fn ensure_project_for_controller_rejects_unresumable_failed_same_bead_project() {
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 18, 11, 30, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bead_id = "ms-alpha.bead-2";
+        create_controller_test_milestone(base_dir, &milestone_id, now);
+        let project_id = create_controller_test_bead_project(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            "bead-failed",
+            now,
+        );
+        write_controller_test_run_status(base_dir, &project_id, RunStatus::Failed);
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Claimed,
+                "selected bead for execution",
+            )
+            .with_bead(bead_id),
+            now,
+        )
+        .expect("seed claimed controller");
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+
+        let error = super::ensure_project_for_controller(base_dir, &milestone_id, &controller)
+            .await
+            .expect_err("unresumable failed same-bead project should fail closed");
+
+        let rendered = error.to_string();
+        assert!(matches!(
+            error,
+            AppError::MilestoneOperationFailed { ref action, .. } if action == "run"
+        ));
+        assert!(rendered.contains("has no resumable run metadata"));
+        assert!(rendered.contains("repair projects/bead-failed/run.json"));
+
+        let updated_controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("reload controller")
+        .expect("controller exists");
+        assert_eq!(updated_controller.active_task_id, None);
     }
 
     #[test]

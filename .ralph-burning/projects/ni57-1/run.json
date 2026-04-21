@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 16
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-15-5b545bc2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 15,
-        "body": "finding_summary: Failed/paused same-bead projects are treated as resumable based only on `RunStatus`, so `project create-from-bead` and `milestone run` can point operators at a project that `run resume` cannot actually resume.\naffected_files:\n- src/cli/project.rs:665-675\n- src/cli/project.rs:954-967\n- src/contexts/project_run_record/model.rs:130-156\n- src/contexts/workflow_composition/engine.rs:786-793\ndetails: `reject_existing_same_bead_project_creation` and `find_existing_bead_project` now block or adopt any same-bead project in `failed` / `paused` state without checking whether resumable metadata still exists. But `RunSnapshot::validate_semantics` explicitly allows failed/paused snapshots with `interrupted_run == None`, and the resume engine then fails when neither `interrupted_run` nor `active_run` is present. In that state this branch will reject a fresh task and tell the operator to `run resume`, or auto-adopt the broken project for `milestone run`, only for the next step to fail immediately.\nremediation_hint: When choosing a failed/paused same-bead project, verify that resume metadata exists (or can be reconstructed from the journal) before steering the user to `run resume`; otherwise surface a repair-required error instead of treating that project as the canonical retry target.",
-        "created_at": "2026-04-21T20:14:06.228619370Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "55f986fe7974e287e3e2e4ac89d5db1c493c8b2eda56455f9ac99e625ad092aa"
-      },
-      {
-        "amendment_id": "fr-15-096bd767",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 15,
-        "body": "finding_summary: `milestone run` still reuses stale same-bead lineage after a pending lineage reset, so controller execution can adopt work that `task create` would now correctly discard.\naffected_files:\n- src/cli/project.rs:351-355\n- src/cli/project.rs:859-920\n- src/cli/milestone.rs:1148-1168\n- src/contexts/milestone_record/service.rs:2541-2551\ndetails: `execute_create_from_bead` was updated to call `load_snapshot_clearing_pending_lineage_reset` before duplicate checks, but `ensure_project_for_controller` still calls `find_existing_bead_project` directly, and `find_existing_bead_project` reads `task-runs.ndjson` / same-bead project snapshots without first applying that reset. If a plan update has set `pending_lineage_reset` and the controller no longer has `active_task_id`, `milestone run` can adopt an old project or active lineage row that the create path would now clear, resuming stale work against an outdated plan.\nremediation_hint: Clear `pending_lineage_reset` before any same-bead project scan/adoption path as well, not just in `execute_create_from_bead`.",
-        "created_at": "2026-04-21T20:14:06.228627004Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "277c46e3df9b2b7f142c290e40a51a84e9fa533b180d842311a96192abd83ed2"
-      }
-    ],
-    "processed_count": 23
+    "pending": [],
+    "processed_count": 25
   },
-  "status_summary": "running: final review restart round 16 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-21T19:59:43.070304872Z",

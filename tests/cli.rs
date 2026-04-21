@@ -14126,7 +14126,7 @@ fn project_create_from_bead_rejects_existing_failed_same_bead_project_before_br_
     );
     fs::write(
         project_root(temp_dir.path(), "bead-existing").join("run.json"),
-        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after prior attempt"}"#,
+        r#"{"active_run":null,"interrupted_run":{"run_id":"run-existing","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-04-01T10:11:00Z"},"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after prior attempt"}"#,
     )
     .expect("write failed run.json");
 
@@ -14161,6 +14161,60 @@ fn project_create_from_bead_rejects_existing_failed_same_bead_project_before_br_
     assert!(
         !project_root(temp_dir.path(), "bead-second").exists(),
         "duplicate create must not mint a second project"
+    );
+}
+
+#[test]
+fn project_create_from_bead_reports_unresumable_failed_same_bead_project_for_repair() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "bead-existing",
+        "ms-alpha",
+        "ms-alpha.bead-2",
+    );
+    fs::write(
+        project_root(temp_dir.path(), "bead-existing").join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after prior attempt"}"#,
+    )
+    .expect("write failed run.json");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-second",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "an unresumable failed bead project should fail closed with repair guidance"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project 'bead-existing' already exists for that bead in failed state"));
+    assert!(stderr.contains("has no resumable run metadata"));
+    assert!(stderr.contains("repair projects/bead-existing/run.json"));
+    assert!(!stderr.contains("ralph-burning run resume"));
+    assert!(
+        !project_root(temp_dir.path(), "bead-second").exists(),
+        "repair-required failed state must not mint a parallel project"
     );
 }
 
@@ -14372,7 +14426,7 @@ fn project_create_from_bead_prefers_failed_retry_over_completed_default_project(
     );
     fs::write(
         project_root(temp_dir.path(), "bead-failed-retry").join("run.json"),
-        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after retry"}"#,
+        r#"{"active_run":null,"interrupted_run":{"run_id":"run-existing","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-04-01T10:11:00Z"},"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after retry"}"#,
     )
     .expect("write failed retry run.json");
 
@@ -14519,7 +14573,7 @@ fn project_create_from_bead_rejects_legacy_failed_default_named_project_with_lin
     create_project_fixture(temp_dir.path(), "task-ms-alpha-bead-2");
     fs::write(
         project_root(temp_dir.path(), "task-ms-alpha-bead-2").join("run.json"),
-        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after legacy retry"}"#,
+        r#"{"active_run":null,"interrupted_run":{"run_id":"run-legacy","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-04-01T10:11:00Z"},"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after legacy retry"}"#,
     )
     .expect("write failed run.json");
     fs::write(
@@ -14589,7 +14643,7 @@ fn project_create_from_bead_rejects_legacy_failed_retry_without_task_source_even
     create_project_fixture(temp_dir.path(), "legacy-failed-retry");
     fs::write(
         project_root(temp_dir.path(), "legacy-failed-retry").join("run.json"),
-        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after legacy retry"}"#,
+        r#"{"active_run":null,"interrupted_run":{"run_id":"run-legacy","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-04-01T10:11:00Z"},"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after legacy retry"}"#,
     )
     .expect("write legacy failed run.json");
     fs::write(
