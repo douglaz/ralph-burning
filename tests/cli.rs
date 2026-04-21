@@ -13860,6 +13860,72 @@ fn project_create_from_bead_reports_corrupt_run_snapshot_for_active_lineage_entr
 }
 
 #[test]
+fn project_create_from_bead_reports_not_started_run_snapshot_as_repairable_lineage() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "bead-existing",
+        "ms-alpha",
+        "ms-alpha.bead-2",
+    );
+    fs::write(
+        project_root(temp_dir.path(), "bead-existing").join("run.json"),
+        r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"not started"}"#,
+    )
+    .expect("write not-started snapshot");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson"),
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-existing","run_id":"run-existing","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write inconsistent active task-runs");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-after-not-started",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "a not-started snapshot behind active lineage should block creation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("active lineage points to a not-started project snapshot"));
+    assert!(stderr.contains("project 'bead-existing'"));
+    assert!(stderr.contains("run 'run-existing'"));
+    assert!(stderr.contains("repair milestones/ms-alpha/task-runs.ndjson"));
+    assert!(
+        !stderr.contains("run resume"),
+        "repair guidance must not point at `run resume` for a not-started project: {stderr}"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "bead-after-not-started").exists(),
+        "broken lineage state must not create a shadow project"
+    );
+}
+
+#[test]
 fn project_create_from_bead_for_different_bead_preserves_run_start_active_bead_guard() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");

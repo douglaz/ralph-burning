@@ -441,6 +441,8 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
         Some(id) => id.clone(),
         None => default_project_id_for_bead(&milestone_id.to_string(), &bead.id)?,
     };
+    let _task_runs_lock =
+        FsTaskRunLineageStore::acquire_task_runs_lock(&current_dir, &milestone_id)?;
     reject_duplicate_active_bead_creation(&current_dir, &milestone_id, &bead.id)?;
     if FsProjectStore.project_exists(&current_dir, &effective_project_id)? {
         return Err(AppError::DuplicateProject {
@@ -652,7 +654,16 @@ fn reject_duplicate_active_bead_creation(
                 };
 
             match run_snapshot.status {
-                RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => {
+                RunStatus::NotStarted => Err(active_lineage_repair_error(
+                    bead_id,
+                    milestone_id,
+                    &existing_run_label,
+                    &format!(
+                        "a not-started project snapshot for project '{}'",
+                        entry.project_id
+                    ),
+                )),
+                RunStatus::Running | RunStatus::Paused => {
                     Err(AppError::DuplicateActiveBead {
                         bead_id: bead_id.to_owned(),
                         existing_project_id: entry.project_id.clone(),

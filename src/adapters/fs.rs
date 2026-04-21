@@ -3230,6 +3230,10 @@ impl AdvisoryFileLock {
     }
 }
 
+pub(crate) struct TaskRunsMutationLock {
+    _lock: AdvisoryFileLock,
+}
+
 struct CurrentThreadMilestoneMutationLockGuard {
     lock_path: PathBuf,
 }
@@ -4320,6 +4324,15 @@ impl FsTaskRunLineageStore {
     fn task_runs_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
         FileSystem::milestone_lock_root(base_dir, milestone_id)
             .join(format!("{MILESTONE_TASK_RUNS_FILE}.lock"))
+    }
+
+    pub(crate) fn acquire_task_runs_lock(
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<TaskRunsMutationLock> {
+        Ok(TaskRunsMutationLock {
+            _lock: AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?,
+        })
     }
 
     fn read_task_runs_from_path(
@@ -6432,6 +6445,71 @@ mod tests {
             tracked.into_iter().map(|record| record.pid).collect();
         let expected_pids: std::collections::BTreeSet<_> = (20_000..20_008u32).collect();
         assert_eq!(tracked_pids, expected_pids);
+    }
+
+    #[test]
+    fn task_runs_lock_serializes_create_guard_with_run_start() {
+        use crate::contexts::milestone_record::model::MilestoneId;
+        use chrono::TimeZone;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temp = tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp.path(), Utc::now())
+            .expect("initialize workspace");
+        let milestone_id =
+            MilestoneId::new("ms-task-runs-lock-create-guard").expect("milestone id");
+        std::fs::create_dir_all(FileSystem::milestone_root(temp.path(), &milestone_id))
+            .expect("create milestone root");
+
+        let create_guard =
+            FsTaskRunLineageStore::acquire_task_runs_lock(temp.path(), &milestone_id)
+                .expect("acquire create-time task-run lock");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let base_dir = temp.path().to_path_buf();
+        let milestone_for_thread = milestone_id.clone();
+        let handle = std::thread::spawn(move || {
+            let store = FsTaskRunLineageStore;
+            let started_at = Utc
+                .with_ymd_and_hms(2026, 4, 21, 13, 0, 0)
+                .single()
+                .expect("timestamp");
+            started_tx.send(()).expect("signal thread start");
+            let result = store.record_task_run_start(
+                &base_dir,
+                &milestone_for_thread,
+                "bead-1",
+                "project-1",
+                "run-1",
+                "plan-v1",
+                started_at,
+            );
+            done_tx.send(result).expect("send run-start result");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("run-start thread should begin promptly");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "run-start must remain blocked while the create-time lineage lock is held"
+        );
+
+        drop(create_guard);
+
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("run-start should finish after the create-time lock is released")
+            .expect("run-start result should succeed");
+        handle.join().expect("join run-start thread");
+
+        let task_runs = FsTaskRunLineageStore
+            .find_runs_for_bead(temp.path(), &milestone_id, "bead-1")
+            .expect("read task runs");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].project_id, "project-1");
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
     }
 
     #[test]
