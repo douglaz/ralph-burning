@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421035000-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T08:38:27.747615045Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining 9ni.5.7 gap for legacy active lineage rows with `run_id: null`. `FsTaskRunLineageStore::active_task_runs_for_bead` now returns those non-terminal rows instead of silently filtering them out, and `reject_duplicate_active_bead_creation` in `src/cli/project.rs` now treats a same-bead runless active row as an inconsistent/orphaned lineage condition that blocks `project create-from-bead` with a repair hint instead of allowing a parallel project. The CLI regression was updated to assert rejection and operator guidance for the legacy runless case, keeping create-time behavior aligned with the bead policy of surfacing ambiguous active lineage before task creation.\n\n## Steps\n\n1. [Completed] Reviewed the pending amendment against the current duplicate-active-bead implementation and confirmed the remaining gap was the read-only create-time scan dropping active legacy lineage rows with `run_id: null` before validation.\n2. [Completed] Updated `src/adapters/fs.rs` so `active_task_runs_for_bead` includes legacy runless active entries during duplicate detection, preserving the ability to surface same-bead lineage inconsistencies at create time instead of silently ignoring them.\n3. [Completed] Updated `src/cli/project.rs` to reject a single active same-bead lineage row with no run id as a remediation-required error, and revised the CLI regression in `tests/cli.rs` to assert the failure path and repair guidance.\n4. [Completed] Ran focused regressions plus the required verification gates on the final tree, including formatting, clippy, the full locked `test-stub` suite, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub active_task_runs_for_bead_includes_legacy_runless_entries` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_rejects_legacy_runless_active_lineage` passed.\n- `nix develop -c cargo fmt --check` exited successfully.\n- `nix develop -c cargo clippy --locked -- -D warnings` exited successfully.\n- `nix develop -c cargo test --locked --features test-stub` passed on the full tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

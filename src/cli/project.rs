@@ -599,6 +599,19 @@ fn reject_duplicate_active_bead_creation(
     match active_runs.as_slice() {
         [] => Ok(()),
         [entry] => {
+            let existing_run_label =
+                task_run_attempt_label(entry.run_id.as_deref(), entry.started_at);
+            if entry.run_id.is_none() {
+                return Err(active_lineage_repair_error(
+                    bead_id,
+                    milestone_id,
+                    &existing_run_label,
+                    &format!(
+                        "a legacy active lineage row for project '{}' with no run id",
+                        entry.project_id
+                    ),
+                ));
+            }
             let existing_project_id = ProjectId::new(entry.project_id.clone()).map_err(|error| {
                 AppError::RunStartFailed {
                     reason: format!(
@@ -607,8 +620,6 @@ fn reject_duplicate_active_bead_creation(
                     ),
                 }
             })?;
-            let existing_run_label =
-                task_run_attempt_label(entry.run_id.as_deref(), entry.started_at);
             match FsProjectStore.read_project_record(base_dir, &existing_project_id) {
                 Ok(_) => {}
                 Err(AppError::ProjectNotFound { .. }) => {

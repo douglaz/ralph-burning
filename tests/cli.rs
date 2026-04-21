@@ -13546,7 +13546,7 @@ fn project_create_from_bead_allows_new_project_after_terminal_attempt() {
 }
 
 #[test]
-fn project_create_from_bead_allows_creation_with_legacy_runless_active_lineage() {
+fn project_create_from_bead_rejects_legacy_runless_active_lineage() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
@@ -13582,15 +13582,21 @@ fn project_create_from_bead_allows_creation_with_legacy_runless_active_lineage()
         .expect("run project create-from-bead");
 
     assert!(
-        output.status.success(),
-        "legacy runless lineage should not block creation: {}",
+        !output.status.success(),
+        "legacy runless lineage should block creation: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        project_root(temp_dir.path(), "bead-after-legacy-runless")
+        stderr.contains("legacy active lineage row")
+            && stderr.contains("repair milestones/ms-alpha/task-runs.ndjson"),
+        "expected remediation guidance for legacy runless lineage, got: {stderr}"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "bead-after-legacy-runless")
             .join("project.toml")
             .exists(),
-        "new project should be created when only a legacy runless lineage row exists"
+        "no new project should be created when a legacy runless lineage row is still active"
     );
 }
 

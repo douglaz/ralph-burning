@@ -5098,9 +5098,6 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             bead_id,
         )
         .into_iter()
-        // Mirror `record_task_run_start`'s legacy repair semantics without
-        // mutating storage during read-only duplicate detection.
-        .filter(|entry| entry.run_id.is_some())
         .cloned()
         .collect();
         runs.sort_by(|left, right| {
@@ -6084,7 +6081,7 @@ mod tests {
     }
 
     #[test]
-    fn active_task_runs_for_bead_ignores_legacy_runless_entries() {
+    fn active_task_runs_for_bead_includes_legacy_runless_entries() {
         use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
         use chrono::TimeZone;
 
@@ -6123,10 +6120,10 @@ mod tests {
         let active_runs = store
             .active_task_runs_for_bead(temp.path(), &milestone_id, "bead-1")
             .expect("query active task runs");
-        assert!(
-            active_runs.is_empty(),
-            "legacy runless entries should not block read-only duplicate checks"
-        );
+        assert_eq!(active_runs.len(), 1);
+        assert_eq!(active_runs[0].project_id, "project-legacy");
+        assert_eq!(active_runs[0].run_id, None);
+        assert_eq!(active_runs[0].outcome, TaskRunOutcome::Running);
     }
 
     #[test]
