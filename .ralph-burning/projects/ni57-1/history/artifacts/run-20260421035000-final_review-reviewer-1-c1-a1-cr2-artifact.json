@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T06:19:00.889455191Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nIdentified 2 fix-now robustness gaps in the duplicate-active-bead hardening: the new create-time check diverges from start-time legacy-runless repair semantics, and the orphan remediation path still misses missing/corrupt `run.json` cases. Review was by code inspection; `cargo` was not available in the shell, and `nix build` did not finish during the review window.\n\n## Amendments\n\n1. finding_summary: `task create` now treats legacy non-terminal lineage rows with `run_id: null` as active duplicates even though `run start` auto-repairs those rows to `Failed` before checking conflicts. The new `FsTaskRunLineageStore::active_task_runs_for_bead` helper (`src/adapters/fs.rs:5089-5108`) reads/collapses the file without applying the legacy repair that `record_task_run_start` performs first (`src/adapters/fs.rs:5144-5148`). `execute_create_from_bead` then rejects solely on that helper (`src/cli/project.rs:574-579`), so an upgraded workspace with an old runless row will get a false duplicate-active rejection and cannot recreate the bead even though start-time semantics would have allowed progress. affected_files: `src/adapters/fs.rs:5089-5108,5144-5148`, `src/cli/project.rs:574-579`. remediation_hint: make the read-only helper mirror start-time legacy handling, either by excluding non-terminal `run_id: null` rows from the returned active set or by running the same upgrade-repair logic before duplicate detection.\n   Rationale: This breaks the bead’s stated goal of keeping create/start semantics aligned and can strand existing upgraded workspaces behind a false duplicate-active error.\n2. finding_summary: the new orphaned-lineage handling only special-cases a missing project record. If the project directory still exists but `projects/<id>/run.json` is missing or corrupt, `reject_duplicate_active_bead_creation` falls through to `FsRunSnapshotStore.read_run_snapshot` (`src/cli/project.rs:606-607`), which bubbles a raw `CorruptRecord` from `src/adapters/fs.rs:1983-2004` instead of the promised remediation hint about restoring the project or repairing `milestones/<id>/task-runs.ndjson`. That leaves a half-deleted active project in the same opaque failure mode the bead was supposed to make actionable. affected_files: `src/cli/project.rs:594-607`, `src/adapters/fs.rs:1983-2004`. remediation_hint: wrap missing/corrupt run-snapshot reads in the duplicate-bead check and rethrow them with the same operator guidance used for the missing-project case.\n   Rationale: A dangling active lineage row that points at a project with no usable `run.json` is still an orphan/inconsistency, and the current branch does not provide the clear remediation path required by the bead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
