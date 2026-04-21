@@ -444,6 +444,12 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     let _task_runs_lock =
         FsTaskRunLineageStore::acquire_task_runs_lock(&current_dir, &milestone_id)?;
     reject_duplicate_active_bead_creation(&current_dir, &milestone_id, &bead.id)?;
+    reject_existing_same_bead_project_creation(
+        &current_dir,
+        &milestone_id,
+        &bead.id,
+        &effective_project_id,
+    )?;
     if FsProjectStore.project_exists(&current_dir, &effective_project_id)? {
         return Err(AppError::DuplicateProject {
             project_id: effective_project_id.as_str().to_owned(),
@@ -612,6 +618,49 @@ fn reject_duplicate_active_bead_creation(
             })
         }
     }
+}
+
+fn reject_existing_same_bead_project_creation(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    effective_project_id: &ProjectId,
+) -> AppResult<()> {
+    let Some(existing_project_id) = find_existing_bead_project(base_dir, milestone_id, bead_id)?
+    else {
+        return Ok(());
+    };
+
+    let run_snapshot = match FsRunSnapshotStore.read_run_snapshot(base_dir, &existing_project_id) {
+        Ok(snapshot) => snapshot,
+        Err(AppError::CorruptRecord { file, details })
+            if file == format!("projects/{existing_project_id}/run.json") =>
+        {
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot create bead '{bead_id}': project '{}' already exists for that bead, but its run snapshot is unreadable ({details}); repair projects/{}/run.json before creating another task",
+                    existing_project_id,
+                    existing_project_id
+                ),
+            });
+        }
+        Err(other) => return Err(other),
+    };
+
+    if run_snapshot.status == RunStatus::NotStarted {
+        return Err(AppError::DuplicateBeadProject {
+            bead_id: bead_id.to_owned(),
+            existing_project_id: existing_project_id.as_str().to_owned(),
+        });
+    }
+
+    if &existing_project_id == effective_project_id {
+        return Err(AppError::DuplicateProject {
+            project_id: effective_project_id.as_str().to_owned(),
+        });
+    }
+
+    Ok(())
 }
 
 pub(crate) fn find_existing_bead_project(

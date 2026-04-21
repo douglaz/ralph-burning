@@ -4643,11 +4643,12 @@ impl FsTaskRunLineageStore {
     }
 
     /// One-time upgrade repair: mark any running entries with `run_id: None`
-    /// as failed.  Prior code versions allowed starting beads without a run ID;
+    /// as failed. Prior code versions allowed starting beads without a run ID;
     /// the current write paths require `run_id: &str` at the port boundary, so
-    /// these legacy entries can never be finalized normally.  Failing them on
-    /// first write access prevents them from blocking new starts or producing
-    /// confusing "ambiguous" errors.
+    /// these legacy entries can never be finalized normally. Callers must
+    /// first reject same-bead cross-project conflicts on the pre-repair view so
+    /// corrupted active lineage still surfaces actionable remediation instead
+    /// of being silently rewritten.
     fn fail_legacy_runless_entries(entries: &mut [TaskRunEntry], now: DateTime<Utc>) -> bool {
         let mut changed = false;
         for entry in entries.iter_mut() {
@@ -5144,6 +5145,38 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        let pre_repair_canonical_task_runs = collapse_task_run_attempts(entries.clone());
+        let pre_repair_running_attempts_for_bead = Self::running_task_runs_for_bead(
+            &pre_repair_canonical_task_runs,
+            milestone_id,
+            bead_id,
+        );
+
+        if pre_repair_running_attempts_for_bead.len() > 1 {
+            let run_suffix = format!(" run '{run_id}'");
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot start bead '{bead_id}': ambiguous existing running attempts{run_suffix}"
+                ),
+            });
+        }
+
+        if let [prior_running_attempt] = pre_repair_running_attempts_for_bead.as_slice() {
+            if prior_running_attempt.project_id != project_id {
+                return Err(
+                    crate::contexts::milestone_record::service::active_same_bead_conflict_error(
+                        &FsProjectStore,
+                        &FsRunSnapshotStore,
+                        base_dir,
+                        milestone_id,
+                        bead_id,
+                        prior_running_attempt,
+                        crate::contexts::milestone_record::service::ActiveSameBeadConflictAction::Start,
+                    )?,
+                );
+            }
+        }
+
         let legacy_repaired = Self::fail_legacy_runless_entries(&mut entries, started_at);
         if legacy_repaired {
             Self::write_task_runs(&path, &entries)?;
@@ -6341,6 +6374,72 @@ mod tests {
         assert_eq!(task_runs.len(), 1);
         assert_eq!(task_runs[0].project_id, "project-corrupt");
         assert_eq!(task_runs[0].run_id.as_deref(), Some("run-corrupt"));
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
+    }
+
+    #[test]
+    fn record_task_run_start_reports_legacy_runless_active_same_bead_conflict() {
+        use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
+        use chrono::TimeZone;
+
+        let temp = tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp.path(), Utc::now())
+            .expect("initialize workspace");
+        let milestone_id =
+            MilestoneId::new("ms-active-same-bead-legacy-runless").expect("milestone id");
+        std::fs::create_dir_all(FileSystem::milestone_root(temp.path(), &milestone_id))
+            .expect("create milestone root");
+
+        let store = FsTaskRunLineageStore;
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 21, 10, 55, 0)
+            .single()
+            .expect("timestamp");
+        store
+            .append_task_run(
+                temp.path(),
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-legacy".to_owned(),
+                    run_id: None,
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: None,
+                },
+            )
+            .expect("append legacy runless task run");
+
+        let error = store
+            .record_task_run_start(
+                temp.path(),
+                &milestone_id,
+                "bead-1",
+                "project-2",
+                "run-2",
+                "plan-v2",
+                started_at + chrono::Duration::seconds(10),
+            )
+            .expect_err("legacy runless same-bead conflict should return repair guidance");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("cannot start bead 'bead-1'"));
+        assert!(rendered.contains("legacy active lineage row"));
+        assert!(rendered.contains("project 'project-legacy'"));
+        assert!(rendered
+            .contains("repair milestones/ms-active-same-bead-legacy-runless/task-runs.ndjson"));
+        assert!(rendered.contains("before starting another run"));
+
+        let task_runs = store
+            .find_runs_for_bead(temp.path(), &milestone_id, "bead-1")
+            .expect("read task runs");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].project_id, "project-legacy");
+        assert_eq!(task_runs[0].run_id, None);
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
     }
 

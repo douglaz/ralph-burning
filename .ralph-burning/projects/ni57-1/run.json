@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-9715fe00",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "[src/cli/project.rs:444-478,617-668] `execute_create_from_bead` only preflights active `task-runs.ndjson` entries. A bead-backed project that already exists but has never started has no lineage row, so a second `project create-from-bead --project-id ...` for the same bead slips past the new guard and falls into `claim_bead_in_br`. That path returns a generic br-claim failure and transitions the milestone controller to `needs_operator`, even though this is just the duplicate-not-started case the bead policy is supposed to reject cleanly. The command should detect an existing same-bead project before the br claim and return a targeted duplicate-bead error naming that project instead of taking the operator-recovery path.",
-        "created_at": "2026-04-21T11:02:57.295770863Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "7d8b3cdd6c3a8548502c764f5d3526a62f4c1f75228d44d30c36f04f39ce0835"
-      },
-      {
-        "amendment_id": "fr-7-48d17456",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "[src/adapters/fs.rs:4651-4659,5147-5191] `record_task_run_start` still rewrites every non-terminal `run_id: None` lineage row to `failed` before it evaluates same-bead conflicts. In an upgraded workspace with a legacy active row, `run start` on a second project for the same bead will silently auto-fail the old active entry and proceed, instead of surfacing the repair guidance that `project create-from-bead` now emits for the same corrupted/orphaned state. That leaves create/start semantics misaligned and still lets corrupted same-bead lineage be bypassed rather than rejected.",
-        "created_at": "2026-04-21T11:02:57.295786432Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "ab46d1647a0b2dc7753707b0c843b12cb87b420ad47db58124753bdf4b1d2977"
-      }
-    ],
-    "processed_count": 8
+    "pending": [],
+    "processed_count": 10
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-21T10:48:35.086961869Z",

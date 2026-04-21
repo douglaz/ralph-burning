@@ -13926,6 +13926,114 @@ fn project_create_from_bead_reports_not_started_run_snapshot_as_repairable_linea
 }
 
 #[test]
+fn project_create_from_bead_rejects_existing_not_started_same_bead_project_before_br_claim() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "bead-existing",
+        "ms-alpha",
+        "ms-alpha.bead-2",
+    );
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-second",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "an existing not-started bead project should block duplicate creation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(
+        "bead 'ms-alpha.bead-2' already has project 'bead-existing' in not_started state"
+    ));
+    assert!(stderr.contains("ralph-burning project select bead-existing"));
+    assert!(stderr.contains("ralph-burning run start"));
+    assert!(
+        !stderr.contains("br claim failed"),
+        "duplicate not-started project should fail before the br-claim recovery path: {stderr}"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "bead-second").exists(),
+        "duplicate create must not mint a second project"
+    );
+}
+
+#[test]
+fn project_create_from_bead_rejects_same_project_id_for_existing_not_started_bead_project() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "bead-existing",
+        "ms-alpha",
+        "ms-alpha.bead-2",
+    );
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-existing",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "reusing the same project id for an existing not-started bead task should be rejected cleanly"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(
+        "bead 'ms-alpha.bead-2' already has project 'bead-existing' in not_started state"
+    ));
+    assert!(stderr.contains("ralph-burning project select bead-existing"));
+    assert!(stderr.contains("ralph-burning run start"));
+    assert!(
+        !stderr.contains("project 'bead-existing' already exists"),
+        "same-bead reuse should return the targeted bead-project guidance instead of a generic duplicate-project error: {stderr}"
+    );
+    assert!(
+        !stderr.contains("br claim failed"),
+        "same-project duplicate detection must happen before any br claim attempt: {stderr}"
+    );
+}
+
+#[test]
 fn project_create_from_bead_for_different_bead_preserves_run_start_active_bead_guard() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");

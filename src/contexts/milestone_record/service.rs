@@ -11872,6 +11872,77 @@ mod tests {
     }
 
     #[test]
+    fn retry_start_on_same_bead_reports_legacy_runless_repair_hint(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "same-bead-legacy-runless-repair-test",
+            "Same Bead Legacy Runless Repair Test",
+            now,
+        )?;
+
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-legacy".to_owned(),
+                run_id: None,
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+                task_id: None,
+            },
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-2",
+            "run-2",
+            "plan-v2",
+            now + chrono::Duration::seconds(10),
+        )
+        .expect_err("legacy runless same-bead conflict should return repair guidance");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("cannot start bead 'bead-1'"));
+        assert!(rendered.contains("legacy active lineage row"));
+        assert!(rendered.contains("project 'project-legacy'"));
+        assert!(rendered
+            .contains("repair milestones/same-bead-legacy-runless-repair-test/task-runs.ndjson"));
+        assert!(rendered.contains("before starting another run"));
+
+        let runs_after_rejection = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(runs_after_rejection.len(), 1);
+        assert_eq!(runs_after_rejection[0].project_id, "project-legacy");
+        assert_eq!(runs_after_rejection[0].run_id, None);
+        assert_eq!(runs_after_rejection[0].outcome, TaskRunOutcome::Running);
+        Ok(())
+    }
+
+    #[test]
     fn retry_start_on_failed_same_bead_attempt_rejects_other_project_active_conflict(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;

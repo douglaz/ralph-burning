@@ -55,6 +55,13 @@ pub enum AppError {
         existing_project_id: String,
         existing_run_id: String,
     },
+    #[error(
+        "bead '{bead_id}' already has project '{existing_project_id}' in not_started state; use `ralph-burning project select {existing_project_id}` and `ralph-burning run start` instead of creating another task"
+    )]
+    DuplicateBeadProject {
+        bead_id: String,
+        existing_project_id: String,
+    },
     #[error("milestone '{milestone_id}' already exists")]
     DuplicateMilestone { milestone_id: String },
     #[error("milestone '{milestone_id}' was not found under .ralph-burning/milestones/")]
