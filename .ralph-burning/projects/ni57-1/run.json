@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-21T03:50:00.987751574Z",
     "prompt_hash_at_cycle_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "prompt_hash_at_stage_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-8003804f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "finding_summary: `project create-from-bead` still permits a parallel project when the only existing active lineage row is a legacy `run_id: null` attempt. The new read-only helper explicitly drops every non-terminal row without a run ID (`src/adapters/fs.rs:5089-5104`), `execute_create_from_bead` relies on that helper for its duplicate guard (`src/cli/project.rs:587-597`), and the integration test now locks that behavior in as success (`tests/cli.rs:13549-13594`). In an upgraded workspace with one of these legacy active rows, create-time validation will silently ignore the existing same-bead attempt, mint a second project, and leave the ambiguity to be \"repaired\" only later on a start-time write. That misses the bead's stated goal of surfacing or blocking inconsistent active lineage at create time instead of allowing another task to be created.\nremediation_hint: Treat non-terminal runless rows as an inconsistent/orphaned active lineage that blocks creation with a repair hint, or run the same legacy-row repair before duplicate detection so create-time behavior matches start-time behavior.",
+        "created_at": "2026-04-21T08:05:37.956466035Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "f0bc93980c4c5d37ab3114dacd49bd83468cb16595f23f0d6108cf2fbf8c2019"
+      }
+    ],
     "processed_count": 4
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-21T07:05:29.297217355Z",
+    "resolved_at": "2026-04-21T07:55:30.369403197Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

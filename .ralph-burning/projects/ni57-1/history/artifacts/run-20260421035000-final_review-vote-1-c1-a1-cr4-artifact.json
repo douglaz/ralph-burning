@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T08:04:56.853048338Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1 of 1 amendments. The cited create-time lineage handling is a real correctness defect: legacy non-terminal runless rows are silently excluded from duplicate detection, so inconsistent active lineage can be ignored and a second bead-backed project can be created before any repair happens.\n\n## Votes\n\n- `fr-4-8003804f`: Accept\n  The amendment is technically sound. `execute_create_from_bead` calls `reject_duplicate_active_bead_creation`, which relies on `active_task_runs_for_bead`. That helper explicitly filters out non-terminal entries with `run_id == None`, so a legacy active lineage row is treated as if no active attempt exists. As a result, create-time validation skips the missing-project/run-snapshot checks that would normally protect this path and can mint a second project for the same bead, or at minimum ignore a corrupt active lineage row that should be surfaced immediately. The only repair happens later in `record_task_run_start`, which is too late because the workspace may already contain duplicated bead-backed project state. The integration test that expects success locks in that incorrect behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

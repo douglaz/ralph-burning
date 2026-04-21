@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T08:05:37.917517472Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAccept fr-4-8003804f: current code silently drops non-terminal runless legacy rows at create time, bypassing the orphaned-lineage repair-hint branch that the bead's acceptance criteria explicitly require. The pinned test locks in behavior that contradicts the bead goal of making duplicate/orphaned lineage explicit at create time rather than deferring to a start-time repair write.\n\n## Votes\n\n- `fr-4-8003804f`: Accept\n  The finding is technically correct and material. Bead 9ni.5.7's acceptance criteria (prompt.md:29-31, 89-96) explicitly require surfacing orphaned active-lineage rows with a remediation hint at create time, and `reject_duplicate_active_bead_creation` in src/cli/project.rs:611-622 already implements that exact remediation branch for entries with a `run_id` (ProjectNotFound -> active_lineage_repair_error). However, `active_task_runs_for_bead` (src/adapters/fs.rs:5089-5104) filters out every non-terminal row whose `run_id` is None *before* the orphan check runs, so the classic legacy/orphan case (non-terminal runless row with no corresponding project directory) never reaches the repair-hint path. The pinned test at tests/cli.rs:13549-13594 writes exactly this orphan shape (running row pointing at `legacy-project` with no project directory) and asserts the new project is silently created, which directly contradicts the bead's stated policy of 'surface the inconsistency rather than silently creating a parallel project'. Although record_task_run_start will eventually repair the legacy row at start time (fs.rs:5148), this divergence is precisely what the bead was commissioned to eliminate: it reintroduces competing projects for the same bead during the window between create and start, with no explicit handoff semantics. The remediation hint (either block with a repair message, or apply the same legacy-row repair before duplicate detection so create/start semantics align) is sound and low-risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 4
+}
