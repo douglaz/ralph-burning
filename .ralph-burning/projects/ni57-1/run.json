@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-71241a55",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "src/cli/project.rs:650-666 allows `RunStatus::Running` to fall through in `reject_existing_same_bead_project_creation`. If a bead-backed project is still running but its `milestones/<id>/task-runs.ndjson` row has been lost or cleared, `reject_duplicate_active_bead_creation` sees no active lineage and this code will mint a second project anyway. The bead prompt explicitly says orphaned/inconsistent state must fail closed with remediation guidance instead of creating a shadow project, so this path reintroduces duplicate active-bead creation under a plausible repair/corruption scenario. Treat a same-bead project in `running` state without matching active lineage as a repairable error and add a CLI test for a running `run.json` plus empty lineage.",
-        "created_at": "2026-04-21T13:33:27.192059187Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "b5d34e5b0a70b7cbf06aeb7736db783ac27a64a445844fd5771162dc1937be5d"
-      },
-      {
-        "amendment_id": "fr-9-aa574557",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "src/cli/project.rs:629-665 relies on `find_existing_bead_project`, but that helper only returns one project and prefers the default project ID when several projects reference the same bead (src/cli/project.rs:702-723). After this branch's new 'allow create after terminal attempt' behavior, multiple same-bead projects are a normal state. If the original/default project is completed but a later retry project is `failed` or `not_started`, the create path inspects the completed one and incorrectly allows yet another project; if there is no default project, it aborts with a generic 'multiple projects already reference bead' error even when every prior attempt is terminal. `src/cli/milestone.rs:1146-1172` inherits the same helper, so milestone adoption can also select the wrong project. Replace the single-project lookup with a scan over all matching projects that prefers non-terminal states and only allows creation when every matching project is terminal, with coverage for 'completed default + failed retry' and 'multiple terminal retries'.",
-        "created_at": "2026-04-21T13:33:27.192072462Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "6304d9a60a74b64ca55683b55f522fa344f32fdb5c80ad06503560b713282198"
-      }
-    ],
-    "processed_count": 12
+    "pending": [],
+    "processed_count": 14
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-21T13:14:14.053537220Z",
