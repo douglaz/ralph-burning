@@ -950,6 +950,15 @@ pub(crate) fn find_existing_bead_project(
     Ok(Some(project_id))
 }
 
+pub(crate) fn is_create_from_bead_duplicate_conflict(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::DuplicateProject { .. }
+            | AppError::DuplicateBeadProject { .. }
+            | AppError::DuplicateActiveBead { .. }
+    )
+}
+
 async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
     print_deprecation_notice("create-from-bead", "task create");
     let project_id = execute_create_from_bead(args).await?;

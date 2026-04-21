@@ -1157,17 +1157,30 @@ async fn ensure_project_for_controller(
         return Ok(project_id);
     }
 
-    match project::execute_create_from_bead(project::CreateFromBeadArgs {
-        milestone_id: milestone_id.to_string(),
-        bead_id: bead_id.to_owned(),
-        project_id: None,
-        prompt_file: None,
-        flow: None,
-    })
-    .await
-    {
+    recover_existing_bead_project_after_create_conflict(
+        base_dir,
+        milestone_id,
+        bead_id,
+        project::execute_create_from_bead(project::CreateFromBeadArgs {
+            milestone_id: milestone_id.to_string(),
+            bead_id: bead_id.to_owned(),
+            project_id: None,
+            prompt_file: None,
+            flow: None,
+        })
+        .await,
+    )
+}
+
+fn recover_existing_bead_project_after_create_conflict(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    create_result: AppResult<crate::shared::domain::ProjectId>,
+) -> AppResult<crate::shared::domain::ProjectId> {
+    match create_result {
         Ok(project_id) => Ok(project_id),
-        Err(AppError::DuplicateProject { .. }) => {
+        Err(error) if project::is_create_from_bead_duplicate_conflict(&error) => {
             if let Some(project_id) =
                 project::find_existing_bead_project(base_dir, milestone_id, bead_id)?
             {
@@ -1177,7 +1190,7 @@ async fn ensure_project_for_controller(
                     milestone_id,
                     bead_id,
                     project_id.as_str(),
-                    "adopted existing bead-backed project after duplicate project detection",
+                    "adopted existing bead-backed project after create-time duplicate detection",
                     Utc::now(),
                 )?;
                 Ok(project_id)
@@ -2535,7 +2548,7 @@ mod tests {
         self as milestone_service, CreateMilestoneInput, TaskRunLineagePort,
     };
     use crate::contexts::project_run_record::model::{
-        ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
+        ActiveRun, ProjectStatusSummary, RunSnapshot, RunStatus, TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::{
         self as project_service, CreateProjectInput, RunSnapshotWritePort,
@@ -2561,6 +2574,41 @@ mod tests {
             now,
         )
         .expect("create controller milestone");
+    }
+
+    fn create_controller_test_bead_project(
+        base_dir: &std::path::Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> crate::shared::domain::ProjectId {
+        let project_id =
+            crate::shared::domain::ProjectId::new(project_id.to_owned()).expect("project id");
+        project_service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: format!("Project {project_id}"),
+                flow: FlowPreset::Minimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "Bead-backed project".to_owned(),
+                prompt_hash: "prompt-hash".to_owned(),
+                created_at: now,
+                task_source: Some(TaskSource {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: bead_id.to_owned(),
+                    parent_epic_id: None,
+                    origin: TaskOrigin::Milestone,
+                    plan_hash: None,
+                    plan_version: None,
+                }),
+            },
+        )
+        .expect("create bead-backed project");
+        project_id
     }
 
     #[cfg(unix)]
@@ -2755,6 +2803,191 @@ mod tests {
                 .task_status(project_id.as_str())
                 .expect("query task status"),
             milestone_controller::ControllerTaskStatus::Failed
+        );
+    }
+
+    #[test]
+    fn recover_existing_bead_project_after_duplicate_create_adopts_not_started_project() {
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 18, 9, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bead_id = "ms-alpha.bead-2";
+        create_controller_test_milestone(base_dir, &milestone_id, now);
+        let project_id = create_controller_test_bead_project(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            "bead-existing",
+            now,
+        );
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Claimed,
+                "selected bead for execution",
+            )
+            .with_bead(bead_id),
+            now,
+        )
+        .expect("seed claimed controller");
+
+        let adopted = super::recover_existing_bead_project_after_create_conflict(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            Err(AppError::DuplicateBeadProject {
+                bead_id: bead_id.to_owned(),
+                existing_project_id: project_id.to_string(),
+            }),
+        )
+        .expect("recover existing not-started project");
+
+        assert_eq!(adopted, project_id);
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(controller.active_bead_id.as_deref(), Some(bead_id));
+        assert_eq!(
+            controller.active_task_id.as_deref(),
+            Some(project_id.as_str())
+        );
+        assert_eq!(controller.state, MilestoneControllerState::Claimed);
+        assert_eq!(
+            controller.last_transition_reason.as_deref(),
+            Some("adopted existing bead-backed project after create-time duplicate detection")
+        );
+    }
+
+    #[test]
+    fn recover_existing_bead_project_after_duplicate_create_adopts_active_project() {
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 18, 10, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 18, 10, 5, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bead_id = "ms-alpha.bead-2";
+        create_controller_test_milestone(base_dir, &milestone_id, now);
+        let project_id = create_controller_test_bead_project(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            "bead-running",
+            now,
+        );
+
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base_dir,
+                &project_id,
+                &RunSnapshot {
+                    active_run: Some(ActiveRun {
+                        run_id: "run-existing".to_owned(),
+                        stage_cursor: crate::shared::domain::StageCursor::new(
+                            crate::shared::domain::StageId::Planning,
+                            1,
+                            1,
+                            1,
+                        )
+                        .expect("stage cursor"),
+                        started_at,
+                        prompt_hash_at_cycle_start: String::new(),
+                        prompt_hash_at_stage_start: String::new(),
+                        qa_iterations_current_cycle: 0,
+                        review_iterations_current_cycle: 0,
+                        final_review_restart_count: 0,
+                        iterative_implementer_state: None,
+                        stage_resolution_snapshot: None,
+                    }),
+                    interrupted_run: None,
+                    status: RunStatus::Running,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 0,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "running".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write running snapshot");
+        FsTaskRunLineageStore
+            .append_task_run(
+                base_dir,
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: bead_id.to_owned(),
+                    project_id: project_id.to_string(),
+                    run_id: Some("run-existing".to_owned()),
+                    plan_hash: None,
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: Some(project_id.to_string()),
+                },
+            )
+            .expect("append active task run");
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Claimed,
+                "selected bead for execution",
+            )
+            .with_bead(bead_id),
+            now,
+        )
+        .expect("seed claimed controller");
+
+        let adopted = super::recover_existing_bead_project_after_create_conflict(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            Err(AppError::DuplicateActiveBead {
+                bead_id: bead_id.to_owned(),
+                existing_project_id: project_id.to_string(),
+                existing_run_id: "run-existing".to_owned(),
+            }),
+        )
+        .expect("recover existing active project");
+
+        assert_eq!(adopted, project_id);
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+        assert_eq!(controller.active_bead_id.as_deref(), Some(bead_id));
+        assert_eq!(
+            controller.active_task_id.as_deref(),
+            Some(project_id.as_str())
+        );
+        assert_eq!(controller.state, MilestoneControllerState::Claimed);
+        assert_eq!(
+            controller.last_transition_reason.as_deref(),
+            Some("adopted existing bead-backed project after create-time duplicate detection")
         );
     }
 
