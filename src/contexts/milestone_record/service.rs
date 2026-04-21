@@ -11451,6 +11451,111 @@ mod tests {
     }
 
     #[test]
+    fn retry_start_on_failed_same_bead_attempt_rejects_other_project_active_conflict(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "same-bead-failed-cross-project-retry-test",
+            "Same Bead Failed Cross Project Retry Test",
+            now,
+        )?;
+
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("prior failure".to_owned()),
+                started_at: now,
+                finished_at: Some(now + chrono::Duration::seconds(5)),
+                task_id: None,
+            },
+        )?;
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-2".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: Some("plan-v2".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now + chrono::Duration::seconds(10),
+                finished_at: None,
+                task_id: None,
+            },
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(20),
+        )
+        .expect_err(
+            "failed historical attempt must not reopen while another project already runs the bead",
+        );
+        assert!(matches!(
+            error,
+            AppError::DuplicateActiveBead {
+                ref bead_id,
+                ref existing_project_id,
+                ref existing_run_id,
+            } if bead_id == "bead-1"
+                && existing_project_id == "project-2"
+                && existing_run_id == "run-2"
+        ));
+
+        let runs_after_retry = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(runs_after_retry.len(), 2);
+        assert!(runs_after_retry.iter().any(|entry| {
+            entry.project_id == "project-1"
+                && entry.run_id.as_deref() == Some("run-1")
+                && entry.outcome == TaskRunOutcome::Failed
+        }));
+        assert!(runs_after_retry.iter().any(|entry| {
+            entry.project_id == "project-2"
+                && entry.run_id.as_deref() == Some("run-2")
+                && entry.outcome == TaskRunOutcome::Running
+        }));
+
+        let snapshot_after_rejection = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot_after_rejection
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot_after_rejection.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot_after_rejection.active_bead, None);
+        Ok(())
+    }
+
+    #[test]
     fn distinct_named_run_with_same_started_at_as_finalized_attempt_can_start(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;

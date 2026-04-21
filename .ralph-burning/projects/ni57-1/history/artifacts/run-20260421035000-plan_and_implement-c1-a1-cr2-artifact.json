@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421035000-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T06:10:54.493364359Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining 9ni.5.7 gap by moving the same-bead active-project guard in `record_task_run_start` ahead of failed-attempt reopen handling, so `run resume` can no longer reopen a historical failed attempt when another project already has that bead active. Added deterministic regressions in `src/adapters/fs.rs` and `src/contexts/milestone_record/service.rs` covering the cross-project failed-reopen conflict and confirming the lineage/snapshot state remains unchanged after rejection; the earlier create-time duplicate protections and orphan handling remain in place.\n\n## Steps\n\n1. [Completed] Inspected the current duplicate-active-bead enforcement in `src/adapters/fs.rs` and the milestone service to verify the pending amendment path: failed-attempt reopen returned before the new same-bead cross-project guard.\n2. [Completed] Adjusted `record_task_run_start` so the active same-bead conflict check runs before finalized-attempt reopen logic, preserving same-project retry behavior while rejecting cross-project reopen/resume conflicts for an already-active bead.\n3. [Completed] Added regression coverage in the fs adapter and milestone service for the failed-historical-project plus active-other-project scenario, asserting rejection via `AppError::DuplicateActiveBead` and no unintended lineage mutation.\n4. [Completed] Ran focused regressions and the full required verification gates, including formatting, clippy, full locked test suite with `test-stub`, and the authoritative `nix build` gate.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub record_task_run_start_rejects_reopening_failed_attempt_when_other_project_is_active` passed.\n- `nix develop -c cargo test --locked --features test-stub retry_start_on_failed_same_bead_attempt_rejects_other_project_active_conflict` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_` passed, including the duplicate-create, terminal-retry, orphaned-lineage, and different-bead guard regressions.\n- `nix develop -c cargo fmt --check` exited successfully.\n- `nix develop -c cargo clippy --locked -- -D warnings` exited successfully.\n- `nix develop -c cargo test --locked --features test-stub` passed on the full tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}
