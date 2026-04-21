@@ -62,6 +62,32 @@ fn run_git(repo_root: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
+fn git_output(repo_root: &Path, args: &[&str]) -> std::process::Output {
+    git_command()
+        .args(args)
+        .current_dir(repo_root)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .expect("git command")
+}
+
+fn assert_checkpoint_omits_path(repo_root: &Path, checkpoint_sha: &str, path: &str) {
+    let tree = run_git(repo_root, &["ls-tree", "-r", "--name-only", checkpoint_sha]);
+    assert!(
+        !tree.lines().any(|line| line == path),
+        "checkpoint commit should omit {path}, got:\n{tree}"
+    );
+
+    let show_path = git_output(repo_root, &["show", &format!("{checkpoint_sha}:{path}")]);
+    assert!(
+        !show_path.status.success(),
+        "checkpoint commit should not retain {path}"
+    );
+}
+
 fn init_repo() -> tempfile::TempDir {
     let tmp = tempdir().expect("tempdir");
     run_git(tmp.path(), &["init"]);
@@ -257,4 +283,77 @@ fn worktree_adapter_includes_tracked_workspace_in_checkpoint_commits() {
         String::from_utf8_lossy(&show_runtime.stdout).trim(),
         "{\"status\":\"paused\"}"
     );
+}
+
+#[test]
+fn worktree_adapter_drops_tracked_gitignored_paths_from_checkpoint_commits() {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+
+    fs::write(tmp.path().join(".gitignore"), "ignored.txt\n").expect("write .gitignore");
+    fs::write(tmp.path().join("ignored.txt"), "tracked but ignored\n").expect("write ignored");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["add", "-f", "ignored.txt"]);
+    run_git(tmp.path(), &["commit", "-m", "track ignored file"]);
+
+    fs::write(tmp.path().join("ignored.txt"), "modified ignored content\n")
+        .expect("modify ignored");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "ignored.txt");
+}
+
+#[test]
+fn worktree_adapter_drops_assume_unchanged_paths_from_checkpoint_commits() {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+
+    fs::write(tmp.path().join("assume.txt"), "tracked content\n").expect("write assume.txt");
+    run_git(tmp.path(), &["add", "assume.txt"]);
+    run_git(tmp.path(), &["commit", "-m", "track assume-unchanged file"]);
+
+    run_git(
+        tmp.path(),
+        &["update-index", "--assume-unchanged", "assume.txt"],
+    );
+    fs::write(tmp.path().join("assume.txt"), "modified ignored content\n").expect("modify assume");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "assume.txt");
 }

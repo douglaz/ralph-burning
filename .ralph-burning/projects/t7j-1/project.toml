@@ -1,0 +1,7 @@
+id = "t7j-1"
+name = "drop-gitignored-from-checkpoint"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311"
+created_at = "2026-04-21T22:41:03.745623146Z"
+status_summary = "created"
