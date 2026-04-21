@@ -448,7 +448,7 @@ fn disabled_default_backend_fails_role_resolution() {
 
     let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
     let error = BackendPolicyService::new(&effective)
-        .resolve_role_target(BackendPolicyRole::Planner, 1)
+        .resolve_role_target(BackendPolicyRole::Planning, 1)
         .expect_err("disabled default backend should fail");
 
     assert!(matches!(error, AppError::BackendUnavailable { .. }));
@@ -592,14 +592,14 @@ fn opposite_family_uses_fallback_chain_and_cycle_alternates() {
     assert_eq!(
         BackendFamily::Claude,
         policy
-            .planner_family_for_cycle(1)
-            .expect("odd cycle planner family")
+            .primary_family_for_cycle(1)
+            .expect("odd cycle primary family")
     );
     assert_eq!(
         BackendFamily::OpenRouter,
         policy
-            .planner_family_for_cycle(2)
-            .expect("even cycle planner family")
+            .primary_family_for_cycle(2)
+            .expect("even cycle primary family")
     );
 
     let reviewer = policy
@@ -652,13 +652,13 @@ fn timeout_fallback_chain_prefers_role_timeout_then_backend_timeout_then_process
     assert_eq!(
         45,
         policy
-            .timeout_for_role(BackendFamily::Claude, BackendPolicyRole::Planner)
+            .timeout_for_role(BackendFamily::Claude, BackendPolicyRole::Planning)
             .as_secs()
     );
     assert_eq!(
         DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
         policy
-            .timeout_for_role(BackendFamily::Codex, BackendPolicyRole::Planner)
+            .timeout_for_role(BackendFamily::Codex, BackendPolicyRole::Planning)
             .as_secs()
     );
 }

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-plan_and_implement-c1-a2-cr1-artifact",
+  "payload_id": "run-20260421005325-plan_and_implement-c1-a2-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T02:28:26.209818012Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCleaned up the remaining final-review planner leftovers by keeping backend policy on the renamed `Planning` role path, updating final-review contract/docs wording to the direct reviewer-vote flow, refreshing conformance payload fixtures, and renaming test comments/assertion context so final-review paths no longer describe a planner step.\n\n## Steps\n\n1. [Completed] Verified that the backend policy enum and routing no longer use `BackendPolicyRole::Planner`, and aligned policy/test references with the surviving `Planning` role plus `primary_family_for_cycle` naming.\n2. [Completed] Updated final-review contract and template documentation to describe the direct reviewer-vote flow and removed legacy planner-position wording/placeholders.\n3. [Completed] Adjusted final-review conformance scenario voter payloads and backend diagnostics comments so source/tests no longer imply a planner role in the final-review panel.\n4. [Completed] Ran acceptance checks on the current tree, including formatting, tests, clippy, `nix build`, and targeted ripgrep scans for removed planner references.\n\n## Validation Evidence\n\n- `rg -n \"BackendPolicyRole::Planner\" src tests` returned no matches.\n- `rg -n --glob '!src/contexts/requirements_drafting/**' -i \"planner_positions|Planner position\\\\.|planner-position\" src tests docs` returned no matches.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test` passed.\n- `nix develop -c cargo clippy -- -D warnings` passed.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- The worktree still contains unrelated pre-existing modifications outside this bead; I left them untouched and validated the current tree as-is.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

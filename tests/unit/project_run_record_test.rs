@@ -2933,14 +2933,14 @@ fn active_run_with_snapshot_round_trip() {
 }
 
 #[test]
-fn stage_resolution_snapshot_ignores_legacy_final_review_planner_field() {
+fn stage_resolution_snapshot_ignores_unknown_final_review_member_field() {
     let json = r#"{
         "stage_id": "final_review",
         "resolved_at": "2025-01-01T00:00:00Z",
         "final_review_reviewers": [
             {"backend_family": "claude", "model_id": "claude-opus"}
         ],
-        "final_review_planner": {"backend_family": "openrouter", "model_id": "planner-old"},
+        "legacy_final_review_member": {"backend_family": "openrouter", "model_id": "legacy-model"},
         "final_review_arbiter": {"backend_family": "codex", "model_id": "codex-1"}
     }"#;
 

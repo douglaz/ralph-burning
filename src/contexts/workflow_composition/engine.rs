@@ -8969,7 +8969,7 @@ where
     let resolution = build_prompt_review_snapshot(stage_id, &panel);
     // Resolve per-member timeouts using panel-specific roles: PromptReviewer
     // for the refiner and PromptValidator for validators, rather than the
-    // generic stage-level Planner role.
+    // generic stage-level planning role.
     let refiner_timeout = policy.timeout_for_role(
         panel.refiner.backend.family,
         BackendPolicyRole::PromptReviewer,

@@ -296,7 +296,8 @@ impl fmt::Display for BackendRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendPolicyRole {
-    Planner,
+    #[serde(rename = "planner", alias = "planning")]
+    Planning,
     Implementer,
     Reviewer,
     Qa,
@@ -310,7 +311,7 @@ pub enum BackendPolicyRole {
 
 impl BackendPolicyRole {
     pub const ALL: [Self; 10] = [
-        Self::Planner,
+        Self::Planning,
         Self::Implementer,
         Self::Reviewer,
         Self::Qa,
@@ -324,7 +325,7 @@ impl BackendPolicyRole {
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Planner => "planner",
+            Self::Planning => "planner",
             Self::Implementer => "implementer",
             Self::Reviewer => "reviewer",
             Self::Qa => "qa",
@@ -339,7 +340,7 @@ impl BackendPolicyRole {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Planner => "Planner",
+            Self::Planning => "Planning",
             Self::Implementer => "Implementer",
             Self::Reviewer => "Reviewer",
             Self::Qa => "QA",
@@ -364,7 +365,7 @@ impl FromStr for BackendPolicyRole {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "planner" => Ok(Self::Planner),
+            "planner" | "planning" => Ok(Self::Planning),
             "implementer" => Ok(Self::Implementer),
             "reviewer" => Ok(Self::Reviewer),
             "qa" => Ok(Self::Qa),
@@ -1501,7 +1502,7 @@ impl BackendRoleModels {
 
     pub fn model_for(&self, role: BackendPolicyRole) -> Option<&str> {
         match role {
-            BackendPolicyRole::Planner => self.planner.as_deref(),
+            BackendPolicyRole::Planning => self.planner.as_deref(),
             BackendPolicyRole::Implementer => self.implementer.as_deref(),
             BackendPolicyRole::Reviewer => self.reviewer.as_deref(),
             BackendPolicyRole::Qa => self.qa.as_deref(),
@@ -1558,7 +1559,7 @@ impl BackendRoleTimeouts {
 
     pub fn timeout_for(&self, role: BackendPolicyRole) -> Option<u64> {
         match role {
-            BackendPolicyRole::Planner => self.planner,
+            BackendPolicyRole::Planning => self.planner,
             BackendPolicyRole::Implementer => self.implementer,
             BackendPolicyRole::Reviewer => self.reviewer,
             BackendPolicyRole::Qa => self.qa,
