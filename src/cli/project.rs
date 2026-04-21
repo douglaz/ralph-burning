@@ -632,7 +632,7 @@ fn reject_existing_same_bead_project_creation(
         bead_id,
         "create",
         "before creating another task",
-        SameBeadProjectMatchMode::ExplicitTaskSourceOnly,
+        SameBeadProjectMatchMode::IncludeLegacyLineageFallback,
     )?;
     if matching_project_statuses.is_empty() {
         return Ok(());
@@ -760,7 +760,7 @@ fn format_same_bead_project_statuses(projects: &[(ProjectId, RunStatus)]) -> Str
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SameBeadProjectMatchMode {
     ExplicitTaskSourceOnly,
-    IncludeLegacyDefaultIdFallback,
+    IncludeLegacyLineageFallback,
 }
 
 fn matching_bead_project_ids(
@@ -770,73 +770,55 @@ fn matching_bead_project_ids(
     match_mode: SameBeadProjectMatchMode,
 ) -> AppResult<Vec<ProjectId>> {
     let default_project_id = default_project_id_for_bead(&milestone_id.to_string(), bead_id)?;
-    let mut matching_task_source_projects = Vec::new();
-    let mut default_project_record = None;
+    let legacy_lineage_projects = if match_mode == SameBeadProjectMatchMode::ExplicitTaskSourceOnly
+    {
+        BTreeSet::new()
+    } else {
+        legacy_lineage_backed_project_ids(base_dir, milestone_id, bead_id)?
+    };
+    let mut matching_projects = Vec::new();
+    let mut seen_project_ids = BTreeSet::new();
 
     for project_id in FsProjectStore.list_project_ids(base_dir)? {
         let record = FsProjectStore.read_project_record(base_dir, &project_id)?;
-        if project_id == default_project_id {
-            default_project_record = Some(record.clone());
-        }
 
-        let Some(task_source) = record.task_source.as_ref() else {
-            continue;
-        };
-        if task_source.milestone_id == milestone_id.as_str()
-            && milestone_bead_refs_match(milestone_id, &task_source.bead_id, bead_id)
+        let explicit_same_bead_match = record.task_source.as_ref().is_some_and(|task_source| {
+            task_source.milestone_id == milestone_id.as_str()
+                && milestone_bead_refs_match(milestone_id, &task_source.bead_id, bead_id)
+        });
+        let legacy_lineage_match =
+            record.task_source.is_none() && legacy_lineage_projects.contains(project_id.as_str());
+
+        if (explicit_same_bead_match || legacy_lineage_match)
+            && seen_project_ids.insert(record.id.to_string())
         {
-            matching_task_source_projects.push(record.id);
+            matching_projects.push(record.id);
         }
     }
 
-    if let Some(project_id) = matching_task_source_projects
+    if let Some(project_id) = matching_projects
         .iter()
         .find(|project_id| **project_id == default_project_id)
         .cloned()
     {
-        matching_task_source_projects.retain(|existing| *existing != project_id);
-        matching_task_source_projects.insert(0, project_id);
+        matching_projects.retain(|existing| *existing != project_id);
+        matching_projects.insert(0, project_id);
     }
 
-    if !matching_task_source_projects.is_empty() {
-        return Ok(matching_task_source_projects);
-    }
-
-    if match_mode == SameBeadProjectMatchMode::ExplicitTaskSourceOnly {
-        return Ok(Vec::new());
-    }
-
-    let Some(default_record) = default_project_record else {
-        return Ok(Vec::new());
-    };
-
-    if default_record.task_source.is_none()
-        && legacy_default_project_has_lineage_evidence(
-            base_dir,
-            milestone_id,
-            bead_id,
-            &default_record.id,
-        )?
-    {
-        return Ok(vec![default_record.id]);
-    }
-
-    Ok(Vec::new())
+    Ok(matching_projects)
 }
 
-fn legacy_default_project_has_lineage_evidence(
+fn legacy_lineage_backed_project_ids(
     base_dir: &Path,
     milestone_id: &MilestoneId,
     bead_id: &str,
-    project_id: &ProjectId,
-) -> AppResult<bool> {
+) -> AppResult<BTreeSet<String>> {
     Ok(FsTaskRunLineageStore
         .read_task_runs(base_dir, milestone_id)?
         .into_iter()
-        .any(|entry| {
-            entry.project_id == project_id.as_str()
-                && milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
-        }))
+        .filter(|entry| milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id))
+        .map(|entry| entry.project_id)
+        .collect())
 }
 
 fn matching_bead_project_statuses(
@@ -883,7 +865,7 @@ pub(crate) fn find_existing_bead_project(
     match active_runs.as_slice() {
         [] => {}
         [entry] => {
-            let active_conflict = milestone_service::active_same_bead_conflict_error(
+            let active_conflict = milestone_service::active_same_bead_conflict_resolution(
                 &FsProjectStore,
                 &FsRunSnapshotStore,
                 base_dir,
@@ -893,14 +875,18 @@ pub(crate) fn find_existing_bead_project(
                 milestone_service::ActiveSameBeadConflictAction::Start,
             )?;
             return match active_conflict {
-                AppError::DuplicateActiveBead {
+                milestone_service::ActiveSameBeadConflictResolution::DuplicateActive {
                     existing_project_id,
-                    ..
-                } => Ok(Some(ProjectId::new(existing_project_id)?)),
-                AppError::RunStartFailed { reason } => {
-                    Err(milestone_run_project_resolution_error(milestone_id, reason))
                 }
-                other => Err(other),
+                | milestone_service::ActiveSameBeadConflictResolution::ResumeExisting {
+                    existing_project_id,
+                } => Ok(Some(existing_project_id)),
+                milestone_service::ActiveSameBeadConflictResolution::Repair(error) => match error {
+                    AppError::RunStartFailed { reason } => {
+                        Err(milestone_run_project_resolution_error(milestone_id, reason))
+                    }
+                    other => Err(other),
+                },
             };
         }
         runs => {
@@ -930,7 +916,7 @@ pub(crate) fn find_existing_bead_project(
         bead_id,
         "continue milestone run for",
         "before continuing milestone execution",
-        SameBeadProjectMatchMode::IncludeLegacyDefaultIdFallback,
+        SameBeadProjectMatchMode::IncludeLegacyLineageFallback,
     )
     .map_err(|error| match error {
         AppError::RunStartFailed { reason } => {
@@ -3610,6 +3596,42 @@ status_summary = "{status_summary}"
     }
 
     #[test]
+    fn find_existing_bead_project_adopts_failed_active_lineage_candidate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
+        write_bead_project(
+            tmp.path(),
+            "retry-failed",
+            milestone_id.as_str(),
+            "ms-alpha.bead-2",
+            RunStatus::Failed,
+        );
+        std::fs::write(
+            tmp.path()
+                .join(".ralph-burning/projects/retry-failed/run.json"),
+            r#"{"active_run":null,"interrupted_run":{"run_id":"run-existing","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-04-01T10:11:00Z"},"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#,
+        )
+        .expect("write failed interrupted snapshot");
+        std::fs::write(
+            tmp.path()
+                .join(".ralph-burning/milestones")
+                .join(milestone_id.as_str())
+                .join("task-runs.ndjson"),
+            r#"{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"retry-failed","run_id":"run-existing","plan_hash":"plan-v1","outcome":"running","started_at":"2026-04-01T10:11:00Z"}"#,
+        )
+        .expect("write active lineage");
+
+        let selected =
+            super::find_existing_bead_project(tmp.path(), &milestone_id, "ms-alpha.bead-2")
+                .expect("scan failed active lineage-backed project")
+                .expect("expected resumable failed project");
+
+        assert_eq!(selected.as_str(), "retry-failed");
+    }
+
+    #[test]
     fn find_existing_bead_project_prefers_deterministic_terminal_candidate() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
@@ -3682,6 +3704,42 @@ status_summary = "{status_summary}"
                 .expect("scan legacy default project with lineage evidence")
                 .expect("expected legacy default project match");
         assert_eq!(selected.as_str(), "task-ms-alpha-bead-2");
+    }
+
+    #[test]
+    fn find_existing_bead_project_recovers_legacy_retry_without_task_source_alongside_completed_default(
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
+        write_bead_project(
+            tmp.path(),
+            "task-ms-alpha-bead-2",
+            milestone_id.as_str(),
+            "ms-alpha.bead-2",
+            RunStatus::Completed,
+        );
+        write_legacy_default_project_without_task_source(
+            tmp.path(),
+            "legacy-failed-retry",
+            RunStatus::Failed,
+        );
+        write_task_run_lineage_entry(
+            tmp.path(),
+            milestone_id.as_str(),
+            "ms-alpha.bead-2",
+            "legacy-failed-retry",
+            Some("run-existing"),
+            "failed",
+        );
+
+        let selected =
+            super::find_existing_bead_project(tmp.path(), &milestone_id, "ms-alpha.bead-2")
+                .expect("scan legacy retry with lineage evidence")
+                .expect("expected legacy retry project match");
+
+        assert_eq!(selected.as_str(), "legacy-failed-retry");
     }
 
     #[test]

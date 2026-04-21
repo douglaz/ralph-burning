@@ -14505,6 +14505,133 @@ fn project_create_from_bead_ignores_manual_default_named_project_without_task_so
 }
 
 #[test]
+fn project_create_from_bead_rejects_legacy_failed_default_named_project_with_lineage_evidence() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_project_fixture(temp_dir.path(), "task-ms-alpha-bead-2");
+    fs::write(
+        project_root(temp_dir.path(), "task-ms-alpha-bead-2").join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after legacy retry"}"#,
+    )
+    .expect("write failed run.json");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson"),
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"task-ms-alpha-bead-2","run_id":"run-legacy","plan_hash":"{plan_hash}","outcome":"failed","started_at":"2026-04-01T10:11:00Z","finished_at":"2026-04-01T10:15:00Z"}}"#
+        ),
+    )
+    .expect("write legacy lineage");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-second",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "legacy default-named lineage-backed failed projects should block duplicate creation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr
+        .contains("project 'task-ms-alpha-bead-2' already exists for that bead in failed state"));
+    assert!(stderr.contains("ralph-burning project select task-ms-alpha-bead-2"));
+    assert!(stderr.contains("ralph-burning run resume"));
+    assert!(
+        !project_root(temp_dir.path(), "bead-second").exists(),
+        "create-from-bead must not mint a parallel project when legacy lineage points at a failed retry"
+    );
+}
+
+#[test]
+fn project_create_from_bead_rejects_legacy_failed_retry_without_task_source_even_with_completed_default(
+) {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "task-ms-alpha-bead-2",
+        "ms-alpha",
+        "ms-alpha.bead-2",
+    );
+    fs::write(
+        project_root(temp_dir.path(), "task-ms-alpha-bead-2").join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed default run.json");
+
+    create_project_fixture(temp_dir.path(), "legacy-failed-retry");
+    fs::write(
+        project_root(temp_dir.path(), "legacy-failed-retry").join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after legacy retry"}"#,
+    )
+    .expect("write legacy failed run.json");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson"),
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"legacy-failed-retry","run_id":"run-legacy","plan_hash":"{plan_hash}","outcome":"failed","started_at":"2026-04-01T10:11:00Z","finished_at":"2026-04-01T10:15:00Z"}}"#
+        ),
+    )
+    .expect("write legacy retry lineage");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-second",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "legacy lineage-backed retries without task_source should still block duplicate creation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr
+        .contains("project 'legacy-failed-retry' already exists for that bead in failed state"));
+    assert!(stderr.contains("ralph-burning project select legacy-failed-retry"));
+    assert!(stderr.contains("ralph-burning run resume"));
+    assert!(
+        !project_root(temp_dir.path(), "bead-second").exists(),
+        "create-from-bead must not mint a parallel project when a legacy retry already exists"
+    );
+}
+
+#[test]
 fn project_create_from_bead_for_different_bead_preserves_run_start_active_bead_guard() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");

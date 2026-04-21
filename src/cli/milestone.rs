@@ -3114,6 +3114,128 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn ensure_project_for_controller_adopts_failed_active_same_bead_project() {
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 18, 11, 15, 0)
+            .single()
+            .expect("valid timestamp");
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 18, 11, 20, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bead_id = "ms-alpha.bead-2";
+        create_controller_test_milestone(base_dir, &milestone_id, now);
+        let project_id = create_controller_test_bead_project(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            "bead-failed",
+            now,
+        );
+
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base_dir,
+                &project_id,
+                &RunSnapshot {
+                    active_run: None,
+                    interrupted_run: Some(ActiveRun {
+                        run_id: "run-existing".to_owned(),
+                        stage_cursor: crate::shared::domain::StageCursor::new(
+                            crate::shared::domain::StageId::Planning,
+                            1,
+                            1,
+                            1,
+                        )
+                        .expect("stage cursor"),
+                        started_at,
+                        prompt_hash_at_cycle_start: String::new(),
+                        prompt_hash_at_stage_start: String::new(),
+                        qa_iterations_current_cycle: 0,
+                        review_iterations_current_cycle: 0,
+                        final_review_restart_count: 0,
+                        iterative_implementer_state: None,
+                        stage_resolution_snapshot: None,
+                    }),
+                    status: RunStatus::Failed,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 0,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: "failed".to_owned(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write failed snapshot");
+        FsTaskRunLineageStore
+            .append_task_run(
+                base_dir,
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: bead_id.to_owned(),
+                    project_id: project_id.to_string(),
+                    run_id: Some("run-existing".to_owned()),
+                    plan_hash: None,
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: Some(project_id.to_string()),
+                },
+            )
+            .expect("append active task run");
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Claimed,
+                "selected bead for execution",
+            )
+            .with_bead(bead_id),
+            now,
+        )
+        .expect("seed claimed controller");
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+
+        let adopted = super::ensure_project_for_controller(base_dir, &milestone_id, &controller)
+            .await
+            .expect("recover failed active same-bead project");
+
+        assert_eq!(adopted, project_id);
+        let updated_controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("reload controller")
+        .expect("controller exists");
+        assert_eq!(updated_controller.active_bead_id.as_deref(), Some(bead_id));
+        assert_eq!(
+            updated_controller.active_task_id.as_deref(),
+            Some(project_id.as_str())
+        );
+        assert_eq!(updated_controller.state, MilestoneControllerState::Claimed);
+        assert_eq!(
+            updated_controller.last_transition_reason.as_deref(),
+            Some("adopted existing bead-backed project")
+        );
+    }
+
     #[test]
     fn next_available_controller_bead_project_id_skips_unrelated_manual_default_project() {
         let temp_dir = tempdir().expect("tempdir");
