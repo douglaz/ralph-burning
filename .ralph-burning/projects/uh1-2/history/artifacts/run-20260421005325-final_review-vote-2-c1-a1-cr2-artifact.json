@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421005325-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T03:12:45.723727578Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nRejecting the amendment: renaming internal enum variants and methods in a pre-1.0 binary crate with no out-of-tree consumers does not warrant a compatibility shim. Serde wire-format stability is already preserved via the `alias = \"planning\"` attribute, which is the load-bearing compatibility concern for persisted state.\n\n## Votes\n\n- `fr-2-d314ccf4`: Reject\n  `ralph-burning` is version 0.1.0 — Rust semver explicitly permits breaking changes at pre-1.0, so renames are sanctioned by the version contract. The crate is primarily a CLI binary (has `src/main.rs`) with no `description`/`repository`/`license` metadata typical of a library intended for external consumption, and no evidence of any out-of-tree consumer exists. The bead prompt specifically sanctioned API changes (\"Remove the variant and the planner-specific branches\", \"remove the variant only if nothing outside the context uses it\" — context meaning internal callers). The genuinely load-bearing compatibility concern — serialized state — is already preserved via `#[serde(rename = \"planner\", alias = \"planning\")]` at `src/shared/domain.rs:299`, so persisted journals and run.json files continue to deserialize. Adding a deprecated `Planner` alias variant or a `planner_family_for_cycle` shim would add maintenance burden (exhaustive match churn, doc drift) for a purely hypothetical caller that the pre-1.0 version number explicitly disclaims responsibility for. The cleanup bead's entire point is to eliminate stale planner references; reintroducing them as compat shims undermines the bead's acceptance criteria (`rg -n \"BackendPolicyRole::Planner\"` returns no matches).\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}

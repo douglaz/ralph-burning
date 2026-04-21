@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421005325-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T03:11:40.894535140Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 branch-attributable medium issue: the planner-reference cleanup introduces a public API break without a compatibility shim. I also ran `nix build`; it currently fails in an untouched `src/adapters/br_process.rs` sandbox-specific test, which I did not count as a change-attributable amendment.\n\n## Amendments\n\n1. `src/shared/domain.rs:296-369` and `src/contexts/agent_execution/policy.rs:201-209` turn the public `BackendPolicyRole::Planner` / `planner_family_for_cycle()` API into `Planning` / `primary_family_for_cycle()` with no compatibility shim, even though `src/lib.rs:3-7` exports these modules publicly. That is a source-breaking change for any out-of-tree code compiling against `ralph-burning`, even though the runtime semantics did not actually need a hard API break for this cleanup bead.\n   Rationale: The bead prompt explicitly says to keep public API changes minimal. A deprecated compatibility layer is feasible here: keep an alias for `BackendPolicyRole::Planner` (for example via an associated const) and add a forwarding `planner_family_for_cycle()` wrapper while the internal naming moves to `Planning` / `primary_family_for_cycle()`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
