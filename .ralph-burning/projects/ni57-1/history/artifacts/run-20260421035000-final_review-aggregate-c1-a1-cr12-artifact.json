@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr12-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T16:40:53.986525849Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 12/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-12-c8877f63`\n- `fr-12-eee3108c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-12-c8877f63`\n\nfinding_summary: `find_existing_bead_project` now treats an all-terminal same-bead history as fatal ambiguity whenever more than one completed project matches (src/cli/project.rs:909-921), even though the create path explicitly allows that state (src/cli/project.rs:640-645). Because `ensure_project_for_controller` calls this helper before it can create or adopt anything (src/cli/milestone.rs:1146-1158), `milestone run` can no longer recover after a restart/controller desync when a bead has a completed default project plus a completed retry; the command fails instead of selecting a recoverable project or creating a fresh one. affected_files: src/cli/project.rs, src/cli/milestone.rs. remediation_hint: keep all-terminal same-bead histories recoverable here too by preferring a deterministic completed candidate (for example the default or newest completed project) or by falling through to fresh creation instead of raising ambiguity.\n\n### `fr-12-eee3108c`\n\nfinding_summary: The new create-time duplicate guard reuses `matching_bead_project_ids`, whose legacy fallback treats any task-source-free project whose id equals the bead’s default generated id as a same-bead match (src/cli/project.rs:759-805). `reject_existing_same_bead_project_creation` then blocks `task create` based on that inferred match (src/cli/project.rs:623-690), so an unrelated manual project named like the default bead id is now misclassified as an existing bead task and the operator is told to start/resume it instead of creating the requested project. affected_files: src/cli/project.rs. remediation_hint: restrict the default-id/no-task-source fallback to explicit recovery paths for legacy bead-backed projects, or require actual task-source/lineage evidence before the create-time blocker fires.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 12
+}
