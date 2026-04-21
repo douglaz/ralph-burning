@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T13:33:27.192077922Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 9/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-9-71241a55`\n- `fr-9-aa574557`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-71241a55`\n\nsrc/cli/project.rs:650-666 allows `RunStatus::Running` to fall through in `reject_existing_same_bead_project_creation`. If a bead-backed project is still running but its `milestones/<id>/task-runs.ndjson` row has been lost or cleared, `reject_duplicate_active_bead_creation` sees no active lineage and this code will mint a second project anyway. The bead prompt explicitly says orphaned/inconsistent state must fail closed with remediation guidance instead of creating a shadow project, so this path reintroduces duplicate active-bead creation under a plausible repair/corruption scenario. Treat a same-bead project in `running` state without matching active lineage as a repairable error and add a CLI test for a running `run.json` plus empty lineage.\n\n### `fr-9-aa574557`\n\nsrc/cli/project.rs:629-665 relies on `find_existing_bead_project`, but that helper only returns one project and prefers the default project ID when several projects reference the same bead (src/cli/project.rs:702-723). After this branch's new 'allow create after terminal attempt' behavior, multiple same-bead projects are a normal state. If the original/default project is completed but a later retry project is `failed` or `not_started`, the create path inspects the completed one and incorrectly allows yet another project; if there is no default project, it aborts with a generic 'multiple projects already reference bead' error even when every prior attempt is terminal. `src/cli/milestone.rs:1146-1172` inherits the same helper, so milestone adoption can also select the wrong project. Replace the single-project lookup with a scan over all matching projects that prefers non-terminal states and only allows creation when every matching project is terminal, with coverage for 'completed default + failed retry' and 'multiple terminal retries'.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}
