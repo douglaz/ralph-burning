@@ -5098,6 +5098,9 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             bead_id,
         )
         .into_iter()
+        // Mirror `record_task_run_start`'s legacy repair semantics without
+        // mutating storage during read-only duplicate detection.
+        .filter(|entry| entry.run_id.is_some())
         .cloned()
         .collect();
         runs.sort_by(|left, right| {
@@ -6078,6 +6081,52 @@ mod tests {
         assert_eq!(task_runs[0].project_id, "project-1");
         assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
+    }
+
+    #[test]
+    fn active_task_runs_for_bead_ignores_legacy_runless_entries() {
+        use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
+        use chrono::TimeZone;
+
+        let temp = tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp.path(), Utc::now())
+            .expect("initialize workspace");
+        let milestone_id =
+            MilestoneId::new("ms-legacy-runless-active-query").expect("milestone id");
+        std::fs::create_dir_all(FileSystem::milestone_root(temp.path(), &milestone_id))
+            .expect("create milestone root");
+
+        let store = FsTaskRunLineageStore;
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 21, 10, 30, 0)
+            .single()
+            .expect("timestamp");
+        store
+            .append_task_run(
+                temp.path(),
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-legacy".to_owned(),
+                    run_id: None,
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: None,
+                },
+            )
+            .expect("append legacy runless task run");
+
+        let active_runs = store
+            .active_task_runs_for_bead(temp.path(), &milestone_id, "bead-1")
+            .expect("query active task runs");
+        assert!(
+            active_runs.is_empty(),
+            "legacy runless entries should not block read-only duplicate checks"
+        );
     }
 
     #[test]

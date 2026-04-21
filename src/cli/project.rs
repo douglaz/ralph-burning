@@ -566,6 +566,20 @@ fn task_run_attempt_label(run_id: Option<&str>, started_at: chrono::DateTime<Utc
         .unwrap_or_else(|| format!("attempt started at {}", started_at.to_rfc3339()))
 }
 
+fn active_lineage_repair_error(
+    bead_id: &str,
+    milestone_id: &MilestoneId,
+    existing_run_label: &str,
+    problem_clause: &str,
+) -> AppError {
+    AppError::RunStartFailed {
+        reason: format!(
+            "cannot create bead '{bead_id}': active lineage points to {problem_clause} ({existing_run_label}); repair milestones/{}/task-runs.ndjson or restore the project state before creating another task",
+            milestone_id
+        ),
+    }
+}
+
 fn reject_duplicate_active_bead_creation(
     base_dir: &Path,
     milestone_id: &MilestoneId,
@@ -594,17 +608,33 @@ fn reject_duplicate_active_bead_creation(
             match FsProjectStore.read_project_record(base_dir, &existing_project_id) {
                 Ok(_) => {}
                 Err(AppError::ProjectNotFound { .. }) => {
-                    return Err(AppError::RunStartFailed {
-                        reason: format!(
-                            "cannot create bead '{bead_id}': active lineage points to missing project '{}' ({existing_run_label}); repair milestones/{}/task-runs.ndjson or restore the project before creating another task",
-                            entry.project_id, milestone_id
-                        ),
-                    });
+                    return Err(active_lineage_repair_error(
+                        bead_id,
+                        milestone_id,
+                        &existing_run_label,
+                        &format!("missing project '{}'", entry.project_id),
+                    ));
                 }
                 Err(other) => return Err(other),
             }
             let run_snapshot =
-                FsRunSnapshotStore.read_run_snapshot(base_dir, &existing_project_id)?;
+                match FsRunSnapshotStore.read_run_snapshot(base_dir, &existing_project_id) {
+                    Ok(snapshot) => snapshot,
+                    Err(AppError::CorruptRecord { file, details })
+                        if file == format!("projects/{}/run.json", existing_project_id) =>
+                    {
+                        return Err(active_lineage_repair_error(
+                            bead_id,
+                            milestone_id,
+                            &existing_run_label,
+                            &format!(
+                                "an unreadable run snapshot for project '{}' ({details})",
+                                entry.project_id
+                            ),
+                        ));
+                    }
+                    Err(other) => return Err(other),
+                };
 
             match run_snapshot.status {
                 RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => {
