@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421005325-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T02:37:15.088607453Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the documentation/code mismatch. build_arbiter_prompt only renders disputed_amendments into the template, not the merged amendment list the voter sees. The doc fix is accurate and low-risk.\n\n## Votes\n\n- `fr-1-2f9251ef`: Accept\n  Confirmed by reading src/contexts/workflow_composition/final_review.rs:2075-2117: the arbiter prompt is built only from disputed_amendments plus reviewer_votes, while docs/templates.md:60-62 currently claims the arbiter receives the same merged amendment list as the voter. This is a real accuracy bug in the template contract docs and the remediation hint (update docs to reflect disputed-only) is correct and scoped. Accepting.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

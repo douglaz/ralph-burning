@@ -2420,7 +2420,7 @@ fn show_effective_surfaces_broken_role_instead_of_dropping() {
     let service = BackendDiagnosticsService::new(&config);
     let view = service.show_effective();
 
-    // The planner role must be present even though its configured backend
+    // The planning-stage role must be present even when its configured backend
     // (openrouter) is disabled — show-effective must not silently drop it.
     let planner = view.roles.iter().find(|r| r.role == "planner");
     assert!(
@@ -2955,7 +2955,7 @@ fn probe_completion_panel_disabled_member_reports_exact_member_identity() {
         "should report the config source as 'completion.backends': {}",
         err_msg
     );
-    // Must NOT attribute the failure to the planner
+    // Must NOT misattribute the failure to the workflow planning backend key.
     assert!(
         !err_msg.contains("workflow.planner_backend"),
         "should not misattribute to workflow.planner_backend: {}",
@@ -3004,7 +3004,7 @@ fn probe_final_review_panel_disabled_arbiter_reports_arbiter_identity() {
         "should report the config source as 'final_review.arbiter_backend': {}",
         err_msg
     );
-    // Must NOT attribute the failure to the planner
+    // Must NOT misattribute the failure to the workflow planning backend key.
     assert!(
         !err_msg.contains("workflow.planner_backend"),
         "should not misattribute to workflow.planner_backend: {}",
@@ -3730,14 +3730,14 @@ fn check_passes_with_implicit_completion_backends_when_runtime_targets_are_avail
     workspace
         .backends
         .insert("openrouter".to_owned(), empty_backend_settings(true));
-    // Override all stage roles to codex — planner=codex
+    // Override all stage roles to codex through the planning-stage backend key.
     workspace.workflow.planner_backend = Some("codex".to_owned());
     workspace.workflow.implementer_backend = Some("codex".to_owned());
     workspace.workflow.reviewer_backend = Some("codex".to_owned());
     workspace.workflow.qa_backend = Some("codex".to_owned());
     // Do NOT set completion.backends — leave implicit so runtime uses
     // default_completion_targets() which resolves the Completer role
-    // (opposite of planner=codex → openrouter, since claude is disabled).
+    // (opposite of the primary codex family → openrouter, since claude is disabled).
     write_workspace_config(temp_dir.path(), &workspace);
 
     let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
@@ -3887,7 +3887,7 @@ fn check_still_skips_final_review_for_flows_without_final_review_stage() {
 
 /// Regression: when opposite-family roles (reviewer, qa, completer) have no
 /// explicit override, `family_for_role()` must reflect the runtime resolution
-/// path (`opposite_family(planner_family)`), not `default_backend`.
+/// path (`opposite_family(primary_family)`), not `default_backend`.
 ///
 /// Setup: default_backend=claude, both opposite families disabled. The runtime
 /// resolution for reviewer would attempt opposite_family(claude) and fail.
@@ -3937,7 +3937,7 @@ fn show_effective_opposite_family_roles_report_attempted_family_not_base() {
         "completer should not report base backend 'claude' — it uses opposite-family resolution"
     );
 
-    // Planner-family roles (planner, implementer) should still report "claude"
+    // Primary-family roles (planner, implementer) should still report "claude"
     let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
     assert_eq!(
         "claude", planner.backend_family,

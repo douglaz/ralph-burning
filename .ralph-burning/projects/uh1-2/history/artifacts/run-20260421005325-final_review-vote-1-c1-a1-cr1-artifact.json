@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421005325-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T02:37:24.859796249Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. The implementation passes only disputed amendments, not the full merged amendment list, to the final-review arbiter, so the documentation is currently inaccurate.\n\n## Votes\n\n- `fr-1-2f9251ef`: Accept\n  The finding is correct. In `src/contexts/workflow_composition/final_review.rs`, the arbiter path first derives `disputed_set` from the full amendment list and then calls `build_arbiter_prompt(&disputed_set, &reviewer_votes, ...)`; `build_arbiter_prompt` itself renders only those `disputed_amendments` plus `reviewer_votes` into the `final_review_arbiter` template. That conflicts with `docs/templates.md`, which says the arbiter receives the same merged amendment list as voters. This is a real contract/documentation mismatch that can mislead template authors and reviewers, and correcting the docs is a safe maintainability improvement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

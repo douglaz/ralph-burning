@@ -622,7 +622,7 @@ fn translate_to_panel_payload(stage_id: StageId, role: &str, raw: Value, prompt:
                     .map(|amendment_id| json!({
                         "amendment_id": amendment_id,
                         "decision": decision,
-                        "rationale": "Stub reviewer/planner vote.",
+                        "rationale": "Stub reviewer vote.",
                     }))
                     .collect::<Vec<_>>(),
             })

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421005325-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T03:12:27.577545403Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe proposed amendment identifies a real public API compatibility regression: the branch renames exported Rust symbols without preserving source compatibility, and the existing string/serde aliases do not address downstream compile breakage.\n\n## Votes\n\n- `fr-2-d314ccf4`: Accept\n  `src/lib.rs` publicly exports `contexts` and `shared`, so `BackendPolicyRole` and `BackendPolicyService` are part of the crate's outward Rust API. This branch changes the enum variant from `Planner` to `Planning` and the public method from `planner_family_for_cycle()` to `primary_family_for_cycle()` with no Rust-level compatibility shim such as deprecated aliases or wrapper methods. The added serde rename/alias and `FromStr` support preserve config parsing and serialized strings, but they do not help any external code that previously referenced `BackendPolicyRole::Planner` or called `planner_family_for_cycle()`: that code now fails to compile. Because the runtime behavior did not require a hard API break, this is a valid maintainability and compatibility defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

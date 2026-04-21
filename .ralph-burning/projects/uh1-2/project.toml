@@ -1,0 +1,7 @@
+id = "uh1-2"
+name = "cleanup-planner-refs"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "13aa85b13ab40a2b882f1c1b954ee3f6ff661f1e614306130a1d30f4d30a0a3f"
+created_at = "2026-04-21T00:53:14.318265203Z"
+status_summary = "created"

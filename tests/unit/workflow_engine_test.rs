@@ -3729,7 +3729,7 @@ async fn preflight_check_honours_final_review_arbiter_override() {
     let temp = tempdir().unwrap();
     setup_workspace(temp.path());
 
-    // Set the default planner family to an unavailable backend, but override
+    // Set the primary cycle family to an unavailable backend, but override
     // the final-review arbiter to "claude" which is available by default.
     // If preflight correctly uses the dedicated arbiter override, it should succeed.
     let workspace_toml = workspace_config_path(temp.path());

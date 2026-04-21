@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421005325-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421005325-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T02:37:24.903070263Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 3\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-2f9251ef`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-2f9251ef`\n\nfinding_summary: [docs/templates.md:60-62] now says `final_review_arbiter` receives the same merged amendment list that `final_review_voter` sees, but the runtime contract built in [src/contexts/workflow_composition/final_review.rs:2075-2117] passes only `disputed_amendments` plus `reviewer_votes` to the arbiter template.\naffected_files: docs/templates.md, src/contexts/workflow_composition/final_review.rs\nremediation_hint: Update the template docs to say the arbiter receives only disputed amendments plus `reviewer_votes`, not the full merged amendment list.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-arbiter-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421005325-final_review-arbiter-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T03:14:40.202083876Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the amendment because, although the rename is source-breaking at the Rust API level, the repository evidence shows this change was intentional cleanup in a pre-1.0 CLI-oriented crate, and the bead explicitly called for removing stale planner-role references while serialized/config compatibility was already preserved.\n\n## Rulings\n\n- `fr-2-d314ccf4`: Reject\n  The rename is a real Rust source-level API break, but the record here does not support treating that as a review defect that must be shimmed. The repo evidence points the other way: `Cargo.toml` is still `version = \"0.1.0\"`, `src/main.rs` is the primary entrypoint, and `docs/cli-reference.md` documents the CLI rather than a supported library surface. More importantly, the active cleanup bead in `.beads/issues.jsonl` (`ralph-burning-uh1`) explicitly requires \"No stale planner references in source code, tests, or docs\" and that backend policy \"no longer resolves or references a planner role.\" Reintroducing `BackendPolicyRole::Planner` or `planner_family_for_cycle()` as compatibility shims would cut against that stated task goal. The compatibility concern that is concretely evidenced in this repo, persisted/config string compatibility, is already preserved by `src/shared/domain.rs` via `#[serde(rename = \"planner\", alias = \"planning\")]` and `FromStr` accepting both `\"planner\"` and `\"planning\"`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

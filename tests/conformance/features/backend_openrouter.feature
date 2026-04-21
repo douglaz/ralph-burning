@@ -11,9 +11,9 @@ Feature: OpenRouter backend parity
 
   @backend.openrouter.disabled_default_backend
   Scenario: Disabled OpenRouter default backend fails policy resolution
-    Given workspace policy resolves the planner family to "openrouter"
+    Given workspace policy resolves the primary cycle family to "openrouter"
     And backends.openrouter.enabled is false
-    When planner target resolution is computed
+    When planning target resolution is computed
     Then resolution fails with BackendUnavailable
 
   @backend.openrouter.requirements_draft

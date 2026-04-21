@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421005325-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T02:36:45.070451047Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the uh1 branch delta against fork point 2655e46f. Changes rename BackendPolicyRole::Planner → Planning (with serde rename=\"planner\"/alias=\"planning\" preserving wire compatibility), rename planner_family_for_cycle → primary_family_for_cycle, refresh panel_contracts.rs and diagnostics.rs comments to drop the 'planner-family' terminology, add a direct-vote-flow note to docs/templates.md, and relabel final_review:voter summaries and a legacy-field snapshot test. All acceptance criteria hold: rg -n \"BackendPolicyRole::Planner\" returns no matches in src/ or tests/; no 'planner_positions' references remain in docs/; no 'Planner position.' entries remain in scenarios.rs; requirements_drafting planner references are correctly left untouched. cargo check passes; backend_policy_test (17/17), backend_diagnostics_test (91/91), project_run_record_test (134/134) all pass. Clippy failures exist but reproduce on the base branch and are pre-existing, not introduced here. Minor stylistic quirks (display_name returning \"Planning\" while as_str returns \"planner\"; renamed legacy-snapshot test using a generic field name) are observable but not bugs — display_name is not called on BackendPolicyRole anywhere, and serde already ignores all unknown fields via default. No correctness, safety, or maintainability issues warranting amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

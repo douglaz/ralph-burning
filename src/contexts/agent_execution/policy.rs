@@ -64,18 +64,18 @@ impl<'a> BackendPolicyService<'a> {
             return self.selection_to_target(role, selection);
         }
 
-        let planner_family = self.planner_family_for_cycle(cycle)?;
+        let primary_family = self.primary_family_for_cycle(cycle)?;
         let family = match role {
-            BackendPolicyRole::Planner
+            BackendPolicyRole::Planning
             | BackendPolicyRole::Implementer
             | BackendPolicyRole::PromptReviewer
             | BackendPolicyRole::PromptValidator
             | BackendPolicyRole::FinalReviewer
-            | BackendPolicyRole::Arbiter => planner_family,
+            | BackendPolicyRole::Arbiter => primary_family,
             BackendPolicyRole::Reviewer
             | BackendPolicyRole::Qa
             | BackendPolicyRole::AcceptanceQa
-            | BackendPolicyRole::Completer => self.opposite_family(planner_family)?,
+            | BackendPolicyRole::Completer => self.opposite_family(primary_family)?,
         };
 
         self.target_for_family(role, family, None)
@@ -198,7 +198,7 @@ impl<'a> BackendPolicyService<'a> {
         })
     }
 
-    pub fn planner_family_for_cycle(&self, cycle: u32) -> AppResult<BackendFamily> {
+    pub fn primary_family_for_cycle(&self, cycle: u32) -> AppResult<BackendFamily> {
         if cycle == 0 {
             return Err(AppError::InvalidStageCursorField { field: "cycle" });
         }
@@ -334,7 +334,7 @@ impl<'a> BackendPolicyService<'a> {
 
     fn selection_for_role(&self, role: BackendPolicyRole) -> Option<&BackendSelection> {
         match role {
-            BackendPolicyRole::Planner => self.config.backend_policy().planner_backend.as_ref(),
+            BackendPolicyRole::Planning => self.config.backend_policy().planner_backend.as_ref(),
             BackendPolicyRole::Implementer => {
                 self.config.backend_policy().implementer_backend.as_ref()
             }
@@ -411,7 +411,7 @@ impl<'a> BackendPolicyService<'a> {
 pub fn stage_to_policy_role(stage_id: StageId) -> BackendPolicyRole {
     match stage_id {
         StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
-            BackendPolicyRole::Planner
+            BackendPolicyRole::Planning
         }
         StageId::Implementation
         | StageId::PlanAndImplement

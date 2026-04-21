@@ -8980,7 +8980,7 @@ fn register_backend_openrouter(m: &mut HashMap<String, ScenarioExecutor>) {
         let effective =
             EffectiveConfig::load(ws.path()).map_err(|e| format!("load effective config: {e}"))?;
         let error = BackendPolicyService::new(&effective)
-            .resolve_role_target(BackendPolicyRole::Planner, 1)
+            .resolve_role_target(BackendPolicyRole::Planning, 1)
             .expect_err("disabled OpenRouter default backend should fail");
 
         if !matches!(error, AppError::BackendUnavailable { .. }) {
@@ -11896,7 +11896,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             assert_failure(&out)?;
 
             // Change reviewer backend config. Default reviewer for cycle 1 is
-            // codex (opposite of planner=claude), so switching to claude
+            // codex (opposite of the primary claude family), so switching to claude
             // produces an actual target change.
             let ws_toml = workspace_config_path(ws.path());
             let content = std::fs::read_to_string(&ws_toml).map_err(|e| format!("read: {e}"))?;
@@ -12797,11 +12797,11 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Reviewer 1 vote.",
+                            "summary": "Final-review reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 2 vote.",
+                            "summary": "Final-review reviewer 2 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                     ],
@@ -12936,11 +12936,11 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Reviewer 1 vote.",
+                            "summary": "Final-review reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 2 vote.",
+                            "summary": "Final-review reviewer 2 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "reject", "rationale": "Not worth it."}],
                         }),
                     ],
@@ -13046,15 +13046,15 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Reviewer 1 vote.",
+                            "summary": "Final-review reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 2 vote.",
+                            "summary": "Final-review reviewer 2 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 3 vote.",
+                            "summary": "Final-review reviewer 3 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                     ],
@@ -13206,27 +13206,27 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                     "final_review:voter",
                     vec![
                         serde_json::json!({
-                            "summary": "Reviewer 1 vote.",
+                            "summary": "Final-review reviewer 1 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 2 vote.",
+                            "summary": "Final-review reviewer 2 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 3 vote.",
+                            "summary": "Final-review reviewer 3 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 1 vote.",
+                            "summary": "Final-review reviewer 1 vote.",
                             "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Still agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 2 vote.",
+                            "summary": "Final-review reviewer 2 vote.",
                             "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Still agree."}],
                         }),
                         serde_json::json!({
-                            "summary": "Reviewer 3 vote.",
+                            "summary": "Final-review reviewer 3 vote.",
                             "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Still agree."}],
                         }),
                     ],

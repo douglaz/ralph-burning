@@ -209,7 +209,7 @@ pub struct FinalReviewProposalPayload {
     pub amendments: Vec<FinalReviewProposal>,
 }
 
-/// Per-amendment vote used by reviewer voting.
+/// Per-amendment vote cast directly by a final-review reviewer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FinalReviewVoteDecision {
@@ -234,7 +234,7 @@ pub struct FinalReviewVote {
     pub rationale: String,
 }
 
-/// Payload returned by each reviewer voting pass.
+/// Payload returned by each direct final-review voter pass.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FinalReviewVotePayload {
     pub summary: String,

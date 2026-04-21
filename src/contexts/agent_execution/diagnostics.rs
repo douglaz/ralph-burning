@@ -1413,14 +1413,14 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// a given role (assuming cycle 1). This mirrors the resolution path in
     /// `BackendPolicyService::resolve_role_target()`:
     /// - Roles with explicit overrides → override family
-    /// - Planner-family roles (Planner, Implementer, PromptReviewer, etc.) → base_backend.family
+    /// - Primary-family roles (Planning, Implementer, PromptReviewer, etc.) → base_backend.family
     /// - Opposite-family roles (Reviewer, Qa, AcceptanceQa, Completer) → opposite_family(base)
     fn family_for_role(&self, role: BackendPolicyRole) -> String {
         let bp = self.config.backend_policy();
 
         // Check explicit override first
         let explicit = match role {
-            BackendPolicyRole::Planner => bp.planner_backend.as_ref(),
+            BackendPolicyRole::Planning => bp.planner_backend.as_ref(),
             BackendPolicyRole::Implementer => bp.implementer_backend.as_ref(),
             BackendPolicyRole::Reviewer => bp.reviewer_backend.as_ref(),
             BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => bp.qa_backend.as_ref(),
@@ -1433,22 +1433,22 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         // No explicit override — mirror runtime resolution path (cycle 1).
-        // Opposite-family roles use opposite_family(planner_family).
-        let planner_family = bp.base_backend.family;
+        // Opposite-family roles use opposite_family(primary_family).
+        let primary_family = bp.base_backend.family;
         if Self::role_uses_opposite_family(role) {
-            match self.policy.opposite_family(planner_family) {
+            match self.policy.opposite_family(primary_family) {
                 Ok(family) => family.as_str().to_owned(),
                 // When no opposite family is enabled, report the attempted
                 // resolution path so operators understand the failure.
-                Err(_) => format!("opposite_of({})", planner_family.as_str()),
+                Err(_) => format!("opposite_of({})", primary_family.as_str()),
             }
         } else {
-            planner_family.as_str().to_owned()
+            primary_family.as_str().to_owned()
         }
     }
 
     /// Returns true if the given role resolves to the opposite family of
-    /// the planner in the runtime resolution path.
+    /// the primary cycle family in the runtime resolution path.
     fn role_uses_opposite_family(role: BackendPolicyRole) -> bool {
         matches!(
             role,
@@ -1464,7 +1464,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         // config key. Otherwise the role inherits from `default_backend`.
         if self.policy.has_explicit_override(role) {
             match role {
-                BackendPolicyRole::Planner => "workflow.planner_backend",
+                BackendPolicyRole::Planning => "workflow.planner_backend",
                 BackendPolicyRole::Implementer => "workflow.implementer_backend",
                 BackendPolicyRole::Reviewer => "workflow.reviewer_backend",
                 BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => "workflow.qa_backend",
@@ -1496,7 +1496,7 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     fn override_source_for_role(&self, role: BackendPolicyRole) -> String {
         let key = match role {
-            BackendPolicyRole::Planner => "workflow.planner_backend",
+            BackendPolicyRole::Planning => "workflow.planner_backend",
             BackendPolicyRole::Implementer => "workflow.implementer_backend",
             BackendPolicyRole::Reviewer => "workflow.reviewer_backend",
             BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => "workflow.qa_backend",
@@ -1591,7 +1591,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         // 1. If the role has an explicit selection with a model, model comes
         //    from the same config source as the role override.
         let selection = match role {
-            BackendPolicyRole::Planner => bp.planner_backend.as_ref(),
+            BackendPolicyRole::Planning => bp.planner_backend.as_ref(),
             BackendPolicyRole::Implementer => bp.implementer_backend.as_ref(),
             BackendPolicyRole::Reviewer => bp.reviewer_backend.as_ref(),
             BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => bp.qa_backend.as_ref(),
@@ -1795,7 +1795,7 @@ fn session_policy_for_role(role: BackendPolicyRole) -> String {
         | BackendPolicyRole::PromptValidator
         | BackendPolicyRole::Arbiter => "new_session".to_owned(),
         // Main stage roles use ReuseIfAllowed
-        BackendPolicyRole::Planner
+        BackendPolicyRole::Planning
         | BackendPolicyRole::Implementer
         | BackendPolicyRole::Reviewer
         | BackendPolicyRole::Qa
