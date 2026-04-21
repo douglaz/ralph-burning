@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T23:37:07.146934779Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 fix-now issue. The checkpoint-tree code change looks directionally correct, but the branch still tracks `result`, so the bead is not complete and the core diff-noise problem remains. `nix build` was started during review but did not finish within the review window.\n\n## Amendments\n\n1. finding_summary: The branch never implements Part B of the bead: `result` is still tracked in `HEAD`, so `git ls-files -i -c --exclude-standard` still reports it and future checkpoint branches will continue to carry an unrelated `result` diff until the symlink is actually untracked.\nseverity: high\naffected_files:\n- result:1\nremediation_hint: Run `git rm --cached -- result` on this branch and commit that deletion without deleting the working-tree symlink.\n   Rationale: The required source-level checkpoint-tree fix appears to be in place, but the repository still tracks the ignored `result` symlink. That leaves the branch in a state that fails the bead's acceptance criteria and preserves the review-noise problem the bead was supposed to eliminate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
