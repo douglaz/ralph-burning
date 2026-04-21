@@ -17,6 +17,7 @@ use crate::adapters::fs::{
     FsMilestoneControllerStore, FsMilestoneJournalStore, FsMilestonePlanStore,
     FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore, FsProjectStore,
     FsRequirementsStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+    FsTaskRunLineageStore,
 };
 use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
@@ -436,6 +437,7 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
         Some(id) => id.clone(),
         None => default_project_id_for_bead(&milestone_id.to_string(), &bead.id)?,
     };
+    reject_duplicate_active_bead_creation(&current_dir, &milestone_id, &bead.id)?;
     if FsProjectStore.project_exists(&current_dir, &effective_project_id)? {
         return Err(AppError::DuplicateProject {
             project_id: effective_project_id.as_str().to_owned(),
@@ -556,6 +558,99 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     set_active_milestone_after_command(&current_dir, &milestone_id)?;
     set_active_project_after_create(&current_dir, &record.id)?;
     Ok(record.id)
+}
+
+fn task_run_attempt_label(run_id: Option<&str>, started_at: chrono::DateTime<Utc>) -> String {
+    run_id
+        .map(|run_id| format!("run '{run_id}'"))
+        .unwrap_or_else(|| format!("attempt started at {}", started_at.to_rfc3339()))
+}
+
+fn reject_duplicate_active_bead_creation(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<()> {
+    let active_runs = milestone_service::active_task_runs_for_bead(
+        &FsTaskRunLineageStore,
+        base_dir,
+        milestone_id,
+        bead_id,
+    )?;
+
+    match active_runs.as_slice() {
+        [] => Ok(()),
+        [entry] => {
+            let existing_project_id = ProjectId::new(entry.project_id.clone()).map_err(|error| {
+                AppError::RunStartFailed {
+                    reason: format!(
+                        "cannot create bead '{bead_id}': active lineage references invalid project id '{}': {error}",
+                        entry.project_id
+                    ),
+                }
+            })?;
+            let existing_run_label =
+                task_run_attempt_label(entry.run_id.as_deref(), entry.started_at);
+            match FsProjectStore.read_project_record(base_dir, &existing_project_id) {
+                Ok(_) => {}
+                Err(AppError::ProjectNotFound { .. }) => {
+                    return Err(AppError::RunStartFailed {
+                        reason: format!(
+                            "cannot create bead '{bead_id}': active lineage points to missing project '{}' ({existing_run_label}); repair milestones/{}/task-runs.ndjson or restore the project before creating another task",
+                            entry.project_id, milestone_id
+                        ),
+                    });
+                }
+                Err(other) => return Err(other),
+            }
+            let run_snapshot =
+                FsRunSnapshotStore.read_run_snapshot(base_dir, &existing_project_id)?;
+
+            match run_snapshot.status {
+                RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => {
+                    Err(AppError::DuplicateActiveBead {
+                        bead_id: bead_id.to_owned(),
+                        existing_project_id: entry.project_id.clone(),
+                        existing_run_id: entry
+                            .run_id
+                            .clone()
+                            .unwrap_or_else(|| format!("started_at={}", entry.started_at.to_rfc3339())),
+                    })
+                }
+                RunStatus::Failed => Err(AppError::RunStartFailed {
+                    reason: format!(
+                        "cannot create bead '{bead_id}': project '{}' has {existing_run_label} in failed state; use `ralph-burning project select {}` and `ralph-burning run resume` instead of creating a parallel task",
+                        entry.project_id, entry.project_id
+                    ),
+                }),
+                RunStatus::Completed => Err(AppError::RunStartFailed {
+                    reason: format!(
+                        "cannot create bead '{bead_id}': active lineage points to completed project '{}' ({existing_run_label}); repair milestones/{}/task-runs.ndjson before creating another task",
+                        entry.project_id, milestone_id
+                    ),
+                }),
+            }
+        }
+        active_runs => {
+            let details = active_runs
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "{} ({})",
+                        entry.project_id,
+                        task_run_attempt_label(entry.run_id.as_deref(), entry.started_at)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot create bead '{bead_id}': multiple active lineage rows already exist for milestone '{}': {details}; repair milestones/{}/task-runs.ndjson before creating another task",
+                    milestone_id, milestone_id
+                ),
+            })
+        }
+    }
 }
 
 pub(crate) fn find_existing_bead_project(

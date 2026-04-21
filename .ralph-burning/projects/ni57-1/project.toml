@@ -1,0 +1,7 @@
+id = "ni57-1"
+name = "harden-create-from-bead-duplicate"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69"
+created_at = "2026-04-21T03:49:55.735054253Z"
+status_summary = "created"

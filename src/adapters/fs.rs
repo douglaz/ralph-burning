@@ -4408,6 +4408,17 @@ impl FsTaskRunLineageStore {
             .collect()
     }
 
+    fn duplicate_active_bead_error(bead_id: &str, entry: &TaskRunEntry) -> AppError {
+        AppError::DuplicateActiveBead {
+            bead_id: bead_id.to_owned(),
+            existing_project_id: entry.project_id.clone(),
+            existing_run_id: entry
+                .run_id
+                .clone()
+                .unwrap_or_else(|| format!("started_at={}", entry.started_at.to_rfc3339())),
+        }
+    }
+
     fn plan_hash_conflict_details(
         bead_id: &str,
         project_id: &str,
@@ -5075,6 +5086,28 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         Self::read_task_runs_from_path(&Self::task_runs_path(base_dir, milestone_id), milestone_id)
     }
 
+    fn active_task_runs_for_bead(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+    ) -> AppResult<Vec<TaskRunEntry>> {
+        let mut runs: Vec<TaskRunEntry> = Self::running_task_runs_for_bead(
+            &collapse_task_run_attempts(self.read_task_runs(base_dir, milestone_id)?),
+            milestone_id,
+            bead_id,
+        )
+        .into_iter()
+        .cloned()
+        .collect();
+        runs.sort_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then_with(|| left.finished_at.cmp(&right.finished_at))
+        });
+        Ok(runs)
+    }
+
     fn append_task_run(
         &self,
         base_dir: &Path,
@@ -5242,6 +5275,12 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         }
 
         if let [prior_running_attempt] = running_attempts_for_bead.as_slice() {
+            if prior_running_attempt.project_id != project_id {
+                return Err(Self::duplicate_active_bead_error(
+                    bead_id,
+                    prior_running_attempt,
+                ));
+            }
             Self::fail_superseded_running_attempt(&mut entries, prior_running_attempt, started_at);
         }
 
@@ -5969,6 +6008,129 @@ mod tests {
         assert_eq!(parsed.outcome_detail.as_deref(), Some("All checks passed"));
         // Re-render and confirm stability
         assert_eq!(parsed.render(), rendered);
+    }
+
+    #[test]
+    fn record_task_run_start_rejects_active_same_bead_from_other_project() {
+        use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
+        use chrono::TimeZone;
+
+        let temp = tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp.path(), Utc::now())
+            .expect("initialize workspace");
+        let milestone_id = MilestoneId::new("ms-active-same-bead").expect("milestone id");
+        std::fs::create_dir_all(FileSystem::milestone_root(temp.path(), &milestone_id))
+            .expect("create milestone root");
+
+        let store = FsTaskRunLineageStore;
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 21, 10, 0, 0)
+            .single()
+            .expect("timestamp");
+        store
+            .append_task_run(
+                temp.path(),
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-1".to_owned(),
+                    run_id: Some("run-1".to_owned()),
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: None,
+                },
+            )
+            .expect("append running task run");
+
+        let error = store
+            .record_task_run_start(
+                temp.path(),
+                &milestone_id,
+                "bead-1",
+                "project-2",
+                "run-2",
+                "plan-v2",
+                started_at + chrono::Duration::seconds(10),
+            )
+            .expect_err("cross-project duplicate active bead should be rejected");
+        assert!(matches!(
+            error,
+            AppError::DuplicateActiveBead {
+                ref bead_id,
+                ref existing_project_id,
+                ref existing_run_id,
+            } if bead_id == "bead-1"
+                && existing_project_id == "project-1"
+                && existing_run_id == "run-1"
+        ));
+
+        let task_runs = store
+            .find_runs_for_bead(temp.path(), &milestone_id, "bead-1")
+            .expect("read task runs");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].project_id, "project-1");
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
+    }
+
+    #[test]
+    fn record_task_run_start_still_rejects_other_active_bead() {
+        use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
+        use chrono::TimeZone;
+
+        let temp = tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp.path(), Utc::now())
+            .expect("initialize workspace");
+        let milestone_id = MilestoneId::new("ms-active-other-bead").expect("milestone id");
+        std::fs::create_dir_all(FileSystem::milestone_root(temp.path(), &milestone_id))
+            .expect("create milestone root");
+
+        let store = FsTaskRunLineageStore;
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 21, 11, 0, 0)
+            .single()
+            .expect("timestamp");
+        store
+            .append_task_run(
+                temp.path(),
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-1".to_owned(),
+                    run_id: Some("run-1".to_owned()),
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: None,
+                },
+            )
+            .expect("append running task run");
+
+        let error = store
+            .record_task_run_start(
+                temp.path(),
+                &milestone_id,
+                "bead-2",
+                "project-2",
+                "run-2",
+                "plan-v2",
+                started_at + chrono::Duration::seconds(10),
+            )
+            .expect_err("different active bead should still be rejected");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("cannot start bead 'bead-2': bead 'bead-1' is already active"),
+            "different-bead guard should be preserved: {error}"
+        );
     }
 
     #[test]

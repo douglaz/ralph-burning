@@ -192,6 +192,12 @@ pub trait TaskRunLineagePort {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<Vec<TaskRunEntry>>;
+    fn active_task_runs_for_bead(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+    ) -> AppResult<Vec<TaskRunEntry>>;
     fn append_task_run(
         &self,
         base_dir: &Path,
@@ -3429,6 +3435,16 @@ pub fn find_runs_for_bead(
     bead_id: &str,
 ) -> AppResult<Vec<TaskRunEntry>> {
     lineage_store.find_runs_for_bead(base_dir, milestone_id, bead_id)
+}
+
+/// Find the currently active task runs for a specific bead.
+pub fn active_task_runs_for_bead(
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<Vec<TaskRunEntry>> {
+    lineage_store.active_task_runs_for_bead(base_dir, milestone_id, bead_id)
 }
 
 /// Read all execution attempts for a bead, including retries and durations.
@@ -11357,7 +11373,7 @@ mod tests {
     }
 
     #[test]
-    fn retry_start_on_same_bead_supersedes_running_attempt_from_other_project(
+    fn retry_start_on_same_bead_rejects_other_project_while_attempt_is_active(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -11393,8 +11409,7 @@ mod tests {
             now,
         )?;
 
-        let retry_started_at = now + chrono::Duration::seconds(10);
-        record_bead_start(
+        let error = record_bead_start(
             &snapshot_store,
             &journal_store,
             &lineage_store,
@@ -11404,21 +11419,25 @@ mod tests {
             "project-2",
             "run-2",
             "plan-v2",
-            retry_started_at,
-        )?;
+            now + chrono::Duration::seconds(10),
+        )
+        .expect_err("cross-project retry should be rejected while the first attempt is active");
+        assert!(matches!(
+            error,
+            AppError::DuplicateActiveBead {
+                ref bead_id,
+                ref existing_project_id,
+                ref existing_run_id,
+            } if bead_id == "bead-1"
+                && existing_project_id == "project-1"
+                && existing_run_id == "run-1"
+        ));
 
         let runs_after_retry = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
-        assert_eq!(runs_after_retry.len(), 2);
+        assert_eq!(runs_after_retry.len(), 1);
         assert_eq!(runs_after_retry[0].project_id, "project-1");
-        assert_eq!(runs_after_retry[0].outcome, TaskRunOutcome::Failed);
-        assert_eq!(runs_after_retry[0].finished_at, Some(retry_started_at));
-        assert!(runs_after_retry[0]
-            .outcome_detail
-            .as_deref()
-            .is_some_and(|detail| detail.contains("superseded by retry")));
-        assert_eq!(runs_after_retry[1].project_id, "project-2");
-        assert_eq!(runs_after_retry[1].run_id.as_deref(), Some("run-2"));
-        assert_eq!(runs_after_retry[1].outcome, TaskRunOutcome::Running);
+        assert_eq!(runs_after_retry[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(runs_after_retry[0].outcome, TaskRunOutcome::Running);
 
         let active_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
         active_snapshot
@@ -11428,32 +11447,6 @@ mod tests {
         assert_eq!(active_snapshot.active_bead.as_deref(), Some("bead-1"));
         assert_eq!(active_snapshot.progress.in_progress_beads, 1);
         assert_eq!(active_snapshot.progress.failed_beads, 0);
-
-        record_bead_completion(
-            &snapshot_store,
-            &journal_store,
-            &lineage_store,
-            base,
-            &record.id,
-            "bead-1",
-            "project-2",
-            "run-2",
-            Some("plan-v2"),
-            TaskRunOutcome::Succeeded,
-            Some("retry completed"),
-            retry_started_at,
-            retry_started_at + chrono::Duration::seconds(5),
-        )?;
-
-        let final_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
-        final_snapshot
-            .validate_semantics()
-            .map_err(Box::<dyn std::error::Error>::from)?;
-        assert_eq!(final_snapshot.status, MilestoneStatus::Paused);
-        assert_eq!(final_snapshot.active_bead, None);
-        assert_eq!(final_snapshot.progress.in_progress_beads, 0);
-        assert_eq!(final_snapshot.progress.completed_beads, 1);
-        assert_eq!(final_snapshot.progress.failed_beads, 0);
         Ok(())
     }
 
