@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T05:11:24.581118335Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-60bfe855`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-60bfe855`\n\nfinding_summary: `record_task_run_start` still allows a failed historical project to reopen the same bead while another project already has that bead active. In `src/adapters/fs.rs:5168-5218`, the finalized-failed path calls `reopen_failed_exact_attempt(...)` and returns before the new cross-project duplicate check at `src/adapters/fs.rs:5277-5283` runs. A concrete case is: project A fails on bead X, project B is now running bead X, then `run resume` on project A succeeds and creates a second active lineage for bead X. Because milestone reconciliation collapses to the latest run per bead (`src/contexts/milestone_record/service.rs:967-999`), that parallel-active state can be hidden from progress accounting instead of surfacing as corruption. affected_files: [`src/adapters/fs.rs`, `src/contexts/milestone_record/service.rs`]. remediation_hint: reject `reopen_failed_exact_attempt` whenever `running_attempts_for_bead` contains another project, or move the same-bead active-project guard ahead of all finalized-attempt reopen paths.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

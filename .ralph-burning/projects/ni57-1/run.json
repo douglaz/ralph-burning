@@ -2,29 +2,63 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-21T03:50:00.987751574Z",
     "prompt_hash_at_cycle_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "prompt_hash_at_stage_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-60bfe855",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: `record_task_run_start` still allows a failed historical project to reopen the same bead while another project already has that bead active. In `src/adapters/fs.rs:5168-5218`, the finalized-failed path calls `reopen_failed_exact_attempt(...)` and returns before the new cross-project duplicate check at `src/adapters/fs.rs:5277-5283` runs. A concrete case is: project A fails on bead X, project B is now running bead X, then `run resume` on project A succeeds and creates a second active lineage for bead X. Because milestone reconciliation collapses to the latest run per bead (`src/contexts/milestone_record/service.rs:967-999`), that parallel-active state can be hidden from progress accounting instead of surfacing as corruption. affected_files: [`src/adapters/fs.rs`, `src/contexts/milestone_record/service.rs`]. remediation_hint: reject `reopen_failed_exact_attempt` whenever `running_attempts_for_bead` contains another project, or move the same-bead active-project guard ahead of all finalized-attempt reopen paths.",
+        "created_at": "2026-04-21T05:11:24.581109318Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "36f62fbd847df9dfa7610fbef23fe7d166db80b81a01bc2fe59d470f3c150bd4"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-21T04:56:24.721497077Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-7-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.4-xhigh"
+    }
+  }
 }

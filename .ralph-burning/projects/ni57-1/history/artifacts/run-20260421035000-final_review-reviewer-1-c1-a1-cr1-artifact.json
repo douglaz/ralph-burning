@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T05:02:17.786952857Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch delta against `808707cede105036103429ccad825cf9faddd8f6` while excluding live `.ralph-burning/` state. Found one high-severity correctness gap: the new same-bead duplicate protection is still bypassed when resuming a failed historical project while another project is already active on that bead.\n\n## Amendments\n\n1. finding_summary: `record_task_run_start` still allows a failed historical project to reopen the same bead while another project already has that bead active. In `src/adapters/fs.rs:5168-5218`, the finalized-failed path calls `reopen_failed_exact_attempt(...)` and returns before the new cross-project duplicate check at `src/adapters/fs.rs:5277-5283` runs. A concrete case is: project A fails on bead X, project B is now running bead X, then `run resume` on project A succeeds and creates a second active lineage for bead X. Because milestone reconciliation collapses to the latest run per bead (`src/contexts/milestone_record/service.rs:967-999`), that parallel-active state can be hidden from progress accounting instead of surfacing as corruption. affected_files: [`src/adapters/fs.rs`, `src/contexts/milestone_record/service.rs`]. remediation_hint: reject `reopen_failed_exact_attempt` whenever `running_attempts_for_bead` contains another project, or move the same-bead active-project guard ahead of all finalized-attempt reopen paths.\n   Rationale: This branch’s main goal is to prevent duplicate active same-bead ownership and keep create/start semantics aligned. The new create-time guard does not hold if `run resume` can still revive an older failed project into a second active attempt, and the milestone snapshot layer will underreport the conflict rather than reliably exposing it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
