@@ -58,9 +58,9 @@ project's `.ralph-burning/projects/<project-id>/` path. Intentional checked-in
 `.ralph-burning` fixtures elsewhere in the repo remain reviewable.
 
 The final-review vote flow is direct: `final_review_voter` receives the merged
-amendment list, and `final_review_arbiter` receives that same list plus
-`reviewer_votes`. There is no separate pre-vote payload or legacy position
-placeholder in this panel.
+amendment list, and `final_review_arbiter` receives only the disputed
+amendments plus `reviewer_votes`. There is no separate pre-vote payload or
+legacy position placeholder in this panel.
 
 ### Requirements
 

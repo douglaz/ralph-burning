@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421005325-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T03:00:24.632143827Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAligned the remaining final-review documentation with the live arbiter contract. `docs/templates.md` now states that `final_review_voter` receives the merged amendment list while `final_review_arbiter` receives only disputed amendments plus `reviewer_votes`, matching the runtime payload built in `src/contexts/workflow_composition/final_review.rs`. The broader planner-reference cleanup remains intact.\n\n## Steps\n\n1. [Completed] Confirmed the arbiter runtime contract in `src/contexts/workflow_composition/final_review.rs` so the remediation matched the actual payload shape rather than the stale template wording.\n2. [Completed] Updated `docs/templates.md` so the final-review section now says the voter sees the merged amendment list and the arbiter sees only disputed amendments plus `reviewer_votes`.\n3. [Completed] Re-ran focused validation for the planner-cleanup bead, including targeted ripgrep scans and `nix develop -c cargo test`, and reconciled the result with the prior stage's broader validation evidence.\n\n## Validation Evidence\n\n- `git diff -- docs/templates.md` shows the template wording changed from \"the same list plus reviewer_votes\" to \"only the disputed amendments plus reviewer_votes\".\n- `sed -n '58,64p' docs/templates.md` now prints: voter receives the merged amendment list; arbiter receives only the disputed amendments plus `reviewer_votes`.\n- `sed -n '2075,2117p' src/contexts/workflow_composition/final_review.rs` shows `build_arbiter_prompt` renders `final_review_arbiter` with only `amendments` derived from `disputed_amendments` plus `reviewer_votes`.\n- `if rg -n \"BackendPolicyRole::Planner\" src tests; then true; else echo \"NO_MATCHES: BackendPolicyRole::Planner\"; fi` printed `NO_MATCHES: BackendPolicyRole::Planner`.\n- `if rg -n --glob '!src/contexts/requirements_drafting/**' -i \"planner_positions|Planner position\\.|planner-position\" src tests docs; then true; else echo \"NO_MATCHES: final-review planner leftovers\"; fi` printed `NO_MATCHES: final-review planner leftovers`.\n- `nix develop -c cargo test` passed in this attempt.\n- The prior stage output supplied in context recorded `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy -- -D warnings`, and `nix build` as passing before this docs-only arbiter wording remediation.\n\n## Outstanding Risks\n\n- The worktree still contains unrelated pre-existing modifications under `.ralph-burning/` and `result`; I left them untouched.\n- A fresh `cargo clippy -- -D warnings` / `nix build` rerun was not re-awaited to completion in this remediation attempt because overlapping Nix jobs were already compiling the release target; the prior stage output supplied in context recorded both as passing before this doc-only wording correction.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}
