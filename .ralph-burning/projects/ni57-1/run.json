@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 13
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-12-c8877f63",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "finding_summary: `find_existing_bead_project` now treats an all-terminal same-bead history as fatal ambiguity whenever more than one completed project matches (src/cli/project.rs:909-921), even though the create path explicitly allows that state (src/cli/project.rs:640-645). Because `ensure_project_for_controller` calls this helper before it can create or adopt anything (src/cli/milestone.rs:1146-1158), `milestone run` can no longer recover after a restart/controller desync when a bead has a completed default project plus a completed retry; the command fails instead of selecting a recoverable project or creating a fresh one. affected_files: src/cli/project.rs, src/cli/milestone.rs. remediation_hint: keep all-terminal same-bead histories recoverable here too by preferring a deterministic completed candidate (for example the default or newest completed project) or by falling through to fresh creation instead of raising ambiguity.",
-        "created_at": "2026-04-21T16:40:53.986512454Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "b08c59818c1e8f62f568dbe461ab8024591facb7128ed9697545e127ba5517cf"
-      },
-      {
-        "amendment_id": "fr-12-eee3108c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "finding_summary: The new create-time duplicate guard reuses `matching_bead_project_ids`, whose legacy fallback treats any task-source-free project whose id equals the bead’s default generated id as a same-bead match (src/cli/project.rs:759-805). `reject_existing_same_bead_project_creation` then blocks `task create` based on that inferred match (src/cli/project.rs:623-690), so an unrelated manual project named like the default bead id is now misclassified as an existing bead task and the operator is told to start/resume it instead of creating the requested project. affected_files: src/cli/project.rs. remediation_hint: restrict the default-id/no-task-source fallback to explicit recovery paths for legacy bead-backed projects, or require actual task-source/lineage evidence before the create-time blocker fires.",
-        "created_at": "2026-04-21T16:40:53.986520329Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "a0e0a85d14b62c2457590e00bab3ed04cc4d8151c7e5d36039b21e4322eb5620"
-      }
-    ],
-    "processed_count": 17
+    "pending": [],
+    "processed_count": 19
   },
-  "status_summary": "running: final review restart round 13 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-21T16:25:27.228761546Z",

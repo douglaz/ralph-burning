@@ -14399,6 +14399,48 @@ fn project_create_from_bead_allows_creation_with_multiple_terminal_same_bead_pro
 }
 
 #[test]
+fn project_create_from_bead_ignores_manual_default_named_project_without_task_source() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_project_fixture(temp_dir.path(), "task-ms-alpha-bead-2");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-second",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "an unrelated manual project that only shares the default bead id must not block create-from-bead: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        project_root(temp_dir.path(), "bead-second")
+            .join("project.toml")
+            .exists(),
+        "create-from-bead should create the requested bead-backed project"
+    );
+}
+
+#[test]
 fn project_create_from_bead_for_different_bead_preserves_run_start_active_bead_guard() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");

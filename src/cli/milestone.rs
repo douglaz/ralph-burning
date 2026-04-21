@@ -2611,6 +2611,31 @@ mod tests {
         project_id
     }
 
+    fn write_controller_test_run_status(
+        base_dir: &std::path::Path,
+        project_id: &crate::shared::domain::ProjectId,
+        status: RunStatus,
+    ) {
+        FsRunSnapshotWriteStore
+            .write_run_snapshot(
+                base_dir,
+                project_id,
+                &RunSnapshot {
+                    active_run: None,
+                    interrupted_run: None,
+                    status,
+                    cycle_history: Vec::new(),
+                    completion_rounds: 0,
+                    max_completion_rounds: Some(20),
+                    rollback_point_meta: Default::default(),
+                    amendment_queue: Default::default(),
+                    status_summary: status.to_string(),
+                    last_stage_resolution_snapshot: None,
+                },
+            )
+            .expect("write test run snapshot");
+    }
+
     #[cfg(unix)]
     fn install_fake_br_show_script(base_dir: &std::path::Path, show_json: &str) {
         let fake_bin = base_dir.join("fake-bin");
@@ -2988,6 +3013,79 @@ mod tests {
         assert_eq!(
             controller.last_transition_reason.as_deref(),
             Some("adopted existing bead-backed project after create-time duplicate detection")
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_project_for_controller_recovers_all_terminal_same_bead_history() {
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 18, 11, 0, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bead_id = "ms-alpha.bead-2";
+        create_controller_test_milestone(base_dir, &milestone_id, now);
+        let default_project_id = create_controller_test_bead_project(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            "task-ms-alpha-bead-2",
+            now,
+        );
+        let retry_project_id = create_controller_test_bead_project(
+            base_dir,
+            &milestone_id,
+            bead_id,
+            "retry-completed",
+            now,
+        );
+        write_controller_test_run_status(base_dir, &default_project_id, RunStatus::Completed);
+        write_controller_test_run_status(base_dir, &retry_project_id, RunStatus::Completed);
+
+        milestone_controller::sync_controller_state(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+            ControllerTransitionRequest::new(
+                MilestoneControllerState::Claimed,
+                "selected bead for execution",
+            )
+            .with_bead(bead_id),
+            now,
+        )
+        .expect("seed claimed controller");
+
+        let controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("load controller")
+        .expect("controller exists");
+
+        let adopted = super::ensure_project_for_controller(base_dir, &milestone_id, &controller)
+            .await
+            .expect("recover deterministic completed project");
+
+        assert_eq!(adopted, default_project_id);
+        let updated_controller = milestone_controller::load_controller(
+            &FsMilestoneControllerStore,
+            base_dir,
+            &milestone_id,
+        )
+        .expect("reload controller")
+        .expect("controller exists");
+        assert_eq!(updated_controller.active_bead_id.as_deref(), Some(bead_id));
+        assert_eq!(
+            updated_controller.active_task_id.as_deref(),
+            Some(default_project_id.as_str())
+        );
+        assert_eq!(updated_controller.state, MilestoneControllerState::Claimed);
+        assert_eq!(
+            updated_controller.last_transition_reason.as_deref(),
+            Some("adopted existing bead-backed project")
         );
     }
 

@@ -632,6 +632,7 @@ fn reject_existing_same_bead_project_creation(
         bead_id,
         "create",
         "before creating another task",
+        SameBeadProjectMatchMode::ExplicitTaskSourceOnly,
     )?;
     if matching_project_statuses.is_empty() {
         return Ok(());
@@ -756,10 +757,17 @@ fn format_same_bead_project_statuses(projects: &[(ProjectId, RunStatus)]) -> Str
         .join(", ")
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SameBeadProjectMatchMode {
+    ExplicitTaskSourceOnly,
+    IncludeLegacyDefaultIdFallback,
+}
+
 fn matching_bead_project_ids(
     base_dir: &Path,
     milestone_id: &MilestoneId,
     bead_id: &str,
+    match_mode: SameBeadProjectMatchMode,
 ) -> AppResult<Vec<ProjectId>> {
     let default_project_id = default_project_id_for_bead(&milestone_id.to_string(), bead_id)?;
     let mut matching_task_source_projects = Vec::new();
@@ -794,6 +802,10 @@ fn matching_bead_project_ids(
         return Ok(matching_task_source_projects);
     }
 
+    if match_mode == SameBeadProjectMatchMode::ExplicitTaskSourceOnly {
+        return Ok(Vec::new());
+    }
+
     let Some(default_record) = default_project_record else {
         return Ok(Vec::new());
     };
@@ -811,9 +823,10 @@ fn matching_bead_project_statuses(
     bead_id: &str,
     action_verb: &str,
     resolution_hint: &str,
+    match_mode: SameBeadProjectMatchMode,
 ) -> AppResult<Vec<(ProjectId, RunStatus)>> {
     let mut matching_project_statuses = Vec::new();
-    for project_id in matching_bead_project_ids(base_dir, milestone_id, bead_id)? {
+    for project_id in matching_bead_project_ids(base_dir, milestone_id, bead_id, match_mode)? {
         let run_snapshot = match FsRunSnapshotStore.read_run_snapshot(base_dir, &project_id) {
             Ok(snapshot) => snapshot,
             Err(AppError::CorruptRecord { file, details })
@@ -889,12 +902,13 @@ pub(crate) fn find_existing_bead_project(
         }
     }
 
-    let mut matching_projects = matching_bead_project_statuses(
+    let matching_projects = matching_bead_project_statuses(
         base_dir,
         milestone_id,
         bead_id,
         "continue milestone run for",
         "before continuing milestone execution",
+        SameBeadProjectMatchMode::IncludeLegacyDefaultIdFallback,
     )
     .map_err(|error| match error {
         AppError::RunStartFailed { reason } => {
@@ -910,15 +924,10 @@ pub(crate) fn find_existing_bead_project(
         .iter()
         .all(|(_, status)| *status == RunStatus::Completed)
     {
-        if matching_projects.len() == 1 {
-            return Ok(matching_projects.pop().map(|(project_id, _)| project_id));
-        }
-        sort_same_bead_project_statuses(&mut matching_projects);
-        return Err(ambiguous_existing_bead_project_error(
-            milestone_id,
-            bead_id,
-            &matching_projects,
-        ));
+        return Ok(matching_projects
+            .into_iter()
+            .next()
+            .map(|(project_id, _)| project_id));
     }
 
     let mut non_terminal_projects: Vec<_> = matching_projects
@@ -3382,6 +3391,53 @@ origin = "milestone"
         std::fs::write(project_root.join("run.json"), run_json).expect("write run.json");
     }
 
+    fn write_legacy_default_project_without_task_source(
+        dir: &Path,
+        project_id: &str,
+        status: RunStatus,
+    ) {
+        let project_root = dir.join(".ralph-burning/projects").join(project_id);
+        std::fs::create_dir_all(&project_root).expect("create project root");
+        let status_summary = match status {
+            RunStatus::NotStarted => "created",
+            RunStatus::Running => "active",
+            RunStatus::Paused | RunStatus::Failed => "failed",
+            RunStatus::Completed => "completed",
+        };
+        std::fs::write(
+            project_root.join("project.toml"),
+            format!(
+                r#"id = "{project_id}"
+name = "Fixture {project_id}"
+flow = "docs_change"
+prompt_reference = "prompt.md"
+prompt_hash = "fixture"
+created_at = "2026-03-11T19:00:00Z"
+status_summary = "{status_summary}"
+"#
+            ),
+        )
+        .expect("write project.toml");
+        let run_json = match status {
+            RunStatus::NotStarted => {
+                r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"not started"}"#
+            }
+            RunStatus::Running => {
+                r#"{"active_run":{"run_id":"run-existing","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-04-01T10:11:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running: Planning"}"#
+            }
+            RunStatus::Paused => {
+                r#"{"active_run":null,"interrupted_run":null,"status":"paused","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"paused"}"#
+            }
+            RunStatus::Completed => {
+                r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#
+            }
+            RunStatus::Failed => {
+                r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#
+            }
+        };
+        std::fs::write(project_root.join("run.json"), run_json).expect("write run.json");
+    }
+
     fn render_planned_elsewhere_item(item: &PlannedElsewherePromptContext) -> String {
         let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
         if let Some(status) = item.status.as_deref() {
@@ -3507,6 +3563,55 @@ origin = "milestone"
                 .expect("expected active lineage-backed project");
 
         assert_eq!(selected.as_str(), "retry-running");
+    }
+
+    #[test]
+    fn find_existing_bead_project_prefers_deterministic_terminal_candidate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
+        write_bead_project(
+            tmp.path(),
+            "task-ms-alpha-bead-2",
+            milestone_id.as_str(),
+            "ms-alpha.bead-2",
+            RunStatus::Completed,
+        );
+        write_bead_project(
+            tmp.path(),
+            "retry-completed",
+            milestone_id.as_str(),
+            "ms-alpha.bead-2",
+            RunStatus::Completed,
+        );
+
+        let selected =
+            super::find_existing_bead_project(tmp.path(), &milestone_id, "ms-alpha.bead-2")
+                .expect("scan same-bead projects")
+                .expect("expected deterministic completed project");
+
+        assert_eq!(selected.as_str(), "task-ms-alpha-bead-2");
+    }
+
+    #[test]
+    fn find_existing_bead_project_recovers_legacy_default_named_project_without_task_source() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
+        write_legacy_default_project_without_task_source(
+            tmp.path(),
+            "task-ms-alpha-bead-2",
+            RunStatus::NotStarted,
+        );
+
+        let selected =
+            super::find_existing_bead_project(tmp.path(), &milestone_id, "ms-alpha.bead-2")
+                .expect("scan legacy default project")
+                .expect("expected legacy default project match");
+
+        assert_eq!(selected.as_str(), "task-ms-alpha-bead-2");
     }
 
     #[test]
