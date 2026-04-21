@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr15-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T20:07:22.117143851Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed full branch delta (src/adapters/fs.rs, src/cli/project.rs, src/cli/milestone.rs, src/contexts/milestone_record/service.rs, src/shared/error.rs, tests/cli.rs; run.rs untouched as designed since the shared helper active_same_bead_conflict_resolution now governs both record_task_run_start and create-from-bead). Validated that execute_create_from_bead acquires the task-runs lock before any check, runs reject_duplicate_active_bead_creation and reject_existing_same_bead_project_creation before project_exists, and keeps claim_bead_in_br after all validation. The new AppError variants DuplicateActiveBead and DuplicateBeadProject are targeted, callers special-case them through is_create_from_bead_duplicate_conflict, the read-only FsTaskRunLineageStore::active_task_runs_for_bead helper is properly factored, and orphan/corrupt/mismatch/drift states all surface repair guidance instead of minting shadow projects. Retry-on-failed routes to `run resume`, and different-bead active conflicts still go through record_task_run_start's existing guard. Tests in tests/cli.rs cover duplicate active, terminal-allowed, orphan, missing/corrupt run snapshot, not-started-with-drift, mismatched task_source, running-without-lineage, legacy runless, legacy lineage-backed retry, ambiguous retries, same-project-id reuse, and the run-start different-bead preservation case. Noted only two non-blocking items: DuplicateBeadProject's hardcoded 'not_started' differs from RunStatus::NotStarted's Display 'not started' (cosmetic, asserted by tests), and the task-runs lock spans claim_bead_in_br (intentional for atomicity). No fix-now, planned-elsewhere, or propose-new-bead findings.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 15
+}

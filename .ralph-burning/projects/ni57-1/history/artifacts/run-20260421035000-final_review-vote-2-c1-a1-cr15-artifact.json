@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-2-c1-a1-cr15-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-2-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T20:13:06.522886371Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments identify real defects confirmed by code inspection. Amendment fr-15-5b545bc2 is a valid contract bug: validate_semantics allows Paused/Failed with null interrupted_run, but the resume engine rejects that state, while the duplicate/adoption paths still steer operators to `run resume` purely on RunStatus. Amendment fr-15-096bd767 is a valid asymmetry: execute_create_from_bead applies load_snapshot_clearing_pending_lineage_reset before scanning, while ensure_project_for_controller -> find_existing_bead_project -> active_task_runs_for_bead reads raw task-runs.ndjson without applying the reset, so milestone run can adopt stale lineage that the create path would discard.\n\n## Votes\n\n- `fr-15-5b545bc2`: Accept\n  Verified in source: RunSnapshot::validate_semantics (src/contexts/project_run_record/model.rs:130-156) explicitly treats Failed/Paused with interrupted_run==None and active_run==None as semantically valid, but resume_seed_active_run (src/contexts/workflow_composition/engine.rs:786-794) fails when neither is present. reject_existing_same_bead_project_creation (src/cli/project.rs:670-675) unconditionally tells operators to run `run resume` for Failed/Paused projects, and find_existing_bead_project (src/cli/project.rs:954-967) auto-adopts them for milestone run. Operators will be steered to a recovery path that then aborts with ResumeFailed. Surfacing a repair-required error in the unresumable-metadata case is a correct and low-risk hardening.\n- `fr-15-096bd767`: Accept\n  Verified asymmetry: execute_create_from_bead (src/cli/project.rs:351) calls milestone_service::load_snapshot_clearing_pending_lineage_reset before duplicate/adoption scans, but ensure_project_for_controller (src/cli/milestone.rs:1148) calls project::find_existing_bead_project directly, which in turn calls active_task_runs_for_bead (src/contexts/milestone_record/service.rs:3821-3828) reading raw task-runs.ndjson. resume_controller (src/contexts/milestone_record/controller.rs:882-905) does not clear pending_lineage_reset. A grep confirms project.rs:351 is the only caller of load_snapshot_clearing_pending_lineage_reset in src/cli. When pending_lineage_reset is set and the controller lacks an active_task_id, milestone run will adopt stale lineage that the create path would have discarded, causing resumption against an outdated plan. Clearing the reset before any same-bead scan path restores invariant symmetry between create and controller flows.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 15
+}
