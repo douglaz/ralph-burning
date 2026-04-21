@@ -647,11 +647,22 @@ fn reject_existing_same_bead_project_creation(
         Err(other) => return Err(other),
     };
 
-    if run_snapshot.status == RunStatus::NotStarted {
-        return Err(AppError::DuplicateBeadProject {
-            bead_id: bead_id.to_owned(),
-            existing_project_id: existing_project_id.as_str().to_owned(),
-        });
+    match run_snapshot.status {
+        RunStatus::NotStarted => {
+            return Err(AppError::DuplicateBeadProject {
+                bead_id: bead_id.to_owned(),
+                existing_project_id: existing_project_id.as_str().to_owned(),
+            });
+        }
+        RunStatus::Failed | RunStatus::Paused => {
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot create bead '{bead_id}': project '{}' already exists for that bead in {} state; use `ralph-burning project select {}` and `ralph-burning run resume` instead of creating another task",
+                    existing_project_id, run_snapshot.status, existing_project_id
+                ),
+            });
+        }
+        RunStatus::Running | RunStatus::Completed => {}
     }
 
     if &existing_project_id == effective_project_id {

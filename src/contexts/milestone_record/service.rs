@@ -13,7 +13,7 @@ use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, BeadType, 
 use crate::adapters::br_process::{
     BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner, SyncIfDirtyHealthError,
 };
-use crate::adapters::fs::FileSystem;
+use crate::adapters::fs::{FileSystem, FsTaskRunLineageStore};
 use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::review_classification::Severity;
@@ -3144,6 +3144,7 @@ fn clear_task_run_lineage(base_dir: &Path, milestone_id: &MilestoneId) -> AppRes
         return Ok(());
     }
 
+    let _task_runs_lock = FsTaskRunLineageStore::acquire_task_runs_lock(base_dir, milestone_id)?;
     FileSystem::write_atomic(&task_runs_path, "")
 }
 
@@ -7954,6 +7955,55 @@ mod tests {
         let stored_plan_shape: StoredPlanShape =
             serde_json::from_str(&std::fs::read_to_string(plan_shape_path(base, &record.id))?)?;
         assert!(!stored_plan_shape.lineage_reset_required);
+        Ok(())
+    }
+
+    #[test]
+    fn load_snapshot_clearing_pending_lineage_reset_waits_for_task_runs_lock(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (tmp, record, _, _) = setup_pending_lineage_reset_state(
+            "lineage-create-read-lock-step",
+            "Lineage Create Read Lock Step",
+        )?;
+        let base = tmp.path().to_path_buf();
+        let snapshot_store = FsMilestoneSnapshotStore;
+
+        let task_runs_lock = FsTaskRunLineageStore::acquire_task_runs_lock(&base, &record.id)?;
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let milestone_id = record.id.clone();
+        let handle = std::thread::spawn(move || {
+            started_tx
+                .send(())
+                .expect("signal snapshot-load thread start");
+            let result =
+                load_snapshot_clearing_pending_lineage_reset(&snapshot_store, &base, &milestone_id);
+            done_tx.send(result).expect("send snapshot-load result");
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("snapshot-load thread should begin promptly");
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "pending-lineage reset should wait for the shared task-runs lock before truncating lineage"
+        );
+
+        drop(task_runs_lock);
+
+        let snapshot = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("snapshot load should finish after the task-runs lock is released")?;
+        assert_eq!(snapshot.pending_lineage_reset, None);
+
+        handle.join().expect("join snapshot-load thread");
+        let lineage_store = FsTaskRunLineageStore;
+        assert!(lineage_store
+            .read_task_runs(tmp.path(), &record.id)?
+            .is_empty());
         Ok(())
     }
 

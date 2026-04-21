@@ -13980,6 +13980,63 @@ fn project_create_from_bead_rejects_existing_not_started_same_bead_project_befor
 }
 
 #[test]
+fn project_create_from_bead_rejects_existing_failed_same_bead_project_before_br_claim() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "bead-existing",
+        "ms-alpha",
+        "ms-alpha.bead-2",
+    );
+    fs::write(
+        project_root(temp_dir.path(), "bead-existing").join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after prior attempt"}"#,
+    )
+    .expect("write failed run.json");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-second",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        !output.status.success(),
+        "an existing failed bead project should block duplicate creation"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project 'bead-existing' already exists for that bead in failed state"));
+    assert!(stderr.contains("ralph-burning project select bead-existing"));
+    assert!(stderr.contains("ralph-burning run resume"));
+    assert!(
+        !stderr.contains("br claim failed"),
+        "failed same-bead project should fail before the br-claim recovery path: {stderr}"
+    );
+    assert!(
+        !project_root(temp_dir.path(), "bead-second").exists(),
+        "duplicate create must not mint a second project"
+    );
+}
+
+#[test]
 fn project_create_from_bead_rejects_same_project_id_for_existing_not_started_bead_project() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421035000-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T13:14:13.765288805Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining 9ni.5.7 create-time hardening gaps. `src/cli/project.rs` now rejects `project create-from-bead` when the bead already has an existing same-bead project in `failed` or `paused` state, directing the operator to `project select` plus `run resume` instead of falling through to `br` claim or parallel project creation. `src/contexts/milestone_record/service.rs` now takes the shared task-run lineage lock before truncating `task-runs.ndjson` during pending-lineage-reset repair, so the create-time duplicate guard and reset path are serialized against each other. Deterministic regressions were added for both behaviors: one proving failed same-bead projects block duplicate creation before any BR side effect, and one proving pending-lineage-reset cleanup waits on the shared task-runs lock rather than racing the create path.\n\n## Steps\n\n1. [Completed] Reviewed the two pending amendments against the current duplicate-bead hardening and confirmed the remaining gaps were failed same-bead project reuse in `reject_existing_same_bead_project_creation` and unlocked pending-lineage-reset truncation in milestone service.\n2. [Completed] Updated `src/cli/project.rs` so existing same-bead projects in `failed` or `paused` state now reject create-time duplication with explicit `project select` plus `run resume` guidance, keeping retry semantics aligned with the bead policy.\n3. [Completed] Updated `src/contexts/milestone_record/service.rs` so `clear_task_run_lineage` acquires the shared task-runs lock before rewriting `task-runs.ndjson`, and added a concurrency regression that proves pending-lineage-reset cleanup blocks on that lock.\n4. [Completed] Added CLI regression coverage for failed same-bead duplicate creation rejection and ran the required verification gates on the final tree, including focused regressions, formatting, clippy, the full locked `test-stub` suite, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_rejects_existing_failed_same_bead_project_before_br_claim` passed.\n- `nix develop -c cargo test --locked --features test-stub load_snapshot_clearing_pending_lineage_reset_waits_for_task_runs_lock` passed.\n- `nix develop -c cargo fmt --check` exited successfully.\n- `nix develop -c cargo clippy --locked -- -D warnings` exited successfully.\n- `nix develop -c cargo test --locked --features test-stub` passed on the full tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 9
+}
