@@ -20,6 +20,7 @@ use crate::contexts::workflow_composition::review_classification::Severity;
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
 
+use super::bead_refs::milestone_bead_refs_match;
 use super::bundle::{
     bead_matches_implicit_slot, explicit_id_hints, normalize_bead_reference,
     planned_bead_membership_refs, progress_shape_signature,
@@ -2646,18 +2647,47 @@ pub fn active_same_bead_conflict_error(
         }
     })?;
 
-    match project_store.read_project_record(base_dir, &existing_project_id) {
-        Ok(_) => {}
-        Err(AppError::ProjectNotFound { .. }) => {
-            return Ok(active_lineage_repair_error(
-                action,
-                bead_id,
-                milestone_id,
-                &existing_run_label,
-                &format!("missing project '{}'", entry.project_id),
-            ));
-        }
-        Err(other) => return Err(other),
+    let existing_project_record =
+        match project_store.read_project_record(base_dir, &existing_project_id) {
+            Ok(record) => record,
+            Err(AppError::ProjectNotFound { .. }) => {
+                return Ok(active_lineage_repair_error(
+                    action,
+                    bead_id,
+                    milestone_id,
+                    &existing_run_label,
+                    &format!("missing project '{}'", entry.project_id),
+                ));
+            }
+            Err(other) => return Err(other),
+        };
+
+    let Some(task_source) = existing_project_record.task_source.as_ref() else {
+        return Ok(active_lineage_repair_error(
+            action,
+            bead_id,
+            milestone_id,
+            &existing_run_label,
+            &format!(
+                "manual project '{}' with no milestone bead linkage",
+                entry.project_id
+            ),
+        ));
+    };
+
+    if task_source.milestone_id != milestone_id.as_str()
+        || !milestone_bead_refs_match(milestone_id, &task_source.bead_id, bead_id)
+    {
+        return Ok(active_lineage_repair_error(
+            action,
+            bead_id,
+            milestone_id,
+            &existing_run_label,
+            &format!(
+                "project '{}' whose task source targets milestone '{}' bead '{}'",
+                entry.project_id, task_source.milestone_id, task_source.bead_id
+            ),
+        ));
     }
 
     let run_snapshot = match run_snapshot_store.read_run_snapshot(base_dir, &existing_project_id) {
@@ -5174,6 +5204,7 @@ mod tests {
     use crate::contexts::milestone_record::model::render_completion_journal_details;
     use crate::contexts::project_run_record::model::{
         ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, SessionStore,
+        TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::ProjectStorePort;
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
@@ -5639,6 +5670,38 @@ mod tests {
         run_id: Option<&str>,
         started_at: DateTime<Utc>,
     ) {
+        create_project_snapshot_with_task_source(
+            base, project_id, None, run_status, run_id, started_at,
+        );
+    }
+
+    fn create_bead_project_snapshot(
+        base: &Path,
+        project_id: &str,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        run_status: RunStatus,
+        run_id: Option<&str>,
+        started_at: DateTime<Utc>,
+    ) {
+        create_project_snapshot_with_task_source(
+            base,
+            project_id,
+            Some((milestone_id.as_str(), bead_id)),
+            run_status,
+            run_id,
+            started_at,
+        );
+    }
+
+    fn create_project_snapshot_with_task_source(
+        base: &Path,
+        project_id: &str,
+        task_source: Option<(&str, &str)>,
+        run_status: RunStatus,
+        run_id: Option<&str>,
+        started_at: DateTime<Utc>,
+    ) {
         let project_id = ProjectId::new(project_id).expect("project id");
         let record = ProjectRecord {
             id: project_id.clone(),
@@ -5648,7 +5711,14 @@ mod tests {
             prompt_hash: "prompt-hash".to_owned(),
             created_at: started_at,
             status_summary: ProjectStatusSummary::Created,
-            task_source: None,
+            task_source: task_source.map(|(milestone_id, bead_id)| TaskSource {
+                milestone_id: milestone_id.to_owned(),
+                bead_id: bead_id.to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: None,
+                plan_version: None,
+            }),
         };
         let mut snapshot = RunSnapshot::initial(20);
         snapshot.status = run_status;
@@ -11705,7 +11775,15 @@ mod tests {
             "Same Bead Cross Project Retry Test",
             now,
         )?;
-        create_project_snapshot(base, "project-1", RunStatus::Running, Some("run-1"), now);
+        create_bead_project_snapshot(
+            base,
+            "project-1",
+            &record.id,
+            "bead-1",
+            RunStatus::Running,
+            Some("run-1"),
+            now,
+        );
 
         record_bead_start(
             &snapshot_store,
@@ -11858,9 +11936,11 @@ mod tests {
             "Same Bead Corrupt Run Repair Test",
             now,
         )?;
-        create_project_snapshot(
+        create_bead_project_snapshot(
             base,
             "project-corrupt",
+            &record.id,
+            "bead-1",
             RunStatus::Running,
             Some("run-1"),
             now,
@@ -11918,6 +11998,154 @@ mod tests {
         assert_eq!(runs_after_rejection[0].project_id, "project-corrupt");
         assert_eq!(runs_after_rejection[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(runs_after_rejection[0].outcome, TaskRunOutcome::Running);
+        Ok(())
+    }
+
+    #[test]
+    fn retry_start_on_same_bead_reports_manual_project_repair_hint(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "same-bead-manual-project-repair-test",
+            "Same Bead Manual Project Repair Test",
+            now,
+        )?;
+        create_project_snapshot(
+            base,
+            "project-manual",
+            RunStatus::Running,
+            Some("run-manual"),
+            now,
+        );
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-manual".to_owned(),
+                run_id: Some("run-manual".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+                task_id: None,
+            },
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-2",
+            "run-2",
+            "plan-v2",
+            now + chrono::Duration::seconds(10),
+        )
+        .expect_err("manual project lineage should return repair guidance");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("cannot start bead 'bead-1'"));
+        assert!(rendered.contains("manual project 'project-manual' with no milestone bead linkage"));
+        assert!(rendered.contains("run 'run-manual'"));
+        assert!(rendered
+            .contains("repair milestones/same-bead-manual-project-repair-test/task-runs.ndjson"));
+        assert!(rendered.contains("before starting another run"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_start_on_same_bead_reports_mismatched_task_source_repair_hint(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "same-bead-mismatched-task-source-repair-test",
+            "Same Bead Mismatched Task Source Repair Test",
+            now,
+        )?;
+        create_bead_project_snapshot(
+            base,
+            "project-other-bead",
+            &record.id,
+            "bead-9",
+            RunStatus::Running,
+            Some("run-other"),
+            now,
+        );
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-other-bead".to_owned(),
+                run_id: Some("run-other".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+                task_id: None,
+            },
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-2",
+            "run-2",
+            "plan-v2",
+            now + chrono::Duration::seconds(10),
+        )
+        .expect_err("mismatched task source lineage should return repair guidance");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("cannot start bead 'bead-1'"));
+        assert!(
+            rendered.contains("project 'project-other-bead' whose task source targets milestone")
+        );
+        assert!(rendered.contains("bead 'bead-9'"));
+        assert!(rendered.contains("run 'run-other'"));
+        assert!(rendered.contains(
+            "repair milestones/same-bead-mismatched-task-source-repair-test/task-runs.ndjson"
+        ));
+        assert!(rendered.contains("before starting another run"));
         Ok(())
     }
 
@@ -12015,9 +12243,11 @@ mod tests {
             "Same Bead Failed Cross Project Retry Test",
             now,
         )?;
-        create_project_snapshot(
+        create_bead_project_snapshot(
             base,
             "project-2",
+            &record.id,
+            "bead-1",
             RunStatus::Running,
             Some("run-2"),
             now + chrono::Duration::seconds(10),
