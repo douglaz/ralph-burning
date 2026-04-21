@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 10
+      "completion_round": 11
     },
     "started_at": "2026-04-21T03:50:00.987751574Z",
     "prompt_hash_at_cycle_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "prompt_hash_at_stage_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 9
+    "final_review_restart_count": 10
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 10,
+  "completion_rounds": 11,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-10-3407b7e1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 10,
+        "body": "finding_summary: `active_same_bead_conflict_error` never verifies that the project named by the active lineage row actually belongs to the same milestone/bead. In [src/contexts/milestone_record/service.rs](/home/user/ralph-burning/src/contexts/milestone_record/service.rs:2649), the code treats any readable `project.toml` as valid and then, at lines 2682-2717, turns the row into `DuplicateActiveBead` / `run resume` guidance based only on `run.json` status. If `task-runs.ndjson` is corrupt and points at another bead's project or a manual project with no matching `task_source`, `task create` and `run start` will block with the wrong remediation and can send the operator into an unrelated project instead of surfacing an orphaned-lineage repair error. affected_files: `src/contexts/milestone_record/service.rs:2649-2717`. remediation_hint: after `read_project_record`, validate `task_source.milestone_id` and `task_source.bead_id` with `milestone_bead_refs_match`; if they do not match, return the same repair-style `RunStartFailed` used for missing/corrupt/orphaned lineage.",
+        "created_at": "2026-04-21T14:43:39.438779398Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "f8a52d5e71107754ff6a0e10f6fcb6e4afd7b0d6bdb495d867042728ee7a0b86"
+      },
+      {
+        "amendment_id": "fr-10-e56d1fc0",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 10,
+        "body": "finding_summary: the new same-bead project selection logic silently picks one project when multiple matching projects exist, instead of failing closed on ambiguous historical duplicates. In [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:662), `reject_existing_same_bead_project_creation` sorts all matching projects and uses only the first row (lines 673-704) to decide whether to block with `run start`/`run resume` guidance; in [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:782), `find_existing_bead_project` does the same and returns the first sorted project at lines 793-796. That means a workspace containing two retryable/non-terminal same-bead projects will now direct `task create` or `milestone run` to an arbitrary project chosen by status/default-id/lexical order, rather than surfacing that the state is ambiguous and needs operator repair. This is especially risky because these duplicate states are exactly what the branch is hardening against, and older workspaces can already contain them. affected_files: `src/cli/project.rs:662-704`, `src/cli/project.rs:782-796`. remediation_hint: only auto-select when there is a single unambiguous candidate (or one candidate backed by the active lineage); otherwise return an explicit ambiguity/repair error listing the competing project ids.",
+        "created_at": "2026-04-21T14:43:39.438796891Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "9d40b75a5aabf098b4cb6c96c7ea27c845a5d605e2b5aa796c3347fca3286e39"
+      }
+    ],
     "processed_count": 14
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 11 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-21T13:14:14.053537220Z",
+    "resolved_at": "2026-04-21T14:17:16.667597148Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

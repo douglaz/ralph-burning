@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T14:40:37.986918734Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed bead 9ni.5.7 'Harden create-from-bead against duplicate active-bead task creation' on feat/9ni-5-7-harden-create-from-bead against origin/master (fork 808707ce). All acceptance criteria verified: (1) same-bead duplicate creation is rejected with a DuplicateActiveBead or DuplicateBeadProject error naming the conflicting project and run and pointing users to `run resume` or `run start`; (2) retry via `run resume` on Failed attempts is preserved (Failed runs route to the resume hint, not blocked); (3) the different-bead active guard in record_task_run_start is preserved untouched; (4) orphaned/legacy/corrupt lineage rows produce a repair error mentioning `repair milestones/{id}/task-runs.ndjson`; (5) 10+ new deterministic integration tests cover all policy branches (legacy runless rows, missing/corrupt run snapshots, not-started orphans, multi-terminal retry ordering, cross-thread serialization). Lock ordering (milestone_write_lock → task_runs_lock) is consistent across execute_create_from_bead, load_snapshot_clearing_pending_lineage_reset, clear_task_run_lineage, and record_task_run_start — no cycles. The new _task_runs_lock in execute_create_from_bead serializes the create-guard against concurrent run-starts, and the external `br` claim still happens only after all local validation. Nix build + full test suite clean (1074 passed, 0 failed). Observations considered but dismissed as non-amendments: the RunStatus::Completed match arm in reject_existing_same_bead_project_creation is unreachable due to the preceding early-return on `all(Completed)` projects (harmless dead branch, not a correctness issue); find_existing_bead_project now silently picks the highest-priority match instead of erroring on multiple candidates, which is an intentional behavior change covered by the new `prefers_failed_retry_over_completed_default` and `allows_creation_with_multiple_terminal_same_bead_projects` tests. No real bugs, safety gaps, or correctness issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 10
+}
