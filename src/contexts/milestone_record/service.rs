@@ -2535,6 +2535,26 @@ pub fn load_snapshot(
     Ok(snapshot)
 }
 
+/// Load a milestone snapshot after applying any pending lineage reset under the
+/// milestone write lock so callers do not observe stale task-run lineage.
+pub fn load_snapshot_clearing_pending_lineage_reset(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<MilestoneSnapshot> {
+    let snapshot = snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        clear_pending_lineage_reset_locked(snapshot_store, base_dir, milestone_id, &mut snapshot)?;
+        Ok(snapshot)
+    })?;
+    tracing::debug!(
+        operation = "load_snapshot_clearing_pending_lineage_reset",
+        outcome = "success",
+        "loaded milestone snapshot after applying any pending lineage reset"
+    );
+    Ok(snapshot)
+}
+
 /// List all milestone IDs in the workspace.
 #[tracing::instrument(skip_all, level = "debug")]
 pub fn list_milestones(
@@ -7693,6 +7713,29 @@ mod tests {
 
         let stored_plan_shape: StoredPlanShape =
             serde_json::from_str(&plan_store.read_plan_shape(base, &record.id)?)?;
+        assert!(!stored_plan_shape.lineage_reset_required);
+        Ok(())
+    }
+
+    #[test]
+    fn load_snapshot_clearing_pending_lineage_reset_removes_stale_lineage(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let (tmp, record, _, _) = setup_pending_lineage_reset_state(
+            "lineage-create-read-self-heal",
+            "Lineage Create Read Self Heal",
+        )?;
+        let base = tmp.path();
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let lineage_store = FsTaskRunLineageStore;
+
+        let snapshot =
+            load_snapshot_clearing_pending_lineage_reset(&snapshot_store, base, &record.id)?;
+
+        assert_eq!(snapshot.pending_lineage_reset, None);
+        assert!(lineage_store.read_task_runs(base, &record.id)?.is_empty());
+
+        let stored_plan_shape: StoredPlanShape =
+            serde_json::from_str(&std::fs::read_to_string(plan_shape_path(base, &record.id))?)?;
         assert!(!stored_plan_shape.lineage_reset_required);
         Ok(())
     }

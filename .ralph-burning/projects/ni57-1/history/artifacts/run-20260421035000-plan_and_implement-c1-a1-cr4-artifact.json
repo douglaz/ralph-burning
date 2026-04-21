@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421035000-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T07:55:30.098121972Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining 9ni.5.7 create-time remediation gap by making `project create-from-bead` clear any pending milestone lineage reset before it inspects active task-run lineage. `src/cli/project.rs` now loads the milestone snapshot through a new `milestone_service::load_snapshot_clearing_pending_lineage_reset(...)` helper, so stale same-bead rows left behind by rematerialized plans are removed under the milestone write lock before `reject_duplicate_active_bead_creation` scans `task-runs.ndjson`. `src/contexts/milestone_record/service.rs` now exposes that locked snapshot-load helper and includes regression coverage proving the reset truncates stale lineage and clears `pending_lineage_reset`. CLI coverage was added to verify create-time duplicate checks no longer falsely block task creation when the only conflicting lineage is stale state that `record_bead_start` would have repaired.\n\n## Steps\n\n1. [Completed] Reviewed the pending amendment against the current create-from-bead duplicate-lineage flow and confirmed the missing behavior was honoring `pending_lineage_reset` before trusting `task-runs.ndjson` at create time.\n2. [Completed] Implemented the fix by routing `execute_create_from_bead` through a new locked snapshot helper that clears pending lineage reset state before downstream bead-actionability and duplicate-active-bead validation run.\n3. [Completed] Added deterministic regression coverage for the new create-time behavior in `tests/cli.rs` and for the underlying snapshot-reset helper in `src/contexts/milestone_record/service.rs` tests.\n4. [Completed] Ran the focused regressions and the full required verification gates, including formatting, clippy, the locked `test-stub` suite, and the authoritative `nix build` gate.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_clears_pending_lineage_reset_before_duplicate_check` passed.\n- `nix develop -c cargo test --locked --features test-stub load_snapshot_clearing_pending_lineage_reset_removes_stale_lineage` passed.\n- `nix develop -c cargo fmt --check` exited successfully.\n- `nix develop -c cargo clippy --locked -- -D warnings` exited successfully.\n- `nix develop -c cargo test --locked --features test-stub` passed on the full tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

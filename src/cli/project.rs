@@ -32,7 +32,7 @@ use crate::contexts::milestone_record::controller::{
 };
 use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
 use crate::contexts::milestone_record::service::{
-    self as milestone_service, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
+    self as milestone_service, MilestonePlanPort, MilestoneStorePort,
 };
 use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary, RunStatus};
 use crate::contexts::project_run_record::service::{
@@ -348,7 +348,11 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     let milestone_id = MilestoneId::new(args.milestone_id)?;
     ensure_milestone_exists(&milestone_store, &current_dir, &milestone_id)?;
     let milestone = milestone_store.read_milestone_record(&current_dir, &milestone_id)?;
-    let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
+    let milestone_snapshot = milestone_service::load_snapshot_clearing_pending_lineage_reset(
+        &snapshot_store,
+        &current_dir,
+        &milestone_id,
+    )?;
     let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
     let bead = load_bead_detail(&current_dir, &milestone_id, &args.bead_id).await?;
     let flow_override = parse_flow_override(args.flow.as_deref())?;

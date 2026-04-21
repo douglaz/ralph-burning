@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-ec83a39d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: Create-time duplicate detection reads `task-runs.ndjson` even when the milestone snapshot still has `pending_lineage_reset`, so rematerialized plans can be blocked by stale same-bead lineage that `record_bead_start` would clear before any start.\naffected_files: [\"src/cli/project.rs\", \"src/contexts/milestone_record/service.rs\"]\nfile_refs: [\"src/cli/project.rs:351\", \"src/cli/project.rs:440\", \"src/cli/project.rs:583-593\", \"src/contexts/milestone_record/service.rs:411-431\", \"src/contexts/milestone_record/service.rs:2988-3000\"]\nremediation_hint: Before `reject_duplicate_active_bead_creation` trusts lineage, honor `pending_lineage_reset` the same way `record_bead_start` does, or skip the create-time scan until the reset has been cleared under the milestone write lock.",
-        "created_at": "2026-04-21T07:18:49.499550543Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "b4c681b7048398413151ccfa69b059efdc3aeaae42bde4011bf0953de0f054c1"
-      }
-    ],
-    "processed_count": 3
+    "pending": [],
+    "processed_count": 4
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-21T07:05:29.297217355Z",

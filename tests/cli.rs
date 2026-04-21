@@ -13595,6 +13595,92 @@ fn project_create_from_bead_allows_creation_with_legacy_runless_active_lineage()
 }
 
 #[test]
+fn project_create_from_bead_clears_pending_lineage_reset_before_duplicate_check() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("status.json"),
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 3,
+    "completed_beads": 1,
+    "in_progress_beads": 1,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 1
+  }},
+  "pending_lineage_reset": {{
+    "plan_hash": "{plan_hash}",
+    "plan_version": 2
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("write milestone status with pending lineage reset");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson"),
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"stale-project","run_id":"run-stale","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write stale active task-runs");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-after-reset",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "pending lineage reset should clear stale lineage before duplicate checks: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        project_root(temp_dir.path(), "bead-after-reset")
+            .join("project.toml")
+            .exists(),
+        "new project should be created after clearing stale lineage"
+    );
+    let status =
+        fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha").join("status.json"))
+            .expect("read milestone status");
+    assert!(
+        !status.contains("pending_lineage_reset"),
+        "create-time snapshot load should clear pending lineage reset before validation"
+    );
+    assert_eq!(
+        fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson"))
+            .expect("read task runs after create"),
+        "",
+        "stale lineage should be truncated before duplicate checks"
+    );
+}
+
+#[test]
 fn project_create_from_bead_reports_orphaned_active_lineage_entry() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
