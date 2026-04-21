@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T11:02:57.295807502Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 7/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-7-9715fe00`\n- `fr-7-48d17456`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-9715fe00`\n\n[src/cli/project.rs:444-478,617-668] `execute_create_from_bead` only preflights active `task-runs.ndjson` entries. A bead-backed project that already exists but has never started has no lineage row, so a second `project create-from-bead --project-id ...` for the same bead slips past the new guard and falls into `claim_bead_in_br`. That path returns a generic br-claim failure and transitions the milestone controller to `needs_operator`, even though this is just the duplicate-not-started case the bead policy is supposed to reject cleanly. The command should detect an existing same-bead project before the br claim and return a targeted duplicate-bead error naming that project instead of taking the operator-recovery path.\n\n### `fr-7-48d17456`\n\n[src/adapters/fs.rs:4651-4659,5147-5191] `record_task_run_start` still rewrites every non-terminal `run_id: None` lineage row to `failed` before it evaluates same-bead conflicts. In an upgraded workspace with a legacy active row, `run start` on a second project for the same bead will silently auto-fail the old active entry and proceed, instead of surfacing the repair guidance that `project create-from-bead` now emits for the same corrupted/orphaned state. That leaves create/start semantics misaligned and still lets corrupted same-bead lineage be bypassed rather than rejected.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}
