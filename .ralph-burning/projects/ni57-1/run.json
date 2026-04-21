@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 7
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-6-156e6630",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "finding_summary: The new orphaned/inconsistent same-bead lineage handling only runs during `project create-from-bead`; `run start` still short-circuits to `DuplicateActiveBead` as soon as it sees another project's non-terminal row, without checking whether that referenced project/run state is missing or corrupt. In `record_bead_start` the run-start path goes straight into `record_task_run_start` (`src/contexts/milestone_record/service.rs:3033-3041`), and `record_task_run_start` now returns `DuplicateActiveBead` immediately for a different project on the same bead (`src/adapters/fs.rs:5190-5195`). The new repair/remediation logic lives only in `reject_duplicate_active_bead_creation` (`src/cli/project.rs:589-709`). As a result, a stale lineage row pointing at a deleted or unreadable project still blocks `run start`/`run resume` with a misleading \"resume that project\" error instead of the required remediation hint, so create/start semantics are still not aligned.\nremediation_hint: Move the project/run-snapshot validation behind active same-bead conflicts into a shared helper and use it from both create-time duplicate checks and the run-start lineage path before emitting `DuplicateActiveBead`.",
-        "created_at": "2026-04-21T10:05:08.729890255Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d7e6f84ab394e3420ad9884cbbee006f854b9cb8c74216da3c2134acb6622c83"
-      }
-    ],
-    "processed_count": 7
+    "pending": [],
+    "processed_count": 8
   },
-  "status_summary": "running: final review restart round 7 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-21T09:48:19.806256796Z",

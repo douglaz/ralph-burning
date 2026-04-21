@@ -4421,17 +4421,6 @@ impl FsTaskRunLineageStore {
             .collect()
     }
 
-    fn duplicate_active_bead_error(bead_id: &str, entry: &TaskRunEntry) -> AppError {
-        AppError::DuplicateActiveBead {
-            bead_id: bead_id.to_owned(),
-            existing_project_id: entry.project_id.clone(),
-            existing_run_id: entry
-                .run_id
-                .clone()
-                .unwrap_or_else(|| format!("started_at={}", entry.started_at.to_rfc3339())),
-        }
-    }
-
     fn plan_hash_conflict_details(
         bead_id: &str,
         project_id: &str,
@@ -5189,10 +5178,17 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
 
         if let [prior_running_attempt] = running_attempts_for_bead.as_slice() {
             if prior_running_attempt.project_id != project_id {
-                return Err(Self::duplicate_active_bead_error(
-                    bead_id,
-                    prior_running_attempt,
-                ));
+                return Err(
+                    crate::contexts::milestone_record::service::active_same_bead_conflict_error(
+                        &FsProjectStore,
+                        &FsRunSnapshotStore,
+                        base_dir,
+                        milestone_id,
+                        bead_id,
+                        prior_running_attempt,
+                        crate::contexts::milestone_record::service::ActiveSameBeadConflictAction::Start,
+                    )?,
+                );
             }
         }
 
@@ -5949,8 +5945,60 @@ fn requirements_root(base_dir: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use crate::contexts::automation_runtime::{DaemonStorePort, WriterLockReleaseOutcome};
-    use crate::shared::domain::ProjectId;
+    use crate::contexts::project_run_record::model::{
+        ActiveRun, ProjectRecord, ProjectStatusSummary, RunSnapshot, RunStatus, SessionStore,
+    };
+    use crate::contexts::project_run_record::service::ProjectStorePort;
+    use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use tempfile::tempdir;
+
+    fn create_project_snapshot(
+        temp: &tempfile::TempDir,
+        project_id: &str,
+        run_status: RunStatus,
+        run_id: Option<&str>,
+        started_at: DateTime<Utc>,
+    ) {
+        let project_id = ProjectId::new(project_id).expect("project id");
+        let record = ProjectRecord {
+            id: project_id.clone(),
+            name: format!("Project {}", project_id),
+            flow: FlowPreset::Standard,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: started_at,
+            status_summary: ProjectStatusSummary::Created,
+            task_source: None,
+        };
+        let mut snapshot = RunSnapshot::initial(20);
+        snapshot.status = run_status;
+        snapshot.status_summary = run_status.display_str().to_owned();
+        if run_status == RunStatus::Running {
+            snapshot.status_summary = "running: planning".to_owned();
+            snapshot.active_run = Some(ActiveRun {
+                run_id: run_id.expect("running snapshot requires run id").to_owned(),
+                stage_cursor: StageCursor::initial(StageId::Planning),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                iterative_implementer_state: None,
+                stage_resolution_snapshot: None,
+            });
+        }
+        FsProjectStore
+            .create_project_atomic(
+                temp.path(),
+                &record,
+                "# test prompt\n",
+                &snapshot,
+                "{}",
+                &SessionStore::empty(),
+            )
+            .expect("create project fixture");
+    }
 
     #[cfg(unix)]
     #[test]
@@ -6043,6 +6091,13 @@ mod tests {
             .with_ymd_and_hms(2026, 4, 21, 10, 0, 0)
             .single()
             .expect("timestamp");
+        create_project_snapshot(
+            &temp,
+            "project-1",
+            RunStatus::Running,
+            Some("run-1"),
+            started_at,
+        );
         store
             .append_task_run(
                 temp.path(),
@@ -6140,6 +6195,156 @@ mod tests {
     }
 
     #[test]
+    fn record_task_run_start_reports_missing_project_for_active_same_bead_conflict() {
+        use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
+        use chrono::TimeZone;
+
+        let temp = tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp.path(), Utc::now())
+            .expect("initialize workspace");
+        let milestone_id =
+            MilestoneId::new("ms-active-same-bead-missing-project").expect("milestone id");
+        std::fs::create_dir_all(FileSystem::milestone_root(temp.path(), &milestone_id))
+            .expect("create milestone root");
+
+        let store = FsTaskRunLineageStore;
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 21, 10, 45, 0)
+            .single()
+            .expect("timestamp");
+        store
+            .append_task_run(
+                temp.path(),
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "missing-project".to_owned(),
+                    run_id: Some("run-missing".to_owned()),
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: None,
+                },
+            )
+            .expect("append running task run");
+
+        let error = store
+            .record_task_run_start(
+                temp.path(),
+                &milestone_id,
+                "bead-1",
+                "project-2",
+                "run-2",
+                "plan-v2",
+                started_at + chrono::Duration::seconds(10),
+            )
+            .expect_err("missing project state should return repair guidance");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("cannot start bead 'bead-1'"));
+        assert!(rendered.contains("active lineage points to missing project 'missing-project'"));
+        assert!(rendered.contains("run 'run-missing'"));
+        assert!(rendered
+            .contains("repair milestones/ms-active-same-bead-missing-project/task-runs.ndjson"));
+        assert!(rendered.contains("before starting another run"));
+
+        let task_runs = store
+            .find_runs_for_bead(temp.path(), &milestone_id, "bead-1")
+            .expect("read task runs");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].project_id, "missing-project");
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-missing"));
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
+    }
+
+    #[test]
+    fn record_task_run_start_reports_corrupt_run_snapshot_for_active_same_bead_conflict() {
+        use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
+        use chrono::TimeZone;
+
+        let temp = tempdir().expect("tempdir");
+        crate::contexts::workspace_governance::initialize_workspace(temp.path(), Utc::now())
+            .expect("initialize workspace");
+        let milestone_id =
+            MilestoneId::new("ms-active-same-bead-corrupt-run").expect("milestone id");
+        std::fs::create_dir_all(FileSystem::milestone_root(temp.path(), &milestone_id))
+            .expect("create milestone root");
+
+        let store = FsTaskRunLineageStore;
+        let started_at = Utc
+            .with_ymd_and_hms(2026, 4, 21, 10, 50, 0)
+            .single()
+            .expect("timestamp");
+        create_project_snapshot(
+            &temp,
+            "project-corrupt",
+            RunStatus::Running,
+            Some("run-corrupt"),
+            started_at,
+        );
+        std::fs::write(
+            FileSystem::project_root(
+                temp.path(),
+                &ProjectId::new("project-corrupt").expect("project id"),
+            )
+            .join(RUN_FILE),
+            "{not valid json",
+        )
+        .expect("corrupt run snapshot");
+        store
+            .append_task_run(
+                temp.path(),
+                &milestone_id,
+                &TaskRunEntry {
+                    milestone_id: milestone_id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-corrupt".to_owned(),
+                    run_id: Some("run-corrupt".to_owned()),
+                    plan_hash: Some("plan-v1".to_owned()),
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at,
+                    finished_at: None,
+                    task_id: None,
+                },
+            )
+            .expect("append running task run");
+
+        let error = store
+            .record_task_run_start(
+                temp.path(),
+                &milestone_id,
+                "bead-1",
+                "project-2",
+                "run-2",
+                "plan-v2",
+                started_at + chrono::Duration::seconds(10),
+            )
+            .expect_err("corrupt run snapshot should return repair guidance");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("cannot start bead 'bead-1'"));
+        assert!(rendered.contains("active lineage points to an unreadable run snapshot"));
+        assert!(rendered.contains("project 'project-corrupt'"));
+        assert!(rendered.contains("run 'run-corrupt'"));
+        assert!(
+            rendered.contains("repair milestones/ms-active-same-bead-corrupt-run/task-runs.ndjson")
+        );
+        assert!(rendered.contains("before starting another run"));
+
+        let task_runs = store
+            .find_runs_for_bead(temp.path(), &milestone_id, "bead-1")
+            .expect("read task runs");
+        assert_eq!(task_runs.len(), 1);
+        assert_eq!(task_runs[0].project_id, "project-corrupt");
+        assert_eq!(task_runs[0].run_id.as_deref(), Some("run-corrupt"));
+        assert_eq!(task_runs[0].outcome, TaskRunOutcome::Running);
+    }
+
+    #[test]
     fn record_task_run_start_still_rejects_other_active_bead() {
         use crate::contexts::milestone_record::model::{MilestoneId, TaskRunEntry, TaskRunOutcome};
         use chrono::TimeZone;
@@ -6232,6 +6437,13 @@ mod tests {
             .expect("append failed task run");
 
         let active_started_at = failed_started_at + chrono::Duration::minutes(5);
+        create_project_snapshot(
+            &temp,
+            "project-2",
+            RunStatus::Running,
+            Some("run-2"),
+            active_started_at,
+        );
         store
             .append_task_run(
                 temp.path(),

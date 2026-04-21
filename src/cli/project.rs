@@ -566,26 +566,6 @@ pub(crate) async fn execute_create_from_bead(args: CreateFromBeadArgs) -> AppRes
     Ok(record.id)
 }
 
-fn task_run_attempt_label(run_id: Option<&str>, started_at: chrono::DateTime<Utc>) -> String {
-    run_id
-        .map(|run_id| format!("run '{run_id}'"))
-        .unwrap_or_else(|| format!("attempt started at {}", started_at.to_rfc3339()))
-}
-
-fn active_lineage_repair_error(
-    bead_id: &str,
-    milestone_id: &MilestoneId,
-    existing_run_label: &str,
-    problem_clause: &str,
-) -> AppError {
-    AppError::RunStartFailed {
-        reason: format!(
-            "cannot create bead '{bead_id}': active lineage points to {problem_clause} ({existing_run_label}); repair milestones/{}/task-runs.ndjson or restore the project state before creating another task",
-            milestone_id
-        ),
-    }
-}
-
 fn reject_duplicate_active_bead_creation(
     base_dir: &Path,
     milestone_id: &MilestoneId,
@@ -600,93 +580,15 @@ fn reject_duplicate_active_bead_creation(
 
     match active_runs.as_slice() {
         [] => Ok(()),
-        [entry] => {
-            let existing_run_label =
-                task_run_attempt_label(entry.run_id.as_deref(), entry.started_at);
-            if entry.run_id.is_none() {
-                return Err(active_lineage_repair_error(
-                    bead_id,
-                    milestone_id,
-                    &existing_run_label,
-                    &format!(
-                        "a legacy active lineage row for project '{}' with no run id",
-                        entry.project_id
-                    ),
-                ));
-            }
-            let existing_project_id = ProjectId::new(entry.project_id.clone()).map_err(|error| {
-                AppError::RunStartFailed {
-                    reason: format!(
-                        "cannot create bead '{bead_id}': active lineage references invalid project id '{}': {error}",
-                        entry.project_id
-                    ),
-                }
-            })?;
-            match FsProjectStore.read_project_record(base_dir, &existing_project_id) {
-                Ok(_) => {}
-                Err(AppError::ProjectNotFound { .. }) => {
-                    return Err(active_lineage_repair_error(
-                        bead_id,
-                        milestone_id,
-                        &existing_run_label,
-                        &format!("missing project '{}'", entry.project_id),
-                    ));
-                }
-                Err(other) => return Err(other),
-            }
-            let run_snapshot =
-                match FsRunSnapshotStore.read_run_snapshot(base_dir, &existing_project_id) {
-                    Ok(snapshot) => snapshot,
-                    Err(AppError::CorruptRecord { file, details })
-                        if file == format!("projects/{}/run.json", existing_project_id) =>
-                    {
-                        return Err(active_lineage_repair_error(
-                            bead_id,
-                            milestone_id,
-                            &existing_run_label,
-                            &format!(
-                                "an unreadable run snapshot for project '{}' ({details})",
-                                entry.project_id
-                            ),
-                        ));
-                    }
-                    Err(other) => return Err(other),
-                };
-
-            match run_snapshot.status {
-                RunStatus::NotStarted => Err(active_lineage_repair_error(
-                    bead_id,
-                    milestone_id,
-                    &existing_run_label,
-                    &format!(
-                        "a not-started project snapshot for project '{}'",
-                        entry.project_id
-                    ),
-                )),
-                RunStatus::Running | RunStatus::Paused => {
-                    Err(AppError::DuplicateActiveBead {
-                        bead_id: bead_id.to_owned(),
-                        existing_project_id: entry.project_id.clone(),
-                        existing_run_id: entry
-                            .run_id
-                            .clone()
-                            .unwrap_or_else(|| format!("started_at={}", entry.started_at.to_rfc3339())),
-                    })
-                }
-                RunStatus::Failed => Err(AppError::RunStartFailed {
-                    reason: format!(
-                        "cannot create bead '{bead_id}': project '{}' has {existing_run_label} in failed state; use `ralph-burning project select {}` and `ralph-burning run resume` instead of creating a parallel task",
-                        entry.project_id, entry.project_id
-                    ),
-                }),
-                RunStatus::Completed => Err(AppError::RunStartFailed {
-                    reason: format!(
-                        "cannot create bead '{bead_id}': active lineage points to completed project '{}' ({existing_run_label}); repair milestones/{}/task-runs.ndjson before creating another task",
-                        entry.project_id, milestone_id
-                    ),
-                }),
-            }
-        }
+        [entry] => Err(milestone_service::active_same_bead_conflict_error(
+            &FsProjectStore,
+            &FsRunSnapshotStore,
+            base_dir,
+            milestone_id,
+            bead_id,
+            entry,
+            milestone_service::ActiveSameBeadConflictAction::Create,
+        )?),
         active_runs => {
             let details = active_runs
                 .iter()
@@ -694,7 +596,10 @@ fn reject_duplicate_active_bead_creation(
                     format!(
                         "{} ({})",
                         entry.project_id,
-                        task_run_attempt_label(entry.run_id.as_deref(), entry.started_at)
+                        milestone_service::format_task_run_attempt_label(
+                            entry.run_id.as_deref(),
+                            entry.started_at,
+                        )
                     )
                 })
                 .collect::<Vec<_>>()
