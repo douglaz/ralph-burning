@@ -32,7 +32,7 @@ use crate::contexts::milestone_record::controller::{
 };
 use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
 use crate::contexts::milestone_record::service::{
-    self as milestone_service, MilestonePlanPort, MilestoneStorePort,
+    self as milestone_service, MilestonePlanPort, MilestoneStorePort, TaskRunLineagePort,
 };
 use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary, RunStatus};
 use crate::contexts::project_run_record::service::{
@@ -810,11 +810,33 @@ fn matching_bead_project_ids(
         return Ok(Vec::new());
     };
 
-    if default_record.task_source.is_none() {
+    if default_record.task_source.is_none()
+        && legacy_default_project_has_lineage_evidence(
+            base_dir,
+            milestone_id,
+            bead_id,
+            &default_record.id,
+        )?
+    {
         return Ok(vec![default_record.id]);
     }
 
     Ok(Vec::new())
+}
+
+fn legacy_default_project_has_lineage_evidence(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &ProjectId,
+) -> AppResult<bool> {
+    Ok(FsTaskRunLineageStore
+        .read_task_runs(base_dir, milestone_id)?
+        .into_iter()
+        .any(|entry| {
+            entry.project_id == project_id.as_str()
+                && milestone_bead_refs_match(milestone_id, &entry.bead_id, bead_id)
+        }))
 }
 
 fn matching_bead_project_statuses(
@@ -3438,6 +3460,28 @@ status_summary = "{status_summary}"
         std::fs::write(project_root.join("run.json"), run_json).expect("write run.json");
     }
 
+    fn write_task_run_lineage_entry(
+        dir: &Path,
+        milestone_id: &str,
+        bead_id: &str,
+        project_id: &str,
+        run_id: Option<&str>,
+        outcome: &str,
+    ) {
+        let run_id_field = run_id
+            .map(|run_id| format!(r#""run_id":"{run_id}","#))
+            .unwrap_or_else(|| r#""run_id":null,"#.to_owned());
+        std::fs::write(
+            dir.join(".ralph-burning/milestones")
+                .join(milestone_id)
+                .join("task-runs.ndjson"),
+            format!(
+                r#"{{"milestone_id":"{milestone_id}","bead_id":"{bead_id}","project_id":"{project_id}",{run_id_field}"plan_hash":"plan-v1","outcome":"{outcome}","started_at":"2026-04-01T10:11:00Z"}}"#
+            ),
+        )
+        .expect("write task-runs.ndjson");
+    }
+
     fn render_planned_elsewhere_item(item: &PlannedElsewherePromptContext) -> String {
         let mut line = format!("{} ({}) - {}", item.id, item.title, item.relationship);
         if let Some(status) = item.status.as_deref() {
@@ -3595,7 +3639,7 @@ status_summary = "{status_summary}"
     }
 
     #[test]
-    fn find_existing_bead_project_recovers_legacy_default_named_project_without_task_source() {
+    fn find_existing_bead_project_ignores_legacy_default_named_project_without_lineage_evidence() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
 
@@ -3608,9 +3652,35 @@ status_summary = "{status_summary}"
 
         let selected =
             super::find_existing_bead_project(tmp.path(), &milestone_id, "ms-alpha.bead-2")
-                .expect("scan legacy default project")
-                .expect("expected legacy default project match");
+                .expect("scan legacy default project without lineage evidence");
 
+        assert_eq!(selected, None);
+    }
+
+    #[test]
+    fn find_existing_bead_project_recovers_legacy_default_named_project_with_lineage_evidence() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
+        write_legacy_default_project_without_task_source(
+            tmp.path(),
+            "task-ms-alpha-bead-2",
+            RunStatus::NotStarted,
+        );
+        write_task_run_lineage_entry(
+            tmp.path(),
+            milestone_id.as_str(),
+            "ms-alpha.bead-2",
+            "task-ms-alpha-bead-2",
+            Some("run-existing"),
+            "succeeded",
+        );
+
+        let selected =
+            super::find_existing_bead_project(tmp.path(), &milestone_id, "ms-alpha.bead-2")
+                .expect("scan legacy default project with lineage evidence")
+                .expect("expected legacy default project match");
         assert_eq!(selected.as_str(), "task-ms-alpha-bead-2");
     }
 

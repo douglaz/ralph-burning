@@ -14,7 +14,7 @@ use crate::adapters::br_process::{
     BrAdapter, BrCommand, BrMutationAdapter, ProcessRunner, SyncIfDirtyHealthError,
 };
 use crate::adapters::fs::{FileSystem, FsTaskRunLineageStore};
-use crate::contexts::project_run_record::model::RunStatus;
+use crate::contexts::project_run_record::model::{ActiveRun, RunStatus};
 use crate::contexts::project_run_record::service::{ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::review_classification::Severity;
 use crate::shared::domain::ProjectId;
@@ -2614,6 +2614,73 @@ fn active_lineage_repair_error(
     }
 }
 
+fn expected_lineage_attempt_label(entry: &TaskRunEntry) -> String {
+    task_run_attempt_label(entry.run_id.as_deref(), entry.started_at)
+}
+
+fn snapshot_attempt_mismatch_error(
+    action: ActiveSameBeadConflictAction,
+    bead_id: &str,
+    milestone_id: &MilestoneId,
+    entry: &TaskRunEntry,
+    snapshot_status: RunStatus,
+    problem_clause: String,
+) -> AppError {
+    active_lineage_repair_error(
+        action,
+        bead_id,
+        milestone_id,
+        &expected_lineage_attempt_label(entry),
+        &format!(
+            "a {} project snapshot for project '{}' {problem_clause}",
+            snapshot_status, entry.project_id
+        ),
+    )
+}
+
+fn validate_snapshot_attempt_matches_lineage(
+    action: ActiveSameBeadConflictAction,
+    bead_id: &str,
+    milestone_id: &MilestoneId,
+    entry: &TaskRunEntry,
+    snapshot_status: RunStatus,
+    snapshot_run: Option<&ActiveRun>,
+    missing_clause: &str,
+) -> Option<AppError> {
+    let Some(snapshot_run) = snapshot_run else {
+        return Some(snapshot_attempt_mismatch_error(
+            action,
+            bead_id,
+            milestone_id,
+            entry,
+            snapshot_status,
+            missing_clause.to_owned(),
+        ));
+    };
+
+    let expected_run_id = entry
+        .run_id
+        .as_deref()
+        .expect("same-bead conflict validation requires a run id");
+    if snapshot_run.run_id != expected_run_id || snapshot_run.started_at != entry.started_at {
+        let snapshot_attempt =
+            task_run_attempt_label(Some(snapshot_run.run_id.as_str()), snapshot_run.started_at);
+        return Some(snapshot_attempt_mismatch_error(
+            action,
+            bead_id,
+            milestone_id,
+            entry,
+            snapshot_status,
+            format!(
+                "points at {snapshot_attempt} instead of {}",
+                expected_lineage_attempt_label(entry)
+            ),
+        ));
+    }
+
+    None
+}
+
 pub fn active_same_bead_conflict_error(
     project_store: &impl ProjectStorePort,
     run_snapshot_store: &impl RunSnapshotPort,
@@ -2720,23 +2787,73 @@ pub fn active_same_bead_conflict_error(
                 entry.project_id
             ),
         ),
-        RunStatus::Running | RunStatus::Paused => AppError::DuplicateActiveBead {
-            bead_id: bead_id.to_owned(),
-            existing_project_id: entry.project_id.clone(),
-            existing_run_id: entry
-                .run_id
-                .clone()
-                .unwrap_or_else(|| format!("started_at={}", entry.started_at.to_rfc3339())),
-        },
-        RunStatus::Failed => AppError::RunStartFailed {
-            reason: format!(
-                "cannot {} bead '{bead_id}': project '{}' has {existing_run_label} in failed state; use `ralph-burning project select {}` and `ralph-burning run resume` {}",
-                action.verb(),
-                entry.project_id,
-                entry.project_id,
-                action.retry_resolution(),
-            ),
-        },
+        RunStatus::Running => {
+            if let Some(repair_error) = validate_snapshot_attempt_matches_lineage(
+                action,
+                bead_id,
+                milestone_id,
+                entry,
+                RunStatus::Running,
+                run_snapshot.active_run.as_ref(),
+                "has no active run",
+            ) {
+                repair_error
+            } else {
+                AppError::DuplicateActiveBead {
+                    bead_id: bead_id.to_owned(),
+                    existing_project_id: entry.project_id.clone(),
+                    existing_run_id: entry
+                        .run_id
+                        .clone()
+                        .unwrap_or_else(|| format!("started_at={}", entry.started_at.to_rfc3339())),
+                }
+            }
+        }
+        RunStatus::Paused => {
+            if let Some(repair_error) = validate_snapshot_attempt_matches_lineage(
+                action,
+                bead_id,
+                milestone_id,
+                entry,
+                RunStatus::Paused,
+                run_snapshot.interrupted_run.as_ref(),
+                "has no interrupted run",
+            ) {
+                repair_error
+            } else {
+                AppError::DuplicateActiveBead {
+                    bead_id: bead_id.to_owned(),
+                    existing_project_id: entry.project_id.clone(),
+                    existing_run_id: entry
+                        .run_id
+                        .clone()
+                        .unwrap_or_else(|| format!("started_at={}", entry.started_at.to_rfc3339())),
+                }
+            }
+        }
+        RunStatus::Failed => {
+            if let Some(repair_error) = validate_snapshot_attempt_matches_lineage(
+                action,
+                bead_id,
+                milestone_id,
+                entry,
+                RunStatus::Failed,
+                run_snapshot.interrupted_run.as_ref(),
+                "has no interrupted run",
+            ) {
+                repair_error
+            } else {
+                AppError::RunStartFailed {
+                    reason: format!(
+                        "cannot {} bead '{bead_id}': project '{}' has {existing_run_label} in failed state; use `ralph-burning project select {}` and `ralph-burning run resume` {}",
+                        action.verb(),
+                        entry.project_id,
+                        entry.project_id,
+                        action.retry_resolution(),
+                    ),
+                }
+            }
+        }
         RunStatus::Completed => active_lineage_repair_error(
             action,
             bead_id,
@@ -12145,6 +12262,88 @@ mod tests {
         assert!(rendered.contains(
             "repair milestones/same-bead-mismatched-task-source-repair-test/task-runs.ndjson"
         ));
+        assert!(rendered.contains("before starting another run"));
+        Ok(())
+    }
+
+    #[test]
+    fn retry_start_on_same_bead_reports_paused_snapshot_attempt_mismatch_repair_hint(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone_with_plan(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            "same-bead-paused-run-drift-test",
+            "Same Bead Paused Run Drift Test",
+            now,
+        )?;
+        create_bead_project_snapshot(
+            base,
+            "project-paused",
+            &record.id,
+            "bead-1",
+            RunStatus::Paused,
+            Some("run-existing"),
+            now,
+        );
+        std::fs::write(
+            FileSystem::project_root(base, &ProjectId::new("project-paused").expect("project id"))
+                .join("run.json"),
+            r#"{"active_run":null,"interrupted_run":{"run_id":"run-drifted","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-04-21T10:16:00Z","prompt_hash_at_cycle_start":"","prompt_hash_at_stage_start":"","qa_iterations_current_cycle":0,"review_iterations_current_cycle":0,"final_review_restart_count":0},"status":"paused","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"paused"}"#,
+        )?;
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-paused".to_owned(),
+                run_id: Some("run-existing".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+                task_id: None,
+            },
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-2",
+            "run-2",
+            "plan-v2",
+            now + chrono::Duration::seconds(10),
+        )
+        .expect_err("drifted paused snapshot should return repair guidance");
+        assert!(matches!(error, AppError::RunStartFailed { .. }));
+        let rendered = error.to_string();
+        assert!(rendered.contains("cannot start bead 'bead-1'"));
+        assert!(rendered.contains(
+            "active lineage points to a paused project snapshot for project 'project-paused'"
+        ));
+        assert!(rendered.contains("run 'run-drifted'"));
+        assert!(rendered.contains("instead of run 'run-existing'"));
+        assert!(
+            rendered.contains("repair milestones/same-bead-paused-run-drift-test/task-runs.ndjson")
+        );
         assert!(rendered.contains("before starting another run"));
         Ok(())
     }

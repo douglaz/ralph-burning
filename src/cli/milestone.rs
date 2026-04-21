@@ -36,7 +36,9 @@ use crate::contexts::milestone_record::service::{
     MilestoneStorePort,
 };
 use crate::contexts::project_run_record::model::{ProjectStatusSummary, RunStatus};
-use crate::contexts::project_run_record::service::{ProjectStorePort, RunSnapshotPort};
+use crate::contexts::project_run_record::service::{
+    default_project_id_for_bead, ProjectStorePort, RunSnapshotPort,
+};
 use crate::contexts::requirements_drafting::model::{
     RequirementsMode, RequirementsOutputKind, RequirementsRun, RequirementsStatus,
 };
@@ -1157,6 +1159,8 @@ async fn ensure_project_for_controller(
         return Ok(project_id);
     }
 
+    let create_project_id =
+        next_available_controller_bead_project_id(base_dir, milestone_id, bead_id)?;
     recover_existing_bead_project_after_create_conflict(
         base_dir,
         milestone_id,
@@ -1164,12 +1168,33 @@ async fn ensure_project_for_controller(
         project::execute_create_from_bead(project::CreateFromBeadArgs {
             milestone_id: milestone_id.to_string(),
             bead_id: bead_id.to_owned(),
-            project_id: None,
+            project_id: Some(create_project_id.to_string()),
             prompt_file: None,
             flow: None,
         })
         .await,
     )
+}
+
+fn next_available_controller_bead_project_id(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+) -> AppResult<crate::shared::domain::ProjectId> {
+    let default_project_id = default_project_id_for_bead(&milestone_id.to_string(), bead_id)?;
+    if !FsProjectStore.project_exists(base_dir, &default_project_id)? {
+        return Ok(default_project_id);
+    }
+
+    let base_id = default_project_id.as_str();
+    for suffix in 2.. {
+        let candidate = crate::shared::domain::ProjectId::new(format!("{base_id}-{suffix}"))?;
+        if !FsProjectStore.project_exists(base_dir, &candidate)? {
+            return Ok(candidate);
+        }
+    }
+
+    unreachable!("finite project id space unexpectedly exhausted")
 }
 
 fn recover_existing_bead_project_after_create_conflict(
@@ -2643,7 +2668,7 @@ mod tests {
 
         let escaped_show_json = show_json.replace('\'', "'\"'\"'");
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = \"show\" ] && [ \"$3\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_show_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
+            "#!/bin/sh\nif [ \"$1\" = \"update\" ]; then\n  printf 'Updated\\n'\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ]; then\n  printf 'Synced\\n'\n  exit 0\nfi\nif [ \"$1\" = \"show\" ] && [ \"$3\" = \"--json\" ]; then\n  printf '%s\\n' '{escaped_show_json}'\n  exit 0\nfi\nprintf 'unexpected br invocation: %s\\n' \"$*\" >&2\nexit 1\n"
         );
         let br_path = fake_bin.join("br");
         std::fs::write(&br_path, script).expect("write fake br");
@@ -3087,6 +3112,45 @@ mod tests {
             updated_controller.last_transition_reason.as_deref(),
             Some("adopted existing bead-backed project")
         );
+    }
+
+    #[test]
+    fn next_available_controller_bead_project_id_skips_unrelated_manual_default_project() {
+        let temp_dir = tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 18, 11, 30, 0)
+            .single()
+            .expect("valid timestamp");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        create_controller_test_milestone(base_dir, &milestone_id, now);
+        project_service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: crate::shared::domain::ProjectId::new("task-ms-alpha-bead-2".to_owned())
+                    .expect("project id"),
+                name: "Unrelated manual project".to_owned(),
+                flow: FlowPreset::Minimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "Manual project".to_owned(),
+                prompt_hash: "prompt-hash".to_owned(),
+                created_at: now,
+                task_source: None,
+            },
+        )
+        .expect("create manual project");
+
+        let selected = super::next_available_controller_bead_project_id(
+            base_dir,
+            &milestone_id,
+            "ms-alpha.bead-2",
+        )
+        .expect("select available controller project id");
+
+        assert_eq!(selected.as_str(), "task-ms-alpha-bead-2-2");
     }
 
     #[cfg(unix)]
