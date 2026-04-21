@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T08:50:11.216850769Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the 9ni.5.7 harden-create-from-bead branch against origin/master at 808707ce. The implementation adds a `DuplicateActiveBead` AppError variant, a new `active_task_runs_for_bead` port method (thinly wrapping existing `running_task_runs_for_bead` + `collapse_task_run_attempts` helpers), and a `reject_duplicate_active_bead_creation` gate in `execute_create_from_bead` that runs before the `claim_bead_in_br` side effect. The gate dispatches into six clearly labeled outcomes — legacy runless rows, missing project directory, missing/corrupt `run.json`, Failed/Completed run-status inconsistencies, NotStarted/Running/Paused → DuplicateActiveBead, and the multi-active-row ambiguity case — each with actionable remediation text. `record_task_run_start` is aligned: cross-project non-terminal collisions now return `DuplicateActiveBead` rather than silently superseding, and the ambiguity-multiple check was correctly moved to before the find-matching-running path. `load_snapshot_clearing_pending_lineage_reset` pre-clears stale lineage under the milestone write lock before the duplicate check, which is required to avoid false positives after a pending reset. The different-bead guard in `record_task_run_start` is preserved and exercised by the CLI test `project_create_from_bead_for_different_bead_preserves_run_start_active_bead_guard`. Tests cover duplicate-same-bead reject, terminal-allow, legacy runless, pending-lineage-reset clearing, orphan project, missing run.json, corrupt run.json, and preserved different-bead guard. All gates pass locally: `cargo fmt --check`, `cargo clippy --locked -- -D warnings` clean, 1074 library tests pass, 38 create-from-bead CLI tests pass, 297 milestone_record service tests pass, 67 fs adapter tests pass. The TOCTOU gap between the duplicate-active-bead read (lock-free) and the later `record_task_run_start` is benign because the run-start path re-checks under the task-runs advisory lock, and `project_exists` still guards the project-id collision case. No real bugs, safety problems, correctness gaps, or significant maintainability risks found — returning no amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 5
+}

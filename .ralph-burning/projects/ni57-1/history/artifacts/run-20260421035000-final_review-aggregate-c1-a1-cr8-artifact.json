@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T12:20:17.149009766Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 8/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-8-4e2a53b1`\n- `fr-8-9633ac2d`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-4e2a53b1`\n\n`src/cli/project.rs:634-663` only special-cases `RunStatus::NotStarted` when an existing project already owns the same bead. If the prior bead-backed project is in `failed`, `reject_existing_same_bead_project_creation()` returns `Ok(())`, so `execute_create_from_bead()` falls through to `claim_bead_in_br` instead of forcing the operator back to `ralph-burning project select <id>` + `ralph-burning run resume`. That violates the bead's retry policy for failed/stopped attempts and can still yield a parallel task or an unrelated BR-claim failure. Failed same-bead projects need the same targeted create-time rejection/resume guidance as the active-lineage helper.\n\n### `fr-8-9633ac2d`\n\n`src/cli/project.rs:444-446` relies on the new task-runs lock to make duplicate-bead validation atomic, but `src/contexts/milestone_record/service.rs:413-425` and `3140-3147` still clear `task-runs.ndjson` directly during pending-lineage-reset handling without taking that same lock. That path is reachable from `record_bead_start()` at `src/contexts/milestone_record/service.rs:3172-3175`, so a concurrent lineage-resetting operation can rewrite the file while `create-from-bead` believes it has exclusive access. The new lock therefore does not actually close the TOCTOU window it was added for; lineage reset needs to go through the lineage store or acquire the task-runs lock before truncating the file.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

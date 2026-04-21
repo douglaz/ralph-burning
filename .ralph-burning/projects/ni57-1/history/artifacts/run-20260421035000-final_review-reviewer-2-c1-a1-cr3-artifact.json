@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T07:12:18.468494768Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the full branch delta for bead 9ni.5.7 against origin/master fork point 808707ce. The implementation adds the DuplicateActiveBead error variant (src/shared/error.rs:50), a read-only active_task_runs_for_bead port method with filtering of legacy run-less entries (src/adapters/fs.rs:5089-5112, src/contexts/milestone_record/service.rs:195-200 and 3441-3447), and a CLI-side reject_duplicate_active_bead_creation guard that differentiates Running/Paused, Failed, Completed, ProjectNotFound (orphan), missing/corrupt run.json, multi-active-row, and invalid-project-id states with actionable repair hints (src/cli/project.rs:563-684). The cross-project rejection is mirrored inside record_task_run_start (src/adapters/fs.rs:5171-5187) while still superseding same-project prior attempts, preserving single-project retry semantics. The different-bead active guard in record_task_run_start is preserved and explicitly regression-tested end-to-end. Test coverage is comprehensive: 7 CLI tests (duplicate-active reject, terminal-allow, legacy-runless-allow, orphan project, missing run.json, corrupt run.json, different-bead run-start preservation), 4 fs-layer tests (cross-project reject, legacy runless filtering, different-bead preservation, failed-reopen cross-project reject), and 2 service-layer retry tests. No correctness, safety, robustness, or maintainability risks within the bead's scope were found that warrant amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}

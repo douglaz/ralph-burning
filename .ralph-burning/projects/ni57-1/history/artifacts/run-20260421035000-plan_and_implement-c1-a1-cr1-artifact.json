@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421035000-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T04:56:24.476596790Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nHardened bead-backed task creation so `project create-from-bead` / `task create` now rejects duplicate same-bead active lineage before project creation, using a new `AppError::DuplicateActiveBead` that names the existing project/run. The filesystem lineage store now exposes a read-only `active_task_runs_for_bead` helper and `record_task_run_start` explicitly rejects starting the same bead from a different project while preserving the existing different-bead active guard and same-project retry/reopen behavior. The create path also surfaces orphaned lineage/project-state inconsistencies with remediation guidance, and deterministic regression coverage was added across fs/service/CLI layers for duplicate same-bead creation, terminal retry allowance, different-bead protection, and orphaned lineage handling.\n\n## Steps\n\n1. [Completed] Reviewed the existing lineage, CLI creation, and error-handling paths against bead 9ni.5.7 requirements and confirmed the needed enforcement points: create-time duplicate detection, shared fs lineage scanning, and run-start parity.\n2. [Completed] Implemented the duplicate-active-bead policy by adding `DuplicateActiveBead`, exposing `active_task_runs_for_bead` from the fs lineage store/service layer, wiring `execute_create_from_bead` to reject conflicting active lineage before bead claim/project existence checks, and tightening `record_task_run_start` so a different project cannot start the same active bead.\n3. [Completed] Added and validated regression coverage for same-bead duplicate creation rejection, successful creation after terminal lineage, preservation of the existing different-bead active guard, orphaned active-lineage errors, and service/fs retry semantics.\n4. [Completed] Ran the required verification gates, including formatting, clippy, full test suite, and the authoritative `nix build` gate.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` exited successfully.\n- `nix develop -c cargo clippy --locked -- -D warnings` exited successfully.\n- Focused regressions passed under `nix develop -c cargo test --locked --features test-stub`, including `project_create_from_bead_rejects_duplicate_active_same_bead_project`, `project_create_from_bead_allows_new_project_after_terminal_attempt`, `project_create_from_bead_reports_orphaned_active_lineage_entry`, `project_create_from_bead_for_different_bead_preserves_run_start_active_bead_guard`, `retry_start_on_same_bead_rejects_other_project_while_attempt_is_active`, `record_task_run_start_rejects_active_same_bead_from_other_project`, and `record_task_run_start_still_rejects_other_active_bead`.\n- `nix develop -c cargo test --locked --features test-stub` passed on the full tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T17:59:25.593024735Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 13/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-13-09a0246a`\n- `fr-13-9153c4c6`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-13-aa34a9ab`\n\n## Final Accepted Amendments\n\n### `fr-13-09a0246a`\n\nfinding_summary: `find_existing_bead_project` treats any project whose id matches the default bead id and has `task_source: None` as a recoverable bead-backed project, so `milestone run` can adopt an unrelated manual project.\naffected_files: src/cli/project.rs:766-817, src/cli/milestone.rs:1146-1164, src/cli/milestone.rs:1183-1196\nremediation_hint: only recover a legacy no-`task_source` project when there is durable evidence that it really belongs to the bead (for example a matching lineage row or migrated linkage metadata); otherwise return `None` and let the controller create a fresh bead-backed project.\n\n### `fr-13-9153c4c6`\n\nfinding_summary: `active_same_bead_conflict_error` treats any linked project with `run.json` status `running` or `paused` as proof that the lineage row is still the live attempt, but it never verifies that the snapshot still points at the same `run_id` / attempt as `task-runs.ndjson`.\naffected_files: src/contexts/milestone_record/service.rs:2617-2730\nremediation_hint: compare the lineage row against `active_run` for running snapshots and `interrupted_run` for paused/failed snapshots; if the run identity or `started_at` disagrees, surface a repair-style inconsistency error instead of `DuplicateActiveBead`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

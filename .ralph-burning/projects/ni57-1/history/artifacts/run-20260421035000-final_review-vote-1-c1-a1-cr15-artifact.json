@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T20:14:06.189932358Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness gaps in milestone/task recovery. The current branch allows same-bead reuse decisions to rely on stale or incomplete state without enforcing the invariants that `run resume` and pending-lineage-reset self-healing actually require.\n\n## Votes\n\n- `fr-15-5b545bc2`: Accept\n  `reject_existing_same_bead_project_creation` and `find_existing_bead_project` treat `failed`/`paused` as resumable based only on `RunStatus`, but the actual resume path requires resumable run metadata. `RunSnapshot::validate_semantics` explicitly permits `failed` and `paused` snapshots with `active_run == None` and `interrupted_run == None`, while `resume_seed_active_run` / `interrupted_active_run` fail when no resumable cursor exists. That means the branch can block fresh task creation or auto-adopt a same-bead project that `run resume` cannot resume, which is a real correctness defect.\n- `fr-15-096bd767`: Accept\n  The create path now self-heals pending lineage resets by calling `load_snapshot_clearing_pending_lineage_reset` before duplicate/adoption checks, but `ensure_project_for_controller` still goes straight to `find_existing_bead_project`, which reads active task lineage and legacy lineage-backed same-bead matches without first clearing that reset. Because pending lineage reset is specifically the marker that those lineage rows are stale and must be truncated under lock, milestone execution can still adopt stale active lineage or legacy same-bead history that the create path would purge first. That asymmetry can resume outdated work against the wrong post-update milestone state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 15
+}

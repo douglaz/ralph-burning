@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-arbiter-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421035000-final_review-arbiter-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T09:05:22.623040157Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment because the duplicate-active-bead guard still has a real TOCTOU window: it performs an unlocked lineage read before any atomic reservation, and the later `br` claim path is not sufficient to serialize ownership since it does not enforce exclusive claiming and explicitly supports idempotent second status updates in the test matrix.\n\n## Rulings\n\n- `fr-5-b697d3ee`: Accept\n  `execute_create_from_bead` does the duplicate-active-bead check before any serialized reservation (`src/cli/project.rs:444-455`), and that check is only an unlocked read of `task-runs.ndjson` (`src/adapters/fs.rs:5089-5108`). The actual lineage mutation is serialized later under the task-run lock in `record_task_run_start` (`src/adapters/fs.rs:5132-5144`), so there is a real TOCTOU gap between validation and ownership. The deciding evidence against the rejection is that `claim_bead_in_br` is not a proven mutex: `update_bead_status` is just a thin `br update --status=in_progress` wrapper with no compare-and-set or owner check (`src/adapters/br_process.rs:1267-1295`, `src/adapters/br_process.rs:1380-1392`), and the project tests explicitly model both backends that tolerate an idempotent second `update --status=in_progress` and backends that reject it (`src/cli/project.rs:4391-4462`). That means the `br` claim cannot be relied on to make the earlier read safe. Another operator can start or create the same bead after the unlocked read and before this path has written any reservation, and this path can still create a second project; the later run-start guard only prevents a second active attempt, not duplicate project creation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T07:15:12.667250216Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 medium fix-now regressions in the duplicate-active-bead hardening: the create-time guard ignores pending lineage resets, and it still permits legacy runless orphan rows to slip through.\n\n## Amendments\n\n1. finding_summary: Create-time duplicate detection reads `task-runs.ndjson` even when the milestone snapshot still has `pending_lineage_reset`, so rematerialized plans can be blocked by stale same-bead lineage that `record_bead_start` would clear before any start.\naffected_files: [\"src/cli/project.rs\", \"src/contexts/milestone_record/service.rs\"]\nfile_refs: [\"src/cli/project.rs:351\", \"src/cli/project.rs:440\", \"src/cli/project.rs:583-593\", \"src/contexts/milestone_record/service.rs:411-431\", \"src/contexts/milestone_record/service.rs:2988-3000\"]\nremediation_hint: Before `reject_duplicate_active_bead_creation` trusts lineage, honor `pending_lineage_reset` the same way `record_bead_start` does, or skip the create-time scan until the reset has been cleared under the milestone write lock.\n   Rationale: This breaks the bead's stated goal of keeping create/start semantics aligned. After a plan rematerialization, `run start` will clear stale lineage first, but `project create-from-bead` can now reject the same bead based on obsolete rows from the old plan.\n2. finding_summary: Legacy active lineage rows without `run_id` are silently filtered out of `active_task_runs_for_bead`, which lets `project create-from-bead` create a second project even when the only existing row is an orphaned running entry.\naffected_files: [\"src/adapters/fs.rs\", \"src/cli/project.rs\", \"tests/cli.rs\"]\nfile_refs: [\"src/adapters/fs.rs:5089-5104\", \"src/adapters/fs.rs:5147-5154\", \"src/cli/project.rs:588-596\", \"tests/cli.rs:13549-13594\"]\nremediation_hint: Treat nonterminal runless rows as inconsistent active lineage for create-time validation and return the same repair-style error used for other orphaned states instead of dropping them from the scan.\n   Rationale: The new helper intentionally hides exactly the upgraded/orphaned state that this bead was supposed to surface. The added CLI test locks in that false-negative path by asserting that a missing `legacy-project` row with `outcome:\"running\"` should allow a new project.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

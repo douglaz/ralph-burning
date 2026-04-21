@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T19:09:10.614846161Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against `808707cede105036103429ccad825cf9faddd8f6`, read the changed implementation areas, ran `nix build`, and ran targeted `cargo test` filters under `nix develop`. I found 2 correctness gaps in same-bead duplicate/recovery handling.\n\n## Amendments\n\n1. finding_summary: `project create-from-bead` still ignores lineage-backed legacy same-bead projects that lack `task_source`, so an older failed or paused retry can bypass the duplicate check and mint a parallel project. `reject_existing_same_bead_project_creation` hard-codes `SameBeadProjectMatchMode::ExplicitTaskSourceOnly` at `src/cli/project.rs:623-636`, and `matching_bead_project_ids` immediately returns before consulting lineage evidence at `src/cli/project.rs:805-824`. That diverges from `find_existing_bead_project`, which does recover legacy default-named bead projects from `task-runs.ndjson` evidence at `src/cli/project.rs:927-934` and `src/cli/project.rs:3661-3684`. In practice, a legacy `task-ms-alpha-bead-2` project with `run.json` in `failed` state plus a matching historical lineage row will currently pass create-time validation and create a second project instead of steering the operator to resume the existing one.\n   Rationale: The bead explicitly aims to align create-time behavior with start/retry semantics. This path still allows duplicate same-bead projects in legacy workspaces that the branch otherwise knows how to recover, so the policy remains inconsistent and can recreate the ambiguous parallel-project state the bead is supposed to prevent.\n2. finding_summary: Milestone-controller recovery still fails closed when the open same-bead lineage points at a failed project snapshot. `active_same_bead_conflict_error` intentionally treats `RunStatus::Failed` as a resumable retry case at `src/contexts/milestone_record/service.rs:2834-2854`, but `find_existing_bead_project` converts that result into a hard `MilestoneOperationFailed` instead of returning the project id at `src/cli/project.rs:886-903`. That means `ensure_project_for_controller` cannot adopt the existing project at `src/cli/milestone.rs:1148-1159`, even though `load_run_action` would immediately map a failed snapshot to `Resume` at `src/cli/milestone.rs:1243-1252`. If controller state loses `active_task_id`, a normal failed-retry bead becomes unrecoverable until an operator intervenes.\n   Rationale: This breaks the branch's own retry policy for failed same-bead attempts: the service layer says 'resume the existing project', but the controller path cannot actually recover that project and therefore aborts milestone execution in a recoverable state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

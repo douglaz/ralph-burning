@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T13:33:27.156643546Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness bugs in same-bead project handling. The first misses a fail-closed case for a running project whose lineage row is missing, and the second shows that single-project lookup is no longer sufficient once multiple same-bead attempts can coexist.\n\n## Votes\n\n- `fr-9-71241a55`: Accept\n  `execute_create_from_bead` first consults active lineage via `reject_duplicate_active_bead_creation`, so an emptied `task-runs.ndjson` file produces no conflict. It then falls back to `reject_existing_same_bead_project_creation`, where `RunStatus::Running` currently shares the same fallthrough path as `Completed`. If the existing running project uses a different project id than the requested one, creation proceeds and mints a second same-bead project despite an already-running attempt. That is a real fail-open bug under plausible repair/corruption drift, and it is inconsistent with the surrounding repair-first handling for orphaned or unreadable lineage state. Treating `running` without matching active lineage as a repairable error and adding a regression test is technically sound.\n- `fr-9-aa574557`: Accept\n  `find_existing_bead_project` is selecting one project id, not reasoning over the full set of same-bead projects. Its preference for the default project id means a completed original attempt can mask a later `failed` or `not_started` retry, so `reject_existing_same_bead_project_creation` evaluates the wrong snapshot and may allow yet another project even though a resumable/non-started retry already exists. When there is no default project id, the helper instead throws a generic multiple-project error even if every matching attempt is terminal, which defeats the branch's intended post-terminal-create behavior. Because `milestone::ensure_project_for_controller` reuses the same helper, the bad selection also affects milestone adoption. This is a real state-selection defect, and the proposed fix direction—scan all matching projects and decide from the aggregate statuses, with regression coverage for mixed completed/retry and multi-terminal cases—is correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

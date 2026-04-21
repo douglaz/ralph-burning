@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260421035000-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-21T09:48:19.571010115Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining 9ni.5.7 create-time hardening gaps. `project create-from-bead` now acquires the milestone task-run lineage lock before duplicate-active-bead validation and holds it across the duplicate check and subsequent claim/create path, removing the same-bead TOCTOU window against `record_task_run_start`. The filesystem adapter now exposes a typed task-run mutation lock for that shared serialization path, and a deterministic concurrency regression proves `run start` blocks until the create-time guard releases the lock. The duplicate-active-bead check in `src/cli/project.rs` also now treats an active lineage row backed by a `not_started` project snapshot as repair-required inconsistent state, returning remediation guidance instead of a resumable duplicate error, with CLI coverage asserting the message names the stale project/run, avoids the invalid `run resume` hint, and prevents creating a shadow project.\n\n## Steps\n\n1. [Completed] Inspected the current duplicate-active-bead implementation in `src/cli/project.rs`, `src/adapters/fs.rs`, and the existing tests to verify the two pending gaps: create-time serialization against task-run mutation and the incorrect `RunStatus::NotStarted` operator guidance.\n2. [Completed] Implemented the create-time serialization fix by adding a reusable task-run mutation lock in `src/adapters/fs.rs` and acquiring it in `execute_create_from_bead` before duplicate validation so the read/check and downstream claim/create flow stay aligned with the task-run mutation path.\n3. [Completed] Adjusted `reject_duplicate_active_bead_creation` so active lineage pointing at a `not_started` project snapshot is surfaced as repairable/orphaned lineage inconsistency rather than `DuplicateActiveBead`, removing the broken `run resume` guidance for that state.\n4. [Completed] Added deterministic regressions for the lock serialization behavior and the `not_started` active-lineage repair path, then ran the required verification gates on the final tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub task_runs_lock_serializes_create_guard_with_run_start` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_reports_not_started_run_snapshot_as_repairable_lineage` passed.\n- `nix develop -c cargo fmt --check` exited successfully.\n- `nix develop -c cargo clippy --locked -- -D warnings` exited successfully.\n- `nix develop -c cargo test --locked --features test-stub` passed on the full tree.\n- `nix build` passed on the final tree.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

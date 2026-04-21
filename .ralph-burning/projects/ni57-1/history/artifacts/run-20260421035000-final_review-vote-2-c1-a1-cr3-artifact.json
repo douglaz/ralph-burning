@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T07:18:29.310193536Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nAccepted fr-3-ec83a39d because the create-time duplicate scan reads task-runs.ndjson without honoring pending_lineage_reset, so stale lineage can falsely block a valid rematerialized-plan create that record_bead_start would have cleared under the write lock. Rejected fr-3-68bffc2a because filtering runless entries is a deliberate, documented design that mirrors record_task_run_start's fail_legacy_runless_entries auto-repair semantics; the amendment would directly regress the existing active_task_runs_for_bead_ignores_legacy_runless_entries test and the corresponding CLI test without a concrete safety gain that the start-time repair doesn't already provide.\n\n## Votes\n\n- `fr-3-ec83a39d`: Accept\n  Real correctness bug. record_bead_start (service.rs:2988-2990) explicitly calls clear_pending_lineage_reset_locked under the milestone write lock before reading lineage, which wipes task-runs.ndjson via clear_task_run_lineage. reject_duplicate_active_bead_creation (project.rs:588-593) skips that step and reads task-runs.ndjson directly through active_task_runs_for_bead, so a rematerialized plan with pending_lineage_reset set can be rejected on stale same-bead lineage that is guaranteed to be cleared before any actual start would ever observe it. That makes create-from-bead's duplicate gate inconsistent with the start-time contract and is a genuine defect independent of scope.\n- `fr-3-68bffc2a`: Reject\n  The run_id.is_some() filter in active_task_runs_for_bead (fs.rs:5101-5104) is explicitly documented as mirroring record_task_run_start's legacy repair semantics: fail_legacy_runless_entries (fs.rs:4643-4661) will always auto-fail these rows as 'superseded: run_id is now required' before any new start, so they cannot actually reach a running state. Treating them as hard repair errors at create time would diverge from the write path (which auto-heals them silently) and would directly invert the just-added test active_task_runs_for_bead_ignores_legacy_runless_entries (fs.rs:6087) and project_create_from_bead_allows_creation_with_legacy_runless_active_lineage (tests/cli.rs:13549). No concrete safety issue is demonstrated that the start-time auto-repair does not already cover, and the orphaned-project case is still caught by the existing ProjectNotFound branch for rows that do carry run_id.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}

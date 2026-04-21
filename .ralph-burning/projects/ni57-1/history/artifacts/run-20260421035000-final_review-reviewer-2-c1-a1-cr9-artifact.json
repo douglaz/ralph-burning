@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T13:30:37.762891556Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the full branch delta vs origin/master from the fork point. The implementation fulfills the 9ni.5.7 policy: (1) `execute_create_from_bead` now acquires the task-runs lock and runs `reject_duplicate_active_bead_creation` + `reject_existing_same_bead_project_creation` before any br claim, producing targeted `DuplicateActiveBead` / `DuplicateBeadProject` errors or actionable repair hints for orphaned projects, missing/corrupt run.json, legacy runless entries, and ambiguous multi-active lineage. (2) `record_task_run_start` rejects cross-project active conflicts on the PRE-repair view (before `fail_legacy_runless_entries` overwrites legacy running rows), so corrupted lineage surfaces useful remediation instead of being silently rewritten; the different-bead guard is still exercised and preserved. (3) A new `active_task_runs_for_bead` read-only port method + `active_same_bead_conflict_error` helper deduplicate error construction between create-time and run-start paths. (4) `load_snapshot_clearing_pending_lineage_reset` applies any pending lineage reset under the milestone write lock before the create-time duplicate checks run, so operators don't get a false-positive duplicate on stale lineage. Lock ordering is sound (milestone-write-lock → task-runs-lock in the reset helper; task-runs-lock-only during the rest of the create flow, with no re-acquisition of the milestone lock) so there is no deadlock cycle with `record_bead_start`. Tests in tests/cli.rs and the fs.rs/service.rs unit modules cover: reject-duplicate-active, allow-after-terminal, orphaned project, missing/corrupt run.json, not-started behind active lineage, legacy runless, different-bead-active passthrough, cross-project retry rejection, and the task-runs-lock serialization of create vs run start. `nix build` passes. No real bugs, safety gaps, or correctness regressions found that warrant a fix-now amendment.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 9
+}

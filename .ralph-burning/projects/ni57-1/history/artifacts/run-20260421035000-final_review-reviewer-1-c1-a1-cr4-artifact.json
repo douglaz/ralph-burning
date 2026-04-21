@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T08:03:26.417059051Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against 808707cede105036103429ccad825cf9faddd8f6, read the changed source/test paths, and spot-checked the new create-from-bead coverage under `nix develop`. The main same-bead/orphan checks look consistent with the prompt, but there is one medium correctness gap: legacy runless active lineage is still silently ignored at create time.\n\n## Amendments\n\n1. finding_summary: `project create-from-bead` still permits a parallel project when the only existing active lineage row is a legacy `run_id: null` attempt. The new read-only helper explicitly drops every non-terminal row without a run ID (`src/adapters/fs.rs:5089-5104`), `execute_create_from_bead` relies on that helper for its duplicate guard (`src/cli/project.rs:587-597`), and the integration test now locks that behavior in as success (`tests/cli.rs:13549-13594`). In an upgraded workspace with one of these legacy active rows, create-time validation will silently ignore the existing same-bead attempt, mint a second project, and leave the ambiguity to be \"repaired\" only later on a start-time write. That misses the bead's stated goal of surfacing or blocking inconsistent active lineage at create time instead of allowing another task to be created.\nremediation_hint: Treat non-terminal runless rows as an inconsistent/orphaned active lineage that blocks creation with a repair hint, or run the same legacy-row repair before duplicate detection so create-time behavior matches start-time behavior.\n   Rationale: This only affects legacy/corrupt lineage states, but those are exactly the states the new hardening is supposed to make explicit. As shipped, operators can still double-claim a bead during project creation in those workspaces.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T10:59:05.386855556Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed bead 9ni.5.7 (harden create-from-bead against duplicate active-bead task creation) against fork point 808707cede105036103429ccad825cf9faddd8f6. Implementation meets acceptance criteria: (a) `execute_create_from_bead` now acquires the task_runs advisory lock and calls `reject_duplicate_active_bead_creation` before the project_exists check, correctly surfacing `DuplicateActiveBead` for Running/Paused lineage rows, `RunStartFailed` with run-resume guidance for Failed rows, and actionable repair errors for orphan/corrupt/missing-project/not-started situations; (b) `record_task_run_start` was refactored to dispatch cross-project conflicts through the same `active_same_bead_conflict_error` helper, unifying create-path and start-path error wording while preserving same-project retry semantics via the project_id match fall-through; (c) the pending_lineage_reset flow is honored via `load_snapshot_clearing_pending_lineage_reset` so a truncated lineage file cannot resurrect stale guards; (d) lock ordering between task_runs_lock, milestone_write_lock, and controller_lock was verified deadlock-free (create_project_from_bead_context does not re-enter the task_runs lock); (e) flock serialization between concurrent create and start attempts is covered by the new `task_runs_lock_serializes_create_guard_with_run_start` adapter test, which confirms same-process FDs contend correctly on Linux; (f) nine new CLI tests plus adapter/service unit tests cover the Running, terminal, legacy runless, pending-reset, orphaned-lineage, missing/corrupt/not-started snapshot, and different-bead branches. No correctness, safety, or robustness regressions identified. Minor observations (fixed wording of `DuplicateActiveBead` across create vs. start paths; no CLI-level test specifically for the Failed→resume-guidance branch) are cosmetic/coverage polish, below the fix-now bar and not worth a new bead.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 7
+}

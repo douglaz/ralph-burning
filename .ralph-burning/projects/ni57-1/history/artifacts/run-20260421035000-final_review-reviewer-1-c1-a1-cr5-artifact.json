@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T08:52:29.215898635Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `808707cede105036103429ccad825cf9faddd8f6`, read the changed implementation paths end-to-end, and `nix build` completed successfully. I found two fix-now correctness gaps: the create-time duplicate check is still racy under concurrent operators, and one inconsistent-state branch misclassifies broken lineage as a resumable duplicate task.\n\n## Amendments\n\n1. ## Finding Summary\n`project create-from-bead` still has a TOCTOU race around the new duplicate-active-bead guard. `execute_create_from_bead` performs the duplicate scan before `claim_bead_in_br` (`src/cli/project.rs:444-455`, `src/cli/project.rs:592-597`), and the helper it calls is only an unlocked read of `task-runs.ndjson` (`src/adapters/fs.rs:5095-5108`, `src/adapters/fs.rs:4325-4359`). Another operator can start or create the same bead after this read and before the claim/project side effects land, so the branch can still mint a second project for an already-active bead.\n\n## Affected Files\n- `src/cli/project.rs`\n- `src/adapters/fs.rs`\n\n## Remediation Hint\nSerialize create-time validation with the lineage mutation path, or write a provisional same-bead reservation under the task-run lock before releasing control back to the async claim/create flow, so the duplicate check and subsequent side effects are atomic.\n   Rationale: The new guard closes the single-process happy path, but it does not actually enforce the invariant under concurrent operator activity, which is the main failure mode for duplicate active-bead claims.\n2. ## Finding Summary\nThe new `reject_duplicate_active_bead_creation` branch treats `RunStatus::NotStarted` as a normal `DuplicateActiveBead` conflict (`src/cli/project.rs:654-664`). That state is already inconsistent if `task-runs.ndjson` contains an active row, so it should be surfaced as orphaned/corrupt lineage with a repair hint instead. Right now the emitted message sends the operator to `ralph-burning run resume`, but `run resume` explicitly rejects `not_started` projects (`src/cli/run.rs:3820-3824`). In the exact repair case this bead is supposed to handle, the CLI points users at a command that cannot work.\n\n## Affected Files\n- `src/cli/project.rs`\n- `src/cli/run.rs`\n\n## Remediation Hint\nHandle `RunStatus::NotStarted` like the other broken-lineage cases: return a repair-oriented error that names the stale lineage row and tells the operator to repair `milestones/<id>/task-runs.ndjson` or restore the project snapshot, instead of emitting `DuplicateActiveBead`.\n   Rationale: This violates the orphaned-lineage acceptance criteria and gives operators a remediation path that is guaranteed to fail.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

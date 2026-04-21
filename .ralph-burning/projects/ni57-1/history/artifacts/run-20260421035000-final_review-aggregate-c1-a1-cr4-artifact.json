@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T08:05:37.956476163Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-8003804f`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-8003804f`\n\nfinding_summary: `project create-from-bead` still permits a parallel project when the only existing active lineage row is a legacy `run_id: null` attempt. The new read-only helper explicitly drops every non-terminal row without a run ID (`src/adapters/fs.rs:5089-5104`), `execute_create_from_bead` relies on that helper for its duplicate guard (`src/cli/project.rs:587-597`), and the integration test now locks that behavior in as success (`tests/cli.rs:13549-13594`). In an upgraded workspace with one of these legacy active rows, create-time validation will silently ignore the existing same-bead attempt, mint a second project, and leave the ambiguity to be \"repaired\" only later on a start-time write. That misses the bead's stated goal of surfacing or blocking inconsistent active lineage at create time instead of allowing another task to be created.\nremediation_hint: Treat non-terminal runless rows as an inconsistent/orphaned active lineage that blocks creation with a repair hint, or run the same legacy-row repair before duplicate detection so create-time behavior matches start-time behavior.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

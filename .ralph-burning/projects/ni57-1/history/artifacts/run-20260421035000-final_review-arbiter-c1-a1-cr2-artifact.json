@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-arbiter-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421035000-final_review-arbiter-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T06:24:26.072890654Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept the amendment. The decisive evidence is the real semantic mismatch between the read-only active-lineage path and the authoritative start path: legacy runless active rows are repaired in `record_task_run_start` but not in `active_task_runs_for_bead`, which can yield false duplicate-active blocking until another command repairs the lineage. The amendment does overstate one consequence because `ProjectNotFound` is already rewritten, but the underlying defect and fix direction are sound.\n\n## Rulings\n\n- `fr-2-6789ab0c`: Accept\n  `FsTaskRunLineageStore::active_task_runs_for_bead` reads and collapses lineage entries directly, but never calls `fail_legacy_runless_entries`; `record_task_run_start` does call that repair pass before computing `running_attempts_for_bead` and persists the repaired rows. That mismatch is real. On a legacy non-terminal row with `run_id: None`, `reject_duplicate_active_bead_creation` can therefore treat the row as active and hit the `DuplicateActiveBead` branch, where `existing_run_id` is synthesized from `started_at` when `run_id` is missing. A later `run start` would first fail that legacy row and stop it from blocking future task creation, so the amendment's core 'retry-dependent' behavior is credible. One clause is overstated: raw `AppError::ProjectNotFound` from `FsProjectStore::read_project_record` does not propagate here, because `reject_duplicate_active_bead_creation` rewrites that case into `RunStartFailed`; raw `CorruptRecord` can still fall through. That wording issue is not enough to outweigh the substantive repair-semantics bug, so the amendment should be accepted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

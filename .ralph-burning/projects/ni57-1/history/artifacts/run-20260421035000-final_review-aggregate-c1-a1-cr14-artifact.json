@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr14-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T19:12:27.038692041Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 14/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-14-5b3661e5`\n- `fr-14-2563e079`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-14-5b3661e5`\n\nfinding_summary: `project create-from-bead` still ignores lineage-backed legacy same-bead projects that lack `task_source`, so an older failed or paused retry can bypass the duplicate check and mint a parallel project. `reject_existing_same_bead_project_creation` hard-codes `SameBeadProjectMatchMode::ExplicitTaskSourceOnly` at `src/cli/project.rs:623-636`, and `matching_bead_project_ids` immediately returns before consulting lineage evidence at `src/cli/project.rs:805-824`. That diverges from `find_existing_bead_project`, which does recover legacy default-named bead projects from `task-runs.ndjson` evidence at `src/cli/project.rs:927-934` and `src/cli/project.rs:3661-3684`. In practice, a legacy `task-ms-alpha-bead-2` project with `run.json` in `failed` state plus a matching historical lineage row will currently pass create-time validation and create a second project instead of steering the operator to resume the existing one.\n\n### `fr-14-2563e079`\n\nfinding_summary: Milestone-controller recovery still fails closed when the open same-bead lineage points at a failed project snapshot. `active_same_bead_conflict_error` intentionally treats `RunStatus::Failed` as a resumable retry case at `src/contexts/milestone_record/service.rs:2834-2854`, but `find_existing_bead_project` converts that result into a hard `MilestoneOperationFailed` instead of returning the project id at `src/cli/project.rs:886-903`. That means `ensure_project_for_controller` cannot adopt the existing project at `src/cli/milestone.rs:1148-1159`, even though `load_run_action` would immediately map a failed snapshot to `Resume` at `src/cli/milestone.rs:1243-1252`. If controller state loses `active_task_id`, a normal failed-retry bead becomes unrecoverable until an operator intervenes.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 14
+}

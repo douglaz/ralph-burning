@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421035000-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260421035000-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T10:05:08.729901907Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 6/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-6-156e6630`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-156e6630`\n\nfinding_summary: The new orphaned/inconsistent same-bead lineage handling only runs during `project create-from-bead`; `run start` still short-circuits to `DuplicateActiveBead` as soon as it sees another project's non-terminal row, without checking whether that referenced project/run state is missing or corrupt. In `record_bead_start` the run-start path goes straight into `record_task_run_start` (`src/contexts/milestone_record/service.rs:3033-3041`), and `record_task_run_start` now returns `DuplicateActiveBead` immediately for a different project on the same bead (`src/adapters/fs.rs:5190-5195`). The new repair/remediation logic lives only in `reject_duplicate_active_bead_creation` (`src/cli/project.rs:589-709`). As a result, a stale lineage row pointing at a deleted or unreadable project still blocks `run start`/`run resume` with a misleading \"resume that project\" error instead of the required remediation hint, so create/start semantics are still not aligned.\nremediation_hint: Move the project/run-snapshot validation behind active same-bead conflicts into a shared helper and use it from both create-time duplicate checks and the run-start lineage path before emitting `DuplicateActiveBead`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

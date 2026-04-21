@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-arbiter-c1-a1-cr13-artifact",
+  "payload_id": "run-20260421035000-final_review-arbiter-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T17:59:25.553776761Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The code and tests show that all-completed same-bead history is intentionally recovered by adopting a deterministic completed project and running `SyncMilestone` to reconcile stale controller state; changing that branch to return `None` would break duplicate-conflict recovery when the default completed project already exists.\n\n## Rulings\n\n- `fr-13-aa34a9ab`: Reject\n  The cited behavior is real, but the defect claim does not hold. `find_existing_bead_project` intentionally returns a completed candidate when every same-bead match is completed (`src/cli/project.rs:923-930`), `ensure_project_for_controller` adopts it (`src/cli/milestone.rs:1146-1157`), and `load_run_action` maps that state to `SyncMilestone` (`src/cli/milestone.rs:1218-1226`). That sync path is not suppressing work arbitrarily: it reconciles the bead outcome back into milestone state and advances the controller to `Selecting` or `Completed` (`src/cli/run.rs:947-965`, `1500-1542`). The implementation is also covered by explicit tests for deterministic completed-project recovery (`src/cli/project.rs:3569-3595`) and controller recovery from all-completed same-bead history (`src/cli/milestone.rs:3020-3088`). The tipping evidence against the amendment is the proposed `return None` remediation: `ensure_project_for_controller` would fall through to `execute_create_from_bead`, which still uses the default bead project id; completed same-bead history is allowed by `reject_existing_same_bead_project_creation` (`src/cli/project.rs:623-645`), but the existing default-id project then triggers `DuplicateProject` (`src/cli/project.rs:435-456`). Recovery from that duplicate depends on `find_existing_bead_project` returning `Some` (`src/cli/milestone.rs:1175-1205`), so changing the all-completed branch to `None` would convert the common stale-controller case into `controller could not recover the existing project for bead ...`. This is a deliberate recovery strategy, not a correctness regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

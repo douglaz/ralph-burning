@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-2-c1-a1-cr16-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-2-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T21:31:18.184859638Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed amendment fr-16-38bedf35, which proposes cross-validating lineage with run.json state before allowing same-bead creation/adoption. Traced the code paths at src/cli/project.rs:648-665, 861-890, 960-986, and the active-lineage check at reject_duplicate_active_bead_creation. Voted reject because the amendment's scenario is hypothetical drift without an identified bug path, conflates lineage TaskRunOutcome (which has no Paused variant) with RunStatus, and goes beyond the bead's explicit acceptance criteria.\n\n## Votes\n\n- `fr-16-38bedf35`: Reject\n  The amendment targets a hypothetical drift state (lineage latest `Failed` but run.json drifted to `Completed`) without identifying any code path that produces it. The primary double-claim risk is already closed by reject_duplicate_active_bead_creation and the active-lineage check in find_existing_bead_project (src/cli/project.rs:905-957), which authoritatively use the lineage for non-terminal states. Once the lineage's latest attempt is terminal (Succeeded/Failed/Skipped — TaskRunOutcome has no `Paused` variant, so part of the amendment's scenario isn't even representable), the bead's explicit acceptance criteria say creation SHOULD be allowed: \"If the same bead has no active task run (all attempts terminal or no prior attempts): allow creation.\" The amendment's cross-check would flip that policy. More importantly, if run.json ever drifts from lineage, the correct fix is at the write path that lets them diverge, not a defensive reader that papers over drift and introduces new false-positive repair prompts. The existing code already handles the asymmetric drift case that IS observable (lineage terminal, run.json Running — line 713-718 surfaces a repair error), so the primary inconsistency mode is covered. The remaining \"both terminal but disagreeing\" case has no evidence of occurring and would be better addressed by auditing write paths than by adding cross-validation at every read site.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 16
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T17:53:16.740542805Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real state-recovery defects. The current code over-trusts weak or stale linkage signals when recovering bead-backed projects and active attempts, which can adopt the wrong project, suppress creation of a new attempt after only terminal history remains, or report a duplicate-active conflict for the wrong run attempt.\n\n## Votes\n\n- `fr-13-09a0246a`: Accept\n  `find_existing_bead_project` falls back to any default-named project whose `task_source` is `None`, but project-id equality alone is not durable evidence that the project belongs to the bead. Because manual projects can exist in the same namespace, `milestone run` can incorrectly claim and operate on an unrelated project. Recovery should require authoritative linkage such as lineage or migrated metadata, otherwise it should return `None` and create a fresh bead-backed project.\n- `fr-13-aa34a9ab`: Accept\n  When all same-bead projects are terminal, there is no active or resumable project to recover. Returning a completed project makes `milestone run` take the `SyncMilestone` path instead of creating a new task, which is inconsistent with the create-time policy that completed same-bead history does not block new work. This can strand a bead behind historical completed projects, especially when the default project id collides with an old completed task.\n- `fr-13-9153c4c6`: Accept\n  `active_same_bead_conflict_error` treats snapshot status alone as proof that the lineage row still describes the live attempt, but it never checks that the snapshot's `active_run` or `interrupted_run` actually matches the lineage row's `run_id` and `started_at`. A stale lineage row can therefore trigger `DuplicateActiveBead` or resume guidance for the wrong attempt, masking corruption instead of surfacing it for repair. The conflict path should verify attempt identity and fail closed on mismatches.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}
