@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T19:11:57.848815300Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real same-bead resolution defects. One leaves `project create-from-bead` inconsistent with the existing recovery logic for legacy default-named bead projects, and the other leaves milestone-controller recovery unable to reattach to a valid failed retry even though the downstream run path already knows how to resume it.\n\n## Votes\n\n- `fr-14-5b3661e5`: Accept\n  `reject_existing_same_bead_project_creation` uses `SameBeadProjectMatchMode::ExplicitTaskSourceOnly`, so once `matching_bead_project_ids` finds no explicit `task_source` matches it returns before checking lineage-backed legacy default-id evidence. That means a legacy default bead project like `task-ms-alpha-bead-2` with a failed or paused snapshot is invisible to create-time duplicate detection, even though `find_existing_bead_project` will later recognize the same project via `IncludeLegacyDefaultIdFallback`. Because the active-lineage precheck only guards currently active rows, this mismatch can permit a second same-bead project to be created and split recovery state across parallel projects.\n- `fr-14-2563e079`: Accept\n  `active_same_bead_conflict_error` already distinguishes the validated `RunStatus::Failed` case from repair-required drift and emits resume guidance only after the failed snapshot's interrupted-run metadata matches the lineage row. `find_existing_bead_project` then throws that information away by converting the `RunStartFailed` result into `MilestoneOperationFailed`, so `ensure_project_for_controller` cannot adopt the existing project when `active_task_id` is missing. That is inconsistent with `load_run_action`, which would immediately choose `Resume` for the same failed snapshot once a project id is available, so the current behavior unnecessarily strands a recoverable failed retry behind manual intervention.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}
