@@ -2,37 +2,63 @@
   "active_run": {
     "run_id": "run-20260421005325",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-21T00:53:25.631380107Z",
     "prompt_hash_at_cycle_start": "13aa85b13ab40a2b882f1c1b954ee3f6ff661f1e614306130a1d30f4d30a0a3f",
     "prompt_hash_at_stage_start": "13aa85b13ab40a2b882f1c1b954ee3f6ff661f1e614306130a1d30f4d30a0a3f",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-2f9251ef",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "finding_summary: [docs/templates.md:60-62] now says `final_review_arbiter` receives the same merged amendment list that `final_review_voter` sees, but the runtime contract built in [src/contexts/workflow_composition/final_review.rs:2075-2117] passes only `disputed_amendments` plus `reviewer_votes` to the arbiter template.\naffected_files: docs/templates.md, src/contexts/workflow_composition/final_review.rs\nremediation_hint: Update the template docs to say the arbiter receives only disputed amendments plus `reviewer_votes`, not the full merged amendment list.",
+        "created_at": "2026-04-21T02:37:24.903063250Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "df55bc7ff54841710b6d85bb103f609727110d49bda1a1e5c5911a04bd4e95c7"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
-    "stage_id": "plan_and_implement",
-    "resolved_at": "2026-04-21T00:53:25.732494178Z",
-    "primary_target": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-21T02:28:26.468439513Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-7-max"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
       "backend_family": "codex",
-      "model_id": "gpt-5.4-high"
+      "model_id": "gpt-5.4-xhigh"
     }
   }
 }

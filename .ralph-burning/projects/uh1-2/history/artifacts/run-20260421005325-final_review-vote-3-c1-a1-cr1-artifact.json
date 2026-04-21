@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421005325-final_review-vote-3-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421005325-final_review-vote-3-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T02:36:48.974600244Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed the amendment: it accurately identifies a documentation/runtime contract mismatch and proposes a docs-only correction, which is a real correctness/maintainability issue with no observed downside.\n\n## Votes\n\n- `fr-1-2f9251ef`: Accept\n  The template documentation claims the arbiter receives the same merged amendment list as the voter, but implementation passes only `disputed_amendments` plus `reviewer_votes`; updating docs to match runtime prevents operator confusion and keeps contracts accurate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}
