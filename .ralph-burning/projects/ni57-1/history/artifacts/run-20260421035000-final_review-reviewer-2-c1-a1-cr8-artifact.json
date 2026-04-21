@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T12:15:35.145919308Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the full branch delta (src/cli/project.rs, src/adapters/fs.rs, src/contexts/milestone_record/service.rs, src/shared/error.rs, tests/cli.rs) against bead 9ni.5.7's acceptance criteria. The implementation correctly adds a create-time duplicate-active-bead guard via a new `acquire_task_runs_lock`-scoped critical section that (1) reads active lineage through `active_task_runs_for_bead`, (2) routes the single-entry case into `active_same_bead_conflict_error` which discriminates Running/Paused (DuplicateActiveBead), Failed (run-resume guidance), NotStarted/Completed/missing project/corrupt run snapshot (active-lineage repair hint), and legacy runless entries, and (3) falls back to `reject_existing_same_bead_project_creation` for NotStarted bead-backed projects with no lineage row. `load_snapshot_clearing_pending_lineage_reset` serializes lineage-reset resolution under the milestone write lock before the duplicate check so a pending reset cannot leak a stale active entry into the guard. The updated `record_task_run_start` now rejects cross-project same-bead retries with the shared `active_same_bead_conflict_error` (replacing the previous silent-supersede path) and preserves the different-bead active guard and same-project/same-run retry/reopen semantics. New error variants `DuplicateActiveBead`/`DuplicateBeadProject` carry actionable project/run identifiers. Tests cover the deterministic fixtures required by the spec: same-bead running rejection, terminal-then-new-project allowed, legacy runless rejection, pending-lineage-reset clearing, orphan/missing run/corrupt run/not-started run error paths, same-id reuse guidance, different-bead preservation of the run-start guard, and the create-guard/run-start lock serialization test. `cargo check`, `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, the full `cargo test --locked --features test-stub --lib` (1163 passed), and `cargo test --locked --features test-stub --test cli` (355 passed) all succeed. No correctness, safety, or significant maintainability concerns identified within scope; orchestration state under `.ralph-burning/` was excluded per the prompt.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 8
+}

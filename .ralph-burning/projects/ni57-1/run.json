@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260421035000",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 8
+      "completion_round": 9
     },
     "started_at": "2026-04-21T03:50:00.987751574Z",
     "prompt_hash_at_cycle_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "prompt_hash_at_stage_start": "2b9c691062f5050547be3a7c7f51feb88d471af600cbee383c4ec5f30bd8bb69",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 7
+    "final_review_restart_count": 8
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 8,
+  "completion_rounds": 9,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-8-4e2a53b1",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "`src/cli/project.rs:634-663` only special-cases `RunStatus::NotStarted` when an existing project already owns the same bead. If the prior bead-backed project is in `failed`, `reject_existing_same_bead_project_creation()` returns `Ok(())`, so `execute_create_from_bead()` falls through to `claim_bead_in_br` instead of forcing the operator back to `ralph-burning project select <id>` + `ralph-burning run resume`. That violates the bead's retry policy for failed/stopped attempts and can still yield a parallel task or an unrelated BR-claim failure. Failed same-bead projects need the same targeted create-time rejection/resume guidance as the active-lineage helper.",
+        "created_at": "2026-04-21T12:20:17.148991191Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "cd8a2eea6c7fff93e8d733ab23c6c4c45e4cd576eab89f8ee5482d1a65d384b7"
+      },
+      {
+        "amendment_id": "fr-8-9633ac2d",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "`src/cli/project.rs:444-446` relies on the new task-runs lock to make duplicate-bead validation atomic, but `src/contexts/milestone_record/service.rs:413-425` and `3140-3147` still clear `task-runs.ndjson` directly during pending-lineage-reset handling without taking that same lock. That path is reachable from `record_bead_start()` at `src/contexts/milestone_record/service.rs:3172-3175`, so a concurrent lineage-resetting operation can rewrite the file while `create-from-bead` believes it has exclusive access. The new lock therefore does not actually close the TOCTOU window it was added for; lineage reset needs to go through the lineage store or acquire the task-runs lock before truncating the file.",
+        "created_at": "2026-04-21T12:20:17.148996211Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "3c50495c396e3f8fe8171fd90773a125e331354709e0841753656c4eca86ca06"
+      }
+    ],
     "processed_count": 10
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 9 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-21T10:48:35.086961869Z",
+    "resolved_at": "2026-04-21T12:02:15.387037603Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421035000-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T12:19:51.135455290Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness issues: one leaves failed same-bead retries inconsistent with the single-project invariant, and the other leaves a real concurrency hole because pending-lineage reset bypasses the task-runs lock.\n\n## Votes\n\n- `fr-8-4e2a53b1`: Accept\n  `reject_existing_same_bead_project_creation()` only rejects `RunStatus::NotStarted` and exact project-id collisions. If an older bead-backed project for the same bead is `failed` and used a different project id, create falls through even though `create_project_from_bead_context()` will create another bead-linked `task_source`, and later `find_existing_bead_project()` treats multiple projects for the same bead as an error. The active-lineage path already gives explicit `project select` plus `run resume` guidance for failed attempts, so the create-time helper is missing a necessary guard.\n- `fr-8-9633ac2d`: Accept\n  The create path now relies on `acquire_task_runs_lock()` to keep duplicate-bead validation atomic, but `clear_pending_lineage_reset_locked()` still truncates `task-runs.ndjson` directly through `clear_task_run_lineage()` while holding only the milestone write lock. `record_bead_start()` reaches that reset step before it tries to take the task-runs lock, so a concurrent lineage reset can rewrite the file during `create-from-bead`'s supposedly exclusive validation window. The TOCTOU bug therefore remains until the reset path also uses the task-runs lock or routes the truncation through the lineage store.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

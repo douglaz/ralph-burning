@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421035000-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T12:10:20.877804424Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch state against `808707cede105036103429ccad825cf9faddd8f6` and found 2 fix-now issues: failed same-bead retries still bypass the new create-time policy, and pending-lineage-reset still mutates task-run lineage outside the new lock.\n\n## Amendments\n\n1. `src/cli/project.rs:634-663` only special-cases `RunStatus::NotStarted` when an existing project already owns the same bead. If the prior bead-backed project is in `failed`, `reject_existing_same_bead_project_creation()` returns `Ok(())`, so `execute_create_from_bead()` falls through to `claim_bead_in_br` instead of forcing the operator back to `ralph-burning project select <id>` + `ralph-burning run resume`. That violates the bead's retry policy for failed/stopped attempts and can still yield a parallel task or an unrelated BR-claim failure. Failed same-bead projects need the same targeted create-time rejection/resume guidance as the active-lineage helper.\n   Rationale: The prompt explicitly requires failed or stopped attempts to reuse the existing project via resume rather than allowing a fresh create path.\n2. `src/cli/project.rs:444-446` relies on the new task-runs lock to make duplicate-bead validation atomic, but `src/contexts/milestone_record/service.rs:413-425` and `3140-3147` still clear `task-runs.ndjson` directly during pending-lineage-reset handling without taking that same lock. That path is reachable from `record_bead_start()` at `src/contexts/milestone_record/service.rs:3172-3175`, so a concurrent lineage-resetting operation can rewrite the file while `create-from-bead` believes it has exclusive access. The new lock therefore does not actually close the TOCTOU window it was added for; lineage reset needs to go through the lineage store or acquire the task-runs lock before truncating the file.\n   Rationale: This is a real concurrency hole in the new hardening path: one writer honors the task-runs lock while another still mutates the same file outside it.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}
