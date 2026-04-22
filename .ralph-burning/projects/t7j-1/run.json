@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-1cce7e4f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The branch never implements Part B of the bead: `result` is still tracked in `HEAD`, so `git ls-files -i -c --exclude-standard` still reports it and future checkpoint branches will continue to carry an unrelated `result` diff until the symlink is actually untracked.\nseverity: high\naffected_files:\n- result:1\nremediation_hint: Run `git rm --cached -- result` on this branch and commit that deletion without deleting the working-tree symlink.",
-        "created_at": "2026-04-21T23:37:56.763418354Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "0817de16387e015af8e4ce0a24c90b25f5d3c6595a163cd250bffc137a8eb644"
-      },
-      {
-        "amendment_id": "fr-1-116d0ab2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Part B of the bead (untracking `result`) was not performed. `result` is still present in the git index on this branch (`git ls-files result` returns it; `git ls-files -i -c --exclude-standard` on HEAD lists `result`). The only commit on the branch (7518cc15) actually updates the `result` symlink target rather than removing it from the index.\n\nThe bead explicitly states: \"This has two parts. Both must land in this PR.\" It also lists as acceptance criteria:\n- `result` is no longer tracked on `master` (post-merge).\n- `git ls-files -i -c --exclude-standard` on a fresh clone of master prints nothing.\n\nNeither is currently met. Additionally, shipping Part A without Part B has a concrete downstream effect: the next post-merge ralph-burning checkpoint whose parent still tracks `result` will produce a tree that omits `result`, so the checkpoint commit diff shows `result` as a spurious **deletion** rather than the old symlink-target update — the review noise is reshaped rather than eliminated.\n\nRemediation (as specified by the bead): run `git rm --cached -- result` from the repo root and commit the removal on this branch. Do not delete the physical symlink. No other files need untracking — `git ls-files -i -c --exclude-standard` currently returns only `result`.\n\nAffected files: `result` (index entry), repo root.",
-        "created_at": "2026-04-21T23:37:56.763444974Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "bf7371c221c70cc0202a4e154a705c0db546280dafb90dba864568ef18210b8d"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 2
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-21T23:30:07.286306037Z",
