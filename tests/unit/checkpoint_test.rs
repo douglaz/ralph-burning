@@ -463,6 +463,56 @@ fn worktree_adapter_omits_assume_unchanged_paths_from_checkpoint_commits() {
     assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "assume.txt");
 }
 
+#[cfg(unix)]
+#[test]
+fn worktree_adapter_omits_assume_unchanged_paths_with_tabs_from_checkpoint_commits() {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+    let assume_path = Path::new("tab\tfile.txt");
+
+    fs::write(tmp.path().join(assume_path), "tracked content\n").expect("write assume path");
+    run_git(
+        tmp.path(),
+        &["add", assume_path.to_str().expect("utf-8 tab path")],
+    );
+    run_git(
+        tmp.path(),
+        &["commit", "-m", "track assume-unchanged tab file"],
+    );
+
+    run_git(
+        tmp.path(),
+        &[
+            "update-index",
+            "--assume-unchanged",
+            assume_path.to_str().expect("utf-8 tab path"),
+        ],
+    );
+    fs::write(tmp.path().join(assume_path), "modified ignored content\n")
+        .expect("modify assume path");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert_checkpoint_omits_raw_path(tmp.path(), checkpoint_sha.as_str(), assume_path);
+}
+
 #[test]
 fn worktree_adapter_omits_git_info_exclude_paths_from_checkpoint_commits() {
     let tmp = init_repo();

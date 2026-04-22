@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-5fb432a4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: [src/adapters/worktree.rs:161-172] `assume_unchanged_paths` misparses `git ls-files -z -s -v` output by splitting on every tab and taking `.nth(1)`. Git only uses the first tab as the metadata/path separator, so a legal assume-unchanged filename like `tab\\tfile.txt` is truncated to `tab`. `remove_paths_from_index` then removes nothing, and the checkpoint tree still retains the assume-unchanged file. That means the new filtering logic is still incorrect for valid Git paths containing tabs. affected_files: src/adapters/worktree.rs, tests/unit/checkpoint_test.rs. remediation_hint: split each record only once at the first tab (`splitn(2, ...)` / equivalent byte-slice logic) and add a regression next to `worktree_adapter_omits_assume_unchanged_paths_from_checkpoint_commits` for an assume-unchanged path containing a tab.",
-        "created_at": "2026-04-22T03:22:25.399627618Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "dffa2526fbd85ee8b89543e165caee01848d47ab342d0a80aba5e5d9b4a517cb"
-      }
-    ],
-    "processed_count": 9
+    "pending": [],
+    "processed_count": 10
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-22T03:07:25.292835466Z",

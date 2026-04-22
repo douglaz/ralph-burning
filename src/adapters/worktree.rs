@@ -166,7 +166,7 @@ impl WorktreeAdapter {
                     if status.is_ascii_lowercase() && !index_info.is_empty() =>
                 {
                     index_info
-                        .split(|byte| *byte == b'\t')
+                        .splitn(2, |byte| *byte == b'\t')
                         .nth(1)
                         .filter(|path| !path.is_empty())
                         .map(Self::git_path_from_bytes)
