@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-21T22:41:08.629161853Z",
     "prompt_hash_at_cycle_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "prompt_hash_at_stage_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-9b4ace14",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "src/adapters/worktree.rs:155-185 force-removes every `assume-unchanged` path from the checkpoint index, and tests/unit/checkpoint_test.rs:383-418 codifies that behavior. These files are still tracked, so removing them from the tree turns them into deletions instead of preserving the parent-tree version. In a simple git repro, the resulting checkpoint cannot be restored: `git reset --hard <checkpoint>` fails with `Entry 'assume.txt' not uptodate. Cannot merge.` once the checkpoint commit has dropped the file. This breaks the safety contract of checkpoints for any repo that uses `assume-unchanged` locally.",
+        "created_at": "2026-04-22T00:51:22.954318495Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "8b851e24d8a079c9a3d7299581d37bef3cd15ba5bcd0060ba648bbc0212dfd89"
+      },
+      {
+        "amendment_id": "fr-3-db88e41e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "src/adapters/worktree.rs:137-152 queries ignored paths with `git ls-files -i -c --exclude-standard`, then src/adapters/worktree.rs:173-185 removes every match from the checkpoint tree. `--exclude-standard` also honors `.git/info/exclude` and the developer's global `core.excludesFile`, so checkpoint contents now depend on user-local git configuration rather than repository state. A local global-ignore rule matching a tracked file is enough to make that file disappear from checkpoint commits entirely. That is nondeterministic and can silently corrupt checkpoints on one machine but not another.",
+        "created_at": "2026-04-22T00:51:22.954325197Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "dd30a9d38c8825f28bb529fdaf411179b0cf5fbfff7dbb2dfa56bdac68de63a8"
+      },
+      {
+        "amendment_id": "fr-3-b52d9ef4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Remove the stray `prompt-t7j.md` file from the repo root before merging. It was added at the root by the first checkpoint commit (7518cc15) via `git add -A -- .`, is byte-identical to `.ralph-burning/projects/t7j-1/prompt.md`, and is not covered by `.gitignore`. It is therefore not excluded by the Part A fix and would land on master if this branch is merged, polluting the top-level tree with a transient scratchpad duplicate of the bead prompt. Recommended remediation: `git rm prompt-t7j.md && git commit -m \"chore: remove stray bead prompt scratchpad from repo root\"`. This is directly adjacent to the bead's stated acceptance goal of keeping master clean.",
+        "created_at": "2026-04-22T00:51:22.954331239Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "0f0760738a42441356bac817fd4964fb6ef47774c341e9c3df360f4ec59ac5b1"
+      }
+    ],
     "processed_count": 3
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-22T00:12:15.786355042Z",
+    "resolved_at": "2026-04-22T00:39:48.594946039Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

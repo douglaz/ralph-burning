@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:50:35.637144632Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified all three amendments against repo state. fr-3-9b4ace14 reproduced exactly: `git reset --hard <checkpoint>` fails with 'Entry not uptodate. Cannot merge.' when the checkpoint drops a modified assume-unchanged file — this breaks the checkpoint restore contract. fr-3-db88e41e correctly identifies that `--exclude-standard` pulls in `.git/info/exclude` and global `core.excludesFile`, making checkpoint contents dependent on per-developer config rather than repo state. fr-3-b52d9ef4 confirmed: `prompt-t7j.md` is tracked at repo root, byte-identical to `.ralph-burning/projects/t7j-1/prompt.md`, introduced by checkpoint commit 7518cc15, and would pollute master if merged. All three are real defects.\n\n## Votes\n\n- `fr-3-9b4ace14`: Accept\n  Reproduced the failure in a minimal repro: with a tracked file marked assume-unchanged and locally modified, a checkpoint commit whose tree drops the path cannot be restored via `git reset --hard` — it aborts with `error: Entry 'assume.txt' not uptodate. Cannot merge.` That directly violates the safety contract that checkpoints are restorable. The correct behavior is to preserve the parent-tree version of assume-unchanged files (skip them in the force-remove pass) rather than deleting them from the checkpoint tree.\n- `fr-3-db88e41e`: Accept\n  `git ls-files -i -c --exclude-standard` at src/adapters/worktree.rs:137-152 is documented to honor `.git/info/exclude` and the user's global `core.excludesFile` in addition to committed `.gitignore`. Any tracked file matching a developer's personal global ignore rule will be silently dropped from their checkpoint commits but not from another developer's, making checkpoint tree contents nondeterministic across machines. The exclusion set for checkpoint pruning must come from repo-tracked sources only (e.g. explicit check-ignore against committed .gitignore files) to stay reproducible.\n- `fr-3-b52d9ef4`: Accept\n  Confirmed directly: `prompt-t7j.md` exists at the repo root, is tracked (in `git ls-files`), is byte-identical to `.ralph-burning/projects/t7j-1/prompt.md` (diff exit 0), and was introduced by checkpoint commit 7518cc15 on this branch via `git add -A -- .`. It is not covered by `.gitignore`, so the Part A fix does not exclude it, and it would land on master upon merge. Removing it via `git rm prompt-t7j.md` before merging is directly aligned with the bead's acceptance goal of keeping master clean and costs nothing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}
