@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:57:16.978102095Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The current checkpoint builder still replays real-index blobs for gitignored paths, so a force-staged ignored file can leak into checkpoint commits, and the current tests do not cover that path.\n\n## Votes\n\n- `fr-10-7fc894ca`: Accept\n  The core gitignored-path defect is real. `build_checkpoint_tree()` unions tracked ignored paths from the real index into the filtered set, then uses `tracked_index_entries()` plus `restore_index_entries_in_index()` to write those real-index entries back into the temporary checkpoint index before `write-tree`. That means a path added with `git add -f` is preserved in the checkpoint tree even though it is ignored, so rollback checkpoints can still capture ignored artifacts or local-only config. The cited tests only exercise already-tracked ignored/assume-unchanged files with unstaged worktree edits; they do not cover a force-staged ignored path, so this regression would not be caught.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}
