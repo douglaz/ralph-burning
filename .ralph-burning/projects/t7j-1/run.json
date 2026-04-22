@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 7
+      "completion_round": 8
     },
     "started_at": "2026-04-21T22:41:08.629161853Z",
     "prompt_hash_at_cycle_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "prompt_hash_at_stage_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 6
+    "final_review_restart_count": 7
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 7,
+  "completion_rounds": 8,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-7-5fb432a4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "finding_summary: [src/adapters/worktree.rs:161-172] `assume_unchanged_paths` misparses `git ls-files -z -s -v` output by splitting on every tab and taking `.nth(1)`. Git only uses the first tab as the metadata/path separator, so a legal assume-unchanged filename like `tab\\tfile.txt` is truncated to `tab`. `remove_paths_from_index` then removes nothing, and the checkpoint tree still retains the assume-unchanged file. That means the new filtering logic is still incorrect for valid Git paths containing tabs. affected_files: src/adapters/worktree.rs, tests/unit/checkpoint_test.rs. remediation_hint: split each record only once at the first tab (`splitn(2, ...)` / equivalent byte-slice logic) and add a regression next to `worktree_adapter_omits_assume_unchanged_paths_from_checkpoint_commits` for an assume-unchanged path containing a tab.",
+        "created_at": "2026-04-22T03:22:25.399627618Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "dffa2526fbd85ee8b89543e165caee01848d47ab342d0a80aba5e5d9b4a517cb"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-22T02:34:25.454234737Z",
+    "resolved_at": "2026-04-22T03:07:25.292835466Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

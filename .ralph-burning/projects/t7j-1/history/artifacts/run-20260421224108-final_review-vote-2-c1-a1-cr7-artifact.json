@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T03:22:25.359188659Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed one amendment about tab-in-path parsing bug in assume_unchanged_paths. Verified the claim against src/adapters/worktree.rs:161-172 — split(\\t).nth(1) does indeed truncate paths containing tab characters, since git ls-files -z outputs paths verbatim without quoting. This is a real correctness bug; the proposed splitn(2, ...) fix and regression test are appropriate.\n\n## Votes\n\n- `fr-7-5fb432a4`: Accept\n  Verified in src/adapters/worktree.rs:161-172: after stripping the status byte and space, index_info has format `<mode> <hash> <stage>\\t<path>`, and with -z mode git outputs the path verbatim (no quoting). A legal Git path containing a tab like `tab\\tfile.txt` is split by `.split(b'\\t')` into three pieces, and `.nth(1)` returns only the truncated `tab`, so remove_paths_from_index fails to remove the intended file and the checkpoint tree still includes the assume-unchanged content. The remediation (splitn(2, ...) to split at only the first tab, plus a regression test for a tab-in-path assume-unchanged file) is correct and tightly scoped.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 7
+}

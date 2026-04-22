@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T03:22:14.153624579Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. It identifies a real correctness bug in parsing `git ls-files -z -s -v` output for valid Git paths containing tab characters, which causes assume-unchanged files to remain in checkpoint trees.\n\n## Votes\n\n- `fr-7-5fb432a4`: Accept\n  `assume_unchanged_paths` currently splits each NUL-delimited record on every tab and takes `.nth(1)`, but the `git ls-files -z -s -v` record format uses only the first tab as the separator between index metadata and the raw path bytes. For a legal filename like `tab\\tfile.txt`, the current code extracts only `tab`, so `remove_paths_from_index` targets the wrong path and fails to drop the assume-unchanged entry from the synthetic index. That leaves the supposedly filtered file in the checkpoint commit. The proposed fix to split only once at the first tab, plus a regression test covering a tab-containing path, is correct and improves robustness without adding undue complexity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

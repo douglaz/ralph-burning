@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T03:13:18.385135625Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against `ca4d23414de261e5b7d9716c8c608569045ab18d`, read the changed implementation files end-to-end, confirmed `result` is no longer tracked and `git ls-files -i -c --exclude-standard` is empty on this branch, and ran `nix develop -c cargo test --locked --features test-stub checkpoint_test -- --test-threads=1` successfully. One fix-now correctness issue remains in the assume-unchanged path parser.\n\n## Amendments\n\n1. finding_summary: [src/adapters/worktree.rs:161-172] `assume_unchanged_paths` misparses `git ls-files -z -s -v` output by splitting on every tab and taking `.nth(1)`. Git only uses the first tab as the metadata/path separator, so a legal assume-unchanged filename like `tab\\tfile.txt` is truncated to `tab`. `remove_paths_from_index` then removes nothing, and the checkpoint tree still retains the assume-unchanged file. That means the new filtering logic is still incorrect for valid Git paths containing tabs. affected_files: src/adapters/worktree.rs, tests/unit/checkpoint_test.rs. remediation_hint: split each record only once at the first tab (`splitn(2, ...)` / equivalent byte-slice logic) and add a regression next to `worktree_adapter_omits_assume_unchanged_paths_from_checkpoint_commits` for an assume-unchanged path containing a tab.\n   Rationale: I reproduced the underlying Git output locally: `git ls-files -z -s -v` emits records like `h ...\\ttab\\tfile.txt\\0` for assume-unchanged files with tabs in the name, and replaying the branch's temp-index filtering sequence leaves that file present in the written tree.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}
