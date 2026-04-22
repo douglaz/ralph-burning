@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422075643-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422075643-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T08:41:44.808397552Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified prompt-hg4.md at the repo root is byte-identical to .ralph-burning/projects/hg4-1/prompt.md, added in checkpoint commit 09137847, and not referenced anywhere in the codebase. Removing it is a clean cleanup of stray cruft unrelated to the is_timeout_related refactor.\n\n## Votes\n\n- `fr-1-732ae5c5`: Accept\n  Confirmed via diff that /home/user/ralph-burning/prompt-hg4.md and .ralph-burning/projects/hg4-1/prompt.md are identical (same size 2676, diff empty). Grep for 'prompt-hg4' across the repo finds no references except a sibling final_review artifact. The file was committed in the 09137847 checkpoint alongside the is_timeout_related refactor but has no relation to that scope — it's an accidentally-committed duplicate of the project's own prompt.md. Removing it eliminates confusing root-level cruft without losing any information.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

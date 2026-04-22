@@ -1,0 +1,7 @@
+id = "hg4-1"
+name = "extract-is-timeout-related"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "6c0e361ebfd96f5dbfee9c289046db31c3ba4fb8da6fab579eca6b354f524d33"
+created_at = "2026-04-22T07:56:39.187363609Z"
+status_summary = "created"

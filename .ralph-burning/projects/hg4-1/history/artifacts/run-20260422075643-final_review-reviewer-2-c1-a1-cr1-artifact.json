@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422075643-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422075643-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T08:41:06.712413717Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nThe `is_timeout_related` refactor in src/adapters/process_backend.rs is correct and semantically equivalent to the two deleted match blocks: the helper (lines 39-50) uses `matches!` with a guard to cover both `InvocationFailed { failure_class: Timeout, .. }` and `InvocationFailed { details, .. }` where details contains `\"exceeded timeout\"`, and both former sites (lines 1530, 1573) now call it. The new unit test `timeout_related_helper_matches_existing_heuristic` (lines 2615-2640) covers all four required branches (Timeout class true, TransportFailure with matching details true, unrelated details false, non-InvocationFailed false). One low-severity cleanup: a stray `prompt-hg4.md` was accidentally committed at the repo root — it duplicates the bead description and should be removed.\n\n## Amendments\n\n1. Remove the stray top-level file `prompt-hg4.md` committed alongside the refactor in commit 09137847. It duplicates the bead description (which is already captured in `.ralph-burning/projects/hg4-1/prompt.md`), is referenced nowhere in the codebase, and is unrelated to the `is_timeout_related` refactor scope. Leaving it at the repo root adds cruft that future developers will have to investigate.\n   Rationale: The scope guard for bead hg4 explicitly says to avoid unrelated changes. This orphan markdown file at the repo root is unrelated to the helper extraction and would persist as repo noise if this branch merges.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}
