@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422075643-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422075643-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-22T08:38:39.432247671Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nDeduplicated the timeout-detection heuristic in `src/adapters/process_backend.rs` by using a single private `is_timeout_related(&AppError)` helper and routing both former inline match sites through it, while preserving the existing behavior and keeping a focused unit test covering the helper cases.\n\n## Steps\n\n1. [Completed] Inspect `src/adapters/process_backend.rs` to confirm where the duplicated timeout heuristic lived and whether the working tree already contained the helper-based refactor for bead hg4.\n2. [Completed] Verify the implementation shape matches the requested scope: one private `is_timeout_related` helper, both former sites calling it, no widened heuristic, and a small helper-focused test covering timeout class, timeout-details substring, unrelated invocation failure, and non-`InvocationFailed` errors.\n3. [Completed] Run the required validation commands available through the Nix dev shell and capture any failures: `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, targeted helper test coverage, full `cargo test --locked --features test-stub`, and `nix build`.\n\n## Validation Evidence\n\n- `rg -n \"is_timeout_related|exceeded timeout\" src/adapters/process_backend.rs` shows the helper at line 39 and helper call sites at lines 1530 and 1573, with the helper test at lines 2627-2639.\n- `git diff -- src/adapters/process_backend.rs` shows the duplicated inline match blocks replaced by `is_timeout_related(&error)` and the helper/test additions in the current tree.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub timeout_related_helper_matches_existing_heuristic` passed.\n- `nix develop -c cargo test --locked --features test-stub` failed only in `workflow_engine_test::pre_commit_failure_remediation_survives_resume`, which reported `ResumeFailed { reason: \"stage review failed: remediation exhausted at cycle 4; maximum supported cycles is 3\" }`.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- `cargo test --locked --features test-stub` does not currently pass on the working tree because the pre-existing test `workflow_engine_test::pre_commit_failure_remediation_survives_resume` fails with `ResumeFailed { reason: \"stage review failed: remediation exhausted at cycle 4; maximum supported cycles is 3\" }`. This appears unrelated to the timeout-helper refactor, but it means the full acceptance suite is not green.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

@@ -36,6 +36,19 @@ const TEARDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const BACKGROUND_REAP_TIMEOUT: Duration = Duration::from_secs(30);
 const CODEX_RAW_TRANSCRIPT_VERSION: &str = "rb_codex_process_v1";
 
+fn is_timeout_related(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::InvocationFailed {
+            failure_class: FailureClass::Timeout,
+            ..
+        }
+    ) || matches!(
+        error,
+        AppError::InvocationFailed { details, .. } if details.contains("exceeded timeout")
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CodexRawTranscriptEnvelope {
     transport: String,
@@ -1514,19 +1527,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 // unconfirmed-teardown timeouts (TransportFailure with
                 // "exceeded timeout" in details).  The latter are the hardest
                 // to debug, so deleting their temp files is counterproductive.
-                let is_timeout_related = match &error {
-                    AppError::InvocationFailed {
-                        failure_class: FailureClass::Timeout,
-                        ..
-                    } => true,
-                    AppError::InvocationFailed { details, .. }
-                        if details.contains("exceeded timeout") =>
-                    {
-                        true
-                    }
-                    _ => false,
-                };
-                if is_timeout_related {
+                if is_timeout_related(&error) {
                     prepared
                         .preserve_failed_artifacts(&request, "process timed out")
                         .await;
@@ -1569,19 +1570,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     {
                         Ok(output) => output,
                         Err(error) => {
-                            let is_timeout_related = match &error {
-                                AppError::InvocationFailed {
-                                    failure_class: FailureClass::Timeout,
-                                    ..
-                                } => true,
-                                AppError::InvocationFailed { details, .. }
-                                    if details.contains("exceeded timeout") =>
-                                {
-                                    true
-                                }
-                                _ => false,
-                            };
-                            if is_timeout_related {
+                            if is_timeout_related(&error) {
                                 fresh_prepared
                                     .preserve_failed_artifacts(
                                         &fresh_request,
@@ -2622,6 +2611,33 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::tempdir;
+
+    #[test]
+    fn timeout_related_helper_matches_existing_heuristic() {
+        let timeout_failure = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::Timeout,
+            details: "child exited".to_owned(),
+        };
+        let timeout_details = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::TransportFailure,
+            details: "process exceeded timeout during teardown".to_owned(),
+        };
+        let unrelated_failure = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::TransportFailure,
+            details: "child exited".to_owned(),
+        };
+
+        assert!(is_timeout_related(&timeout_failure));
+        assert!(is_timeout_related(&timeout_details));
+        assert!(!is_timeout_related(&unrelated_failure));
+        assert!(!is_timeout_related(&AppError::NoActiveProject));
+    }
 
     #[test]
     fn codex_model_suffix_parses_reasoning_effort_and_fast_mode() {
