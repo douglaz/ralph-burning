@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260422092007-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422092007-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T10:15:42.118751551Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s), none require restart; no restart required.\n**Restart Required:** false\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 0/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-aa4fe55a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-aa4fe55a`\n\nA reproducible regression remains in the branch outside this bead's comment-only scope: `cargo test --locked --features test-stub` fails on `workflow_engine_test::pre_commit_failure_remediation_survives_resume` (`tests/unit/workflow_engine_test.rs:8809-8929`). The failing assertion at `tests/unit/workflow_engine_test.rs:8917` shows that resuming after a pre-commit formatting failure and an interrupted remediation run returns `ResumeFailed { reason: \"stage review failed: remediation exhausted at cycle 4; maximum supported cycles is 3\" }` instead of completing. The affected logic lives in the standard-flow pre-commit remediation / resume path in `src/contexts/workflow_composition/engine.rs:4505-4623` and `src/contexts/workflow_composition/engine.rs:8417-8583`, where remediation cycles are advanced and later reconstructed from durable pre-commit evidence. This leaves real runs unrecoverable even after the underlying pre-commit issue has been fixed.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
