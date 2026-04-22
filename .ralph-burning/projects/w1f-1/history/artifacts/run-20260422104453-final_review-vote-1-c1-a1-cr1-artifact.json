@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422104453-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422104453-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T11:36:04.527418528Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The branch does not satisfy the locked `test-stub` gate because `workflow_engine_test::pre_commit_failure_remediation_survives_resume` reproducibly fails under `nix develop -c cargo test --locked --features test-stub --test unit ...`, and that failure alone is enough to keep the required gate red. The timeout-classification subclaim was not independently reproduced in isolation, so my vote rests on the confirmed resume regression rather than both cited tests.\n\n## Votes\n\n- `fr-1-f68e9794`: Accept\n  `workflow_engine_test::pre_commit_failure_remediation_survives_resume` fails reproducibly with `ResumeFailed { reason: \"stage review failed: remediation exhausted at cycle 4; maximum supported cycles is 3\" }` at the asserted line in `tests/unit/workflow_engine_test.rs`. That is a real behavioral regression in resume handling after pre-commit remediation and it is sufficient to make the locked `cargo test --locked --features test-stub` gate fail, which violates this repo's required verification standard. I did not independently reproduce `process_backend_test::clean_timeout_teardown_yields_timeout_without_warning` failing in isolation, but the confirmed workflow-engine failure is enough to uphold the amendment's core finding that the branch does not meet the required test gate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
