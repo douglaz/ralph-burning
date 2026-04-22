@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-arbiter-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421224108-final_review-arbiter-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T02:17:00.919252177Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment because the implementation converts tracked ignored paths into real deletions in checkpoint commits, making checkpoint restore destructive; that concrete safety issue outweighs the prompt's force-remove sketch.\n\n## Rulings\n\n- `fr-5-ed34cdf0`: Accept\n  `src/adapters/worktree.rs:263-268` starts from the parent tree via `read-tree`, stages the worktree, and then unconditionally `update-index --force-remove`s every tracked ignored path. For a file that is still tracked in the parent, that does not merely suppress the modified blob; it turns the file into a deletion in the checkpoint tree. `reset_to_checkpoint` performs a hard reset, and a direct git repro of this flow deletes the tracked ignored file from disk when resetting to the checkpoint. That is a real checkpoint-correctness and safety defect. The prompt's sketch asked for `force-remove`, but the acceptance goal was to stop leaking ignored local changes; preserving the parent blob already satisfies the requirement that the checkpoint not contain the modified blob, without making restores destructive. The assertions in `tests/unit/checkpoint_test.rs:352-385` and `tests/unit/checkpoint_test.rs:437-525` therefore entrench the wrong behavior rather than validating the safe one.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

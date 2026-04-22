@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T02:14:40.456643647Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed amendment fr-5-ed34cdf0 against the project's explicit specification in prompt.md and the test design intent.\n\n## Votes\n\n- `fr-5-ed34cdf0`: Reject\n  The behavior the amendment calls a bug is the project's explicit design. prompt.md Part A specifies `git update-index --force-remove -- <path>` so paths 'drop out of the tree', and the acceptance test requirement explicitly says the checkpoint tree 'does NOT contain the modified blob for that path'. The tests at checkpoint_test.rs:352-385 and 437-525 deliberately validate this specified feature — they are not accidentally locking in destructive behavior. The amendment's data-loss concern only materializes when a tracked-but-gitignored file exists post-merge, but Part B of the spec requires `git ls-files -i -c --exclude-standard` on master to print nothing, so this code path is purely defensive for an abnormal state the project is eliminating. For the primary use case (nix `result` symlink), nix regenerates it on the next build, so losing it on reset is harmless. The amendment's suggested parent-blob preservation (mirroring assume-unchanged) is a legitimate alternative *design*, but assume-unchanged and tracked-but-gitignored are semantically different — assume-unchanged is a deliberate 'don't track changes' marker the user opted into, whereas tracked-but-gitignored is the abnormal state the project is specifically trying to clean up. This is a design preference disagreement with the spec, not a real bug or safety defect in the implementation's fulfillment of the spec.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 5
+}

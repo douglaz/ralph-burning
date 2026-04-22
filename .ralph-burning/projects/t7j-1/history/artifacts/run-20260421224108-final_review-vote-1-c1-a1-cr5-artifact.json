@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T02:10:48.147054548Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted. The amendment identifies a real destructive checkpoint bug: tracked files that happen to match ignore rules are removed from the checkpoint tree instead of being preserved from the parent, so later checkpoint resets can delete tracked content based on local ignore configuration.\n\n## Votes\n\n- `fr-5-ed34cdf0`: Accept\n  `build_checkpoint_tree` initializes the temporary index from the parent tree, stages the worktree with `git add -A`, and then unconditionally removes every path returned by `tracked_gitignored_paths` via `update-index --force-remove`. For a tracked file that merely became ignored, that converts the inherited parent entry into a deletion in the checkpoint tree rather than preserving the parent blob. Since `reset_to_checkpoint` performs a hard reset, restoring that checkpoint can physically delete a tracked file from the worktree. The use of `--exclude-standard` also makes checkpoint contents depend on `.gitignore`, `.git/info/exclude`, and global excludes, which is especially unsafe for reproducibility. The referenced tests asserting that these tracked ignored paths are omitted lock in the destructive behavior instead of catching it. The remediation direction of restoring the parent/index entry for tracked ignored paths is technically sound and aligns with the already-correct handling for assume-unchanged entries.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
