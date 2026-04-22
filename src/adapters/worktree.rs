@@ -143,13 +143,7 @@ impl WorktreeAdapter {
         let ignored_output = Self::git_in_index(
             repo_root,
             index_path,
-            &[
-                "ls-files",
-                "-z",
-                "-i",
-                "-c",
-                "--exclude-per-directory=.gitignore",
-            ],
+            &["ls-files", "-z", "-i", "-c", "--exclude-standard"],
         )?;
         if !ignored_output.status.success() {
             return Err(Self::git_error(&ignored_output));

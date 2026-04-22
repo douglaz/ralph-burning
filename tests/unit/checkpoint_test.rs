@@ -434,7 +434,7 @@ fn worktree_adapter_preserves_parent_version_for_assume_unchanged_paths_in_check
 }
 
 #[test]
-fn worktree_adapter_does_not_use_git_info_exclude_for_checkpoint_cleanup() {
+fn worktree_adapter_drops_git_info_exclude_paths_from_checkpoint_commits() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -473,15 +473,11 @@ fn worktree_adapter_does_not_use_git_info_exclude_for_checkpoint_cleanup() {
         &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
     );
     assert!(tree.lines().any(|line| line == "README.md"));
-    assert!(tree.lines().any(|line| line == "locally-ignored.txt"));
-    assert_eq!(
-        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "locally-ignored.txt"),
-        "modified tracked content"
-    );
+    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "locally-ignored.txt");
 }
 
 #[test]
-fn worktree_adapter_does_not_use_core_excludes_file_for_checkpoint_cleanup() {
+fn worktree_adapter_drops_core_excludes_file_paths_from_checkpoint_commits() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -525,11 +521,7 @@ fn worktree_adapter_does_not_use_core_excludes_file_for_checkpoint_cleanup() {
         &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
     );
     assert!(tree.lines().any(|line| line == "README.md"));
-    assert!(tree.lines().any(|line| line == "globally-ignored.txt"));
-    assert_eq!(
-        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "globally-ignored.txt"),
-        "modified tracked content"
-    );
+    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "globally-ignored.txt");
 }
 
 #[cfg(unix)]
