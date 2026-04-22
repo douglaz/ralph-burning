@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:22:19.804597624Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified the finding: git ls-files -z returns raw bytes, and the two helpers lossy-decode them before passing as --force-remove arguments. Because --force-remove silently succeeds on nonexistent paths, a tracked gitignored/assume-unchanged file with a non-UTF-8 name bypasses sanitization and leaks into the checkpoint. The fix (preserve OsString/bytes via OsStrExt or use -z --stdin) is the correct approach.\n\n## Votes\n\n- `fr-2-8798c01f`: Accept\n  Real correctness bug in src/adapters/worktree.rs: String::from_utf8_lossy at lines 138 and 153 corrupts non-UTF-8 path bytes from git ls-files -z, and git update-index --force-remove exits 0 for nonexistent index entries, so the lossy-decoded name is a no-op while the original raw path (still in the checkpoint index) gets written into the checkpoint tree. This directly defeats the stated goal of dropping gitignored/assume-unchanged paths from checkpoints and is exploitable on any Unix filesystem with non-UTF-8 filenames. The remediation hint is concrete and feasible: round-trip as OsString via OsStrExt::from_bytes, or feed NUL-delimited paths through stdin with --stdin -z.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}

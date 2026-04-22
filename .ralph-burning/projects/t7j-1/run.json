@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-21T22:41:08.629161853Z",
     "prompt_hash_at_cycle_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "prompt_hash_at_stage_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-8798c01f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: Paths returned by `git ls-files -z ...` are byte strings, but the new ignored-path filtering lossy-decodes them to `String` before feeding them back to `git update-index --force-remove`. That breaks tracked gitignored and assume-unchanged files whose names are not valid UTF-8: the temporary checkpoint index keeps the original raw path, so the checkpoint still leaks that file. I reproduced this with a temp repo containing `bad\\xff.txt`, where removing the lossy-decoded name exits 0 but the raw path remains in the index.\naffected_files: `src/adapters/worktree.rs:134-138`, `src/adapters/worktree.rs:148-157`, `src/adapters/worktree.rs:170-174`, `tests/unit/checkpoint_test.rs:289-358`\nremediation_hint: Preserve raw path bytes / `OsString` values through the round-trip and pass them back to Git without UTF-8 conversion, for example by building command args from `OsStrExt::from_bytes` or by using a NUL-delimited stdin path channel.",
+        "created_at": "2026-04-22T00:22:19.841316515Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "60fff7c4242e547143e5045fac13ddccd841286cc5293b72d2368b3783888287"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-21T23:30:07.286306037Z",
+    "resolved_at": "2026-04-22T00:12:15.786355042Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

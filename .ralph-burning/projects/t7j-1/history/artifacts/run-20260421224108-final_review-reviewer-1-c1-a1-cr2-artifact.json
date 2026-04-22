@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:21:37.392911132Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch delta in `src/adapters/worktree.rs`, `tests/unit/checkpoint_test.rs`, and the `result` untracking change. Found one fix-now correctness issue: ignored-path removal fails for non-UTF8 filenames because Git paths are round-tripped through `String::from_utf8_lossy`. Validation notes: `nix build`, `nix develop -c cargo fmt --check`, and the targeted checkpoint tests passed; `nix develop -c cargo clippy --locked --features test-stub --tests -- -D warnings` still fails, but only in untouched files outside this bead.\n\n## Amendments\n\n1. finding_summary: Paths returned by `git ls-files -z ...` are byte strings, but the new ignored-path filtering lossy-decodes them to `String` before feeding them back to `git update-index --force-remove`. That breaks tracked gitignored and assume-unchanged files whose names are not valid UTF-8: the temporary checkpoint index keeps the original raw path, so the checkpoint still leaks that file. I reproduced this with a temp repo containing `bad\\xff.txt`, where removing the lossy-decoded name exits 0 but the raw path remains in the index.\naffected_files: `src/adapters/worktree.rs:134-138`, `src/adapters/worktree.rs:148-157`, `src/adapters/worktree.rs:170-174`, `tests/unit/checkpoint_test.rs:289-358`\nremediation_hint: Preserve raw path bytes / `OsString` values through the round-trip and pass them back to Git without UTF-8 conversion, for example by building command args from `OsStrExt::from_bytes` or by using a NUL-delimited stdin path channel.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
