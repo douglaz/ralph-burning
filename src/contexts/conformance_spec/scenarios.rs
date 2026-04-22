@@ -2437,6 +2437,8 @@ fn register_run_start_quick_dev(m: &mut HashMap<String, ScenarioExecutor>) {
 // ===========================================================================
 
 fn register_run_start_docs_change(m: &mut HashMap<String, ScenarioExecutor>) {
+    // `docs_change` is an alias of `minimal` — the preset name is accepted
+    // for UX clarity but the underlying stage plan is the minimal one.
     reg!(m, "SC-DOCS-START-001", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "docs-happy", "docs_change")?;
@@ -2451,8 +2453,8 @@ fn register_run_start_docs_change(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         let out = run_cli(&["flow", "show", "docs_change"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "docs_update", "stdout")?;
-        assert_contains(&out.stdout, "docs_validation", "stdout")?;
+        assert_contains(&out.stdout, "plan_and_implement", "stdout")?;
+        assert_contains(&out.stdout, "final_review", "stdout")?;
         Ok(())
     });
 
@@ -2460,7 +2462,14 @@ fn register_run_start_docs_change(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         let out = run_cli(&["flow", "show", "docs_change"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "docs_validation", "stdout")?;
+        // docs_change must not expose the old docs-specific stages.
+        if out.stdout.contains("docs_validation") || out.stdout.contains("docs_update") {
+            return Err(format!(
+                "docs_change flow still references legacy docs_* stages: {}",
+                out.stdout
+            )
+            .into());
+        }
         Ok(())
     });
 
@@ -2476,9 +2485,31 @@ fn register_run_start_docs_change(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         let out = run_cli(&["flow", "show", "docs_change"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "docs_validation", "stdout")?;
+        let minimal = run_cli(&["flow", "show", "minimal"], ws.path())?;
+        assert_success(&minimal)?;
+        // The docs_change stage list must match the minimal stage list.
+        let docs_stages = extract_stage_list(&out.stdout);
+        let minimal_stages = extract_stage_list(&minimal.stdout);
+        if docs_stages != minimal_stages {
+            return Err(format!(
+                "docs_change stages {docs_stages:?} do not match minimal stages {minimal_stages:?}"
+            )
+            .into());
+        }
         Ok(())
     });
+}
+
+fn extract_stage_list(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            trimmed
+                .strip_prefix("- ")
+                .or_else(|| trimmed.strip_prefix("* "))
+        })
+        .collect()
 }
 
 // ===========================================================================
@@ -4846,15 +4877,17 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
 fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-NONSTD-RESUME-001", || {
-        // Resume a failed docs_change run from docs_update
+        // Resume a failed docs_change (minimal alias) run from final_review.
+        // docs_change now aliases minimal: stages are [plan_and_implement,
+        // final_review]. We fail at final_review and verify resume completes
+        // without re-entering plan_and_implement.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-docs", "docs_change")?;
 
-        // Step 1: run start fails at docs_update (docs_plan completes)
         let start = run_cli_with_env(
             &["run", "start"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "docs_update")],
+            &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "final_review")],
         )?;
         assert_failure(&start)?;
 
@@ -4870,12 +4903,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
             .unwrap_or("")
             .to_string();
 
-        // Step 2: resume → resumes from docs_update, completes
         let resume = run_cli(&["run", "resume"], ws.path())?;
         assert_success(&resume)?;
 
         let post_events = read_journal(&ws, "ns-docs")?;
-        // Verify run_id preserved
         let resume_evt = post_events
             .iter()
             .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed"));
@@ -4894,7 +4925,6 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
 
-        // Verify docs_plan NOT re-entered after resume
         let resume_seq = resume_evt
             .unwrap()
             .get("sequence")
@@ -4906,13 +4936,12 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
                 && e.get("details")
                     .and_then(|d| d.get("stage_id"))
                     .and_then(|v| v.as_str())
-                    == Some("docs_plan")
+                    == Some("plan_and_implement")
         });
         if plan_after {
-            return Err("docs_plan should not be re-executed after resume".into());
+            return Err("plan_and_implement should not be re-executed after resume".into());
         }
 
-        // Verify first resumed stage is docs_update
         let first_stage = post_events.iter().find(|e| {
             e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                 && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
@@ -4923,9 +4952,9 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
                 .and_then(|d| d.get("stage_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if sid != "docs_update" {
+            if sid != "final_review" {
                 return Err(format!(
-                    "expected first resumed stage=docs_update, got '{sid}'"
+                    "expected first resumed stage=final_review, got '{sid}'"
                 ));
             }
         }
@@ -5012,37 +5041,51 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-NONSTD-RESUME-003", || {
-        // docs_change: docs_validation request_changes triggers remediation cycle
-        // (not amendment queuing, since docs_change has no late stages)
-        // Uses a marker-file command so validation fails on first run, passes on second.
+        // docs_change is now an alias of minimal: a docs_change run should
+        // start at plan_and_implement and reach final_review like any minimal
+        // flow. This smoke-test verifies the alias end-to-end.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-docs-amend", "docs_change")?;
-
-        let marker = project_root(ws.path(), "ns-docs-amend").join("runtime/temp/docs_marker");
-        let marker_str = marker.display().to_string();
-        let cmd = format!("test -f {marker_str} || (touch {marker_str} && exit 1)");
-        let config_path = project_root(ws.path(), "ns-docs-amend").join("config.toml");
-        std::fs::write(
-            &config_path,
-            format!("[validation]\ndocs_commands = [\"{cmd}\"]\n"),
-        )
-        .map_err(|e| format!("write config: {e}"))?;
 
         let start = run_cli(&["run", "start"], ws.path())?;
         assert_success(&start)?;
 
-        // docs_validation request_changes triggers remediation cycle (cycle_advanced)
         let events = read_journal(&ws, "ns-docs-amend")?;
-        if !journal_event_types(&events)
+        let stages_entered: Vec<String> = events
             .iter()
-            .any(|t| t == "cycle_advanced")
+            .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered"))
+            .filter_map(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("stage_id"))
+                    .and_then(|v| v.as_str())
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        if !stages_entered.iter().any(|s| s == "plan_and_implement") {
+            return Err(format!(
+                "docs_change run did not enter plan_and_implement; stages were {stages_entered:?}"
+            )
+            .into());
+        }
+        if !stages_entered.iter().any(|s| s == "final_review") {
+            return Err(format!(
+                "docs_change run did not enter final_review; stages were {stages_entered:?}"
+            )
+            .into());
+        }
+        if stages_entered
+            .iter()
+            .any(|s| s == "docs_plan" || s == "docs_update" || s == "docs_validation")
         {
-            return Err("journal missing cycle_advanced event for remediation".into());
+            return Err(format!(
+                "docs_change run should not enter legacy docs_* stages; stages were {stages_entered:?}"
+            )
+            .into());
         }
 
         let final_snap = read_run_snapshot(&ws, "ns-docs-amend")?;
         if final_snap.get("status").and_then(|v| v.as_str()) != Some("completed") {
-            return Err("expected completed after remediation cycle".into());
+            return Err("expected completed docs_change run".into());
         }
         Ok(())
     });
@@ -13598,30 +13641,26 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "validation.docs.command_failure_requests_changes",
         || {
+            // docs_change is now an alias of minimal, so docs-specific
+            // validation stages no longer exist. `docs_commands` config is
+            // inert — the run should still complete on the minimal stage
+            // plan regardless of what docs_commands is set to.
             let ws = TempWorkspace::new()?;
             setup_workspace_with_project(&ws, "vd-fail", "docs_change")?;
 
-            // Configure docs_commands to a command that always fails.
             let config_path = project_root(ws.path(), "vd-fail").join("config.toml");
             std::fs::write(&config_path, "[validation]\ndocs_commands = [\"false\"]\n")
                 .map_err(|e| format!("write config: {e}"))?;
 
-            let _out = run_cli(&["run", "start"], ws.path())?;
-            // The run should fail because the validation fails and remediation is exhausted.
-            let snapshot = read_run_snapshot(&ws, "vd-fail")?;
-            let status = snapshot
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            // After remediation exhaustion, the run will fail.
-            if status != "failed" && status != "running" {
-                return Err(format!("expected failed or running status, got: {status}"));
-            }
+            let out = run_cli(&["run", "start"], ws.path())?;
+            assert_success(&out)?;
 
-            // Verify that local validation evidence was persisted.
-            let payload_count = count_payload_files(&ws, "vd-fail")?;
-            if payload_count == 0 {
-                return Err("expected at least one payload file from local validation".to_owned());
+            let snapshot = read_run_snapshot(&ws, "vd-fail")?;
+            if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+                return Err(format!(
+                    "expected completed (docs_change aliases minimal), got {:?}",
+                    snapshot.get("status")
+                ));
             }
             Ok(())
         }

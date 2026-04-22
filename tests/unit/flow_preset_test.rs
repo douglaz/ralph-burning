@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use ralph_burning::contexts::workflow_composition::{built_in_flows, flow_definition};
 use ralph_burning::shared::domain::{FlowPreset, StageId};
 
@@ -52,15 +54,18 @@ fn quick_dev_flow_stage_order_matches_spec() {
 }
 
 #[test]
-fn docs_change_flow_stage_order_matches_spec() {
+fn docs_change_flow_stage_order_matches_minimal() {
     assert_eq!(
-        &[
-            StageId::DocsPlan,
-            StageId::DocsUpdate,
-            StageId::DocsValidation,
-            StageId::Review,
-        ],
+        flow_definition(FlowPreset::Minimal).stages,
         flow_definition(FlowPreset::DocsChange).stages
+    );
+}
+
+#[test]
+fn docs_change_preset_name_still_parses() {
+    assert_eq!(
+        FlowPreset::DocsChange,
+        FlowPreset::from_str("docs_change").expect("docs_change should parse")
     );
 }
 

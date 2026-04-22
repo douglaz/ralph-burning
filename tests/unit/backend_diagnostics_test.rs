@@ -507,59 +507,6 @@ fn check_aggregates_all_failures_in_one_run() {
     );
 }
 
-// ── flow-scoped check tests ─────────────────────────────────────────────────
-
-#[test]
-fn check_docs_change_flow_skips_completion_and_final_review() {
-    let temp_dir = tempdir().expect("create temp dir");
-    initialize_workspace_fixture(temp_dir.path());
-
-    // Configure completion to require an unavailable backend.
-    // For docs_change flow, this should NOT cause a failure since it doesn't
-    // include CompletionPanel or FinalReview stages.
-    let mut workspace = WorkspaceConfig::new(test_timestamp());
-    workspace
-        .backends
-        .insert("openrouter".to_owned(), empty_backend_settings(false));
-    workspace.completion = CompletionSettings {
-        backends: Some(vec![
-            PanelBackendSpec::required(BackendFamily::Claude),
-            PanelBackendSpec::required(BackendFamily::OpenRouter),
-        ]),
-        min_completers: Some(2),
-        consensus_threshold: Some(0.66),
-        extra: toml::Table::new(),
-    };
-    workspace.final_review = FinalReviewSettings {
-        enabled: Some(true),
-        backends: Some(vec![
-            PanelBackendSpec::required(BackendFamily::Claude),
-            PanelBackendSpec::required(BackendFamily::OpenRouter),
-        ]),
-        min_reviewers: Some(2),
-        ..Default::default()
-    };
-    write_workspace_config(temp_dir.path(), &workspace);
-
-    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
-    let service = BackendDiagnosticsService::new(&config);
-
-    // DocsChange should pass — its stages don't need completion/final-review
-    let result = service.check_backends(FlowPreset::DocsChange);
-    assert!(
-        result.passed,
-        "docs_change should pass even with broken completion/final-review config: {:?}",
-        result.failures
-    );
-
-    // Standard should fail — it uses CompletionPanel and FinalReview
-    let result = service.check_backends(FlowPreset::Standard);
-    assert!(
-        !result.passed,
-        "standard should fail with broken completion config"
-    );
-}
-
 // ── flow-scoped probe tests ─────────────────────────────────────────────────
 
 #[test]
@@ -584,25 +531,6 @@ fn probe_completion_panel_fails_for_docs_change_flow() {
         err_msg.contains("does not include stage"),
         "error should indicate the stage is not in the flow: {}",
         err_msg
-    );
-}
-
-#[test]
-fn probe_final_review_panel_fails_for_docs_change_flow() {
-    let temp_dir = tempdir().expect("create temp dir");
-    initialize_workspace_fixture(temp_dir.path());
-
-    let workspace = WorkspaceConfig::new(test_timestamp());
-    write_workspace_config(temp_dir.path(), &workspace);
-
-    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
-    let service = BackendDiagnosticsService::new(&config);
-
-    // docs_change flow does not have FinalReview
-    let result = service.probe("final_review_panel", FlowPreset::DocsChange, 1);
-    assert!(
-        result.is_err(),
-        "probing final_review_panel on docs_change flow should fail"
     );
 }
 
@@ -3844,7 +3772,7 @@ fn check_validates_final_review_even_when_final_review_enabled_is_false() {
 }
 
 /// Regression: for flows that do NOT include FinalReview in their stage
-/// definitions (e.g. docs_change), `backend check` should still skip
+/// definitions (e.g. ci_improvement), `backend check` should still skip
 /// final review validation regardless of `final_review.enabled`.
 #[test]
 fn check_still_skips_final_review_for_flows_without_final_review_stage() {
@@ -3868,8 +3796,8 @@ fn check_still_skips_final_review_for_flows_without_final_review_stage() {
     let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
     let service = BackendDiagnosticsService::new(&config);
 
-    // DocsChange does not include FinalReview in its stages
-    let result = service.check_backends(FlowPreset::DocsChange);
+    // CiImprovement does not include FinalReview in its stages.
+    let result = service.check_backends(FlowPreset::CiImprovement);
     let final_review_failures: Vec<_> = result
         .failures
         .iter()
@@ -3877,7 +3805,7 @@ fn check_still_skips_final_review_for_flows_without_final_review_stage() {
         .collect();
     assert!(
         final_review_failures.is_empty(),
-        "docs_change should skip final review validation since the flow \
+        "ci_improvement should skip final review validation since the flow \
          does not include FinalReview: {:?}",
         final_review_failures
     );
