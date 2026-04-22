@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -121,7 +122,19 @@ impl WorktreeAdapter {
             .map_err(AppError::from)
     }
 
-    fn tracked_gitignored_paths(repo_root: &Path, index_path: &Path) -> AppResult<Vec<String>> {
+    #[cfg(unix)]
+    fn git_path_from_bytes(path: &[u8]) -> PathBuf {
+        use std::os::unix::ffi::OsStrExt;
+
+        PathBuf::from(OsStr::from_bytes(path))
+    }
+
+    #[cfg(not(unix))]
+    fn git_path_from_bytes(path: &[u8]) -> PathBuf {
+        PathBuf::from(String::from_utf8_lossy(path).into_owned())
+    }
+
+    fn tracked_gitignored_paths(repo_root: &Path, index_path: &Path) -> AppResult<Vec<PathBuf>> {
         let ignored_output = Self::git_in_index(
             repo_root,
             index_path,
@@ -135,11 +148,11 @@ impl WorktreeAdapter {
             .stdout
             .split(|byte| *byte == 0)
             .filter(|path| !path.is_empty())
-            .map(|path| String::from_utf8_lossy(path).into_owned())
+            .map(Self::git_path_from_bytes)
             .collect())
     }
 
-    fn assume_unchanged_paths(repo_root: &Path) -> AppResult<Vec<String>> {
+    fn assume_unchanged_paths(repo_root: &Path) -> AppResult<Vec<PathBuf>> {
         let tracked_output = Self::git(repo_root, &["ls-files", "-z", "-v"])?;
         if !tracked_output.status.success() {
             return Err(Self::git_error(&tracked_output));
@@ -150,7 +163,7 @@ impl WorktreeAdapter {
             .split(|entry| *entry == 0)
             .filter_map(|entry| match entry {
                 [status, b' ', path @ ..] if status.is_ascii_lowercase() && !path.is_empty() => {
-                    Some(String::from_utf8_lossy(path).into_owned())
+                    Some(Self::git_path_from_bytes(path))
                 }
                 _ => None,
             })
@@ -158,7 +171,7 @@ impl WorktreeAdapter {
     }
 
     fn remove_ignored_paths_from_index(repo_root: &Path, index_path: &Path) -> AppResult<()> {
-        let mut ignored_paths: BTreeSet<String> =
+        let mut ignored_paths: BTreeSet<PathBuf> =
             Self::tracked_gitignored_paths(repo_root, index_path)?
                 .into_iter()
                 .collect();
@@ -167,11 +180,10 @@ impl WorktreeAdapter {
             return Ok(());
         }
 
-        let mut remove_args: Vec<&str> = vec!["update-index", "--force-remove", "--"];
-        for path in &ignored_paths {
-            remove_args.push(path.as_str());
-        }
-        let remove_output = Self::git_in_index(repo_root, index_path, &remove_args)?;
+        let mut command = Self::git_command_with_index(repo_root, index_path);
+        command.args(["update-index", "--force-remove", "--"]);
+        command.args(ignored_paths.iter().map(|path| path.as_os_str()));
+        let remove_output = command.output().map_err(AppError::from)?;
         if !remove_output.status.success() {
             return Err(Self::git_error(&remove_output));
         }
