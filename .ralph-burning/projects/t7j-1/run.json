@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-369d7ad4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "src/adapters/worktree.rs:137-152 and 280-289 discover tracked gitignored paths only from the temporary index after git add -A has already rewritten it. If a tracked-but-gitignored path is deleted or renamed in the worktree, add -A removes it from that index first, so tracked_gitignored_paths returns nothing and the checkpoint commit records an unrelated deletion. The new tests only cover modified ignored files, not this cleanup/remove case. Derive the candidate ignored set from the real index before staging, or otherwise merge the pre-add tracked ignored paths into the filter set so deletions are suppressed too.",
-        "created_at": "2026-04-22T04:26:35.849355300Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "35522b200a5250f98657050d5bc0680b771cf3691417b1f6c9dbbee40bac3572"
-      }
-    ],
-    "processed_count": 11
+    "pending": [],
+    "processed_count": 12
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-22T04:13:33.037986942Z",

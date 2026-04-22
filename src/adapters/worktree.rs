@@ -134,12 +134,7 @@ impl WorktreeAdapter {
         PathBuf::from(String::from_utf8_lossy(path).into_owned())
     }
 
-    fn tracked_gitignored_paths(repo_root: &Path, index_path: &Path) -> AppResult<Vec<PathBuf>> {
-        let ignored_output = Self::git_in_index(
-            repo_root,
-            index_path,
-            &["ls-files", "-z", "-i", "-c", "--exclude-standard"],
-        )?;
+    fn tracked_gitignored_paths_from_output(ignored_output: Output) -> AppResult<Vec<PathBuf>> {
         if !ignored_output.status.success() {
             return Err(Self::git_error(&ignored_output));
         }
@@ -150,6 +145,26 @@ impl WorktreeAdapter {
             .filter(|path| !path.is_empty())
             .map(Self::git_path_from_bytes)
             .collect())
+    }
+
+    fn tracked_gitignored_paths(repo_root: &Path) -> AppResult<Vec<PathBuf>> {
+        let ignored_output = Self::git(
+            repo_root,
+            &["ls-files", "-z", "-i", "-c", "--exclude-standard"],
+        )?;
+        Self::tracked_gitignored_paths_from_output(ignored_output)
+    }
+
+    fn tracked_gitignored_paths_in_index(
+        repo_root: &Path,
+        index_path: &Path,
+    ) -> AppResult<Vec<PathBuf>> {
+        let ignored_output = Self::git_in_index(
+            repo_root,
+            index_path,
+            &["ls-files", "-z", "-i", "-c", "--exclude-standard"],
+        )?;
+        Self::tracked_gitignored_paths_from_output(ignored_output)
     }
 
     fn assume_unchanged_paths(repo_root: &Path) -> AppResult<Vec<PathBuf>> {
@@ -261,6 +276,10 @@ impl WorktreeAdapter {
     fn build_checkpoint_tree(repo_root: &Path, parent_sha: Option<&str>) -> AppResult<String> {
         let checkpoint_index = TemporaryGitIndex::new();
         let index_path = checkpoint_index.path();
+        let preexisting_tracked_gitignored_paths: BTreeSet<PathBuf> =
+            Self::tracked_gitignored_paths(repo_root)?
+                .into_iter()
+                .collect();
 
         let read_tree_output = match parent_sha {
             Some(parent_sha) => {
@@ -278,9 +297,10 @@ impl WorktreeAdapter {
         }
 
         let mut filtered_paths: BTreeSet<PathBuf> =
-            Self::tracked_gitignored_paths(repo_root, index_path)?
+            Self::tracked_gitignored_paths_in_index(repo_root, index_path)?
                 .into_iter()
                 .collect();
+        filtered_paths.extend(preexisting_tracked_gitignored_paths);
         filtered_paths.extend(Self::assume_unchanged_paths(repo_root)?);
 
         let tracked_entries = Self::tracked_index_entries(repo_root, &filtered_paths)?;

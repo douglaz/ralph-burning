@@ -474,6 +474,47 @@ fn worktree_adapter_preserves_real_index_version_for_tracked_gitignored_paths_in
 }
 
 #[test]
+fn worktree_adapter_preserves_real_index_version_for_deleted_tracked_gitignored_paths_in_checkpoint_commits(
+) {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+
+    fs::write(tmp.path().join(".gitignore"), "ignored.txt\n").expect("write .gitignore");
+    fs::write(tmp.path().join("ignored.txt"), "tracked but ignored\n").expect("write ignored");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["add", "-f", "ignored.txt"]);
+    run_git(tmp.path(), &["commit", "-m", "track ignored file"]);
+
+    fs::remove_file(tmp.path().join("ignored.txt")).expect("delete ignored");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert_checkpoint_contains_path_content(
+        tmp.path(),
+        checkpoint_sha.as_str(),
+        "ignored.txt",
+        "tracked but ignored\n",
+    );
+}
+
+#[test]
 fn worktree_adapter_does_not_retrack_gitignored_paths_after_real_index_untracks_them() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
