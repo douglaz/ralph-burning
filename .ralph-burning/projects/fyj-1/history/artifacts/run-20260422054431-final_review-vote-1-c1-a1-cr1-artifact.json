@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422054431-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422054431-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T06:26:47.795292069Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real timeout-resolution defects. The first exposes an incorrect global BackendRole-to-policy-role mapping for final-review work, and the second shows test/runtime helper builders that no longer preserve EffectiveConfig-driven timeouts the way production does.\n\n## Votes\n\n- `fr-1-ca61896e`: Accept\n  `BackendRole::CompletionJudge` is stage-ambiguous today: `BackendRole::for_stage(StageId::FinalReview)` returns it, while `stage_to_policy_role(StageId::FinalReview)` resolves to `BackendPolicyRole::FinalReviewer`, not `Completer`. A public `to_policy_role()` helper that hard-codes `CompletionJudge -> Completer` therefore bakes in the wrong timeout/model-policy role for one valid stage context. Even if current callers do not hit that path, `AgentExecutionService::timeout_for_role()` now depends on this misleading conversion, so the API is correctness-hazardous and should be made context-aware or kept local to places where the mapping is actually unambiguous.\n- `fr-1-5c50c7ee`: Accept\n  This is a real production-parity gap. The production requirements builder attaches `effective_config` via `AgentExecutionService::with_effective_config(...)`, but the daemon/conformance helper builders shown here only derive `workspace_defaults` and then construct a bare `AgentExecutionService`, so `timeout_for_role()` falls back to `DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS` instead of honoring `backends.<family>.timeout_seconds` and `role_timeouts.*`. That means those paths cannot validate configured timeout behavior and can silently miss regressions, so they should be updated to clone the same `effective_config` into the service.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

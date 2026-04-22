@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422054431-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422054431-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T06:27:03.566655788Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nBoth amendments raise legitimate technical concerns verified against the code. Amendment 1 flags a publicly exposed BackendRole::to_policy_role() helper whose CompletionJudge->Completer mapping silently disagrees with stage_to_policy_role(FinalReview)->FinalReviewer; with separate completer/final_reviewer fields in BackendRoleTimeouts, any future caller is at risk of silently selecting the wrong timeout. Amendment 2 flags that the test-stub daemon builder and two conformance scenario builders omit .with_effective_config(), so tests through those paths cannot exercise the configured-timeout behavior added in this branch and will not catch regressions.\n\n## Votes\n\n- `fr-1-ca61896e`: Accept\n  Verified: BackendRole::for_stage(StageId::FinalReview) returns CompletionJudge (src/shared/domain.rs:294) and to_policy_role() maps CompletionJudge to Completer (src/shared/domain.rs:276), while stage_to_policy_role(StageId::FinalReview) returns FinalReviewer (src/contexts/agent_execution/policy.rs:425). BackendRoleTimeouts has distinct completer and final_reviewer fields (src/shared/domain.rs:1540-1542, 1576-1577) so these resolve to different timeouts. Exposing to_policy_role as pub creates a real footgun: any future caller combining for_stage(FinalReview) with to_policy_role() will silently pick completer timeouts instead of final_reviewer timeouts. Keeping this mapping private to the requirements path, or making it stage/context-aware, is the right defensive fix.\n- `fr-1-5c50c7ee`: Accept\n  Verified: the production builder in src/composition/agent_execution_builder.rs:190-191 attaches .with_effective_config(effective_config.clone()), but build_requirements_service_for_test (src/contexts/automation_runtime/daemon_loop.rs:5092) and both conformance scenario builders (src/contexts/conformance_spec/scenarios.rs:161-166 and :301-302) construct AgentExecutionService without that call. As a result, any invoke_stage timeout resolution through these test paths goes through AgentExecutionService::timeout_for_role's None branch and falls back to DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS, ignoring configured backends.<family>.timeout_seconds / role_timeouts.*. Test/conformance parity with production is the whole point of these helpers, so attaching effective_config in these three builders is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

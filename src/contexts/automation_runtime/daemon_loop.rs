@@ -5089,7 +5089,8 @@ pub fn build_requirements_service_for_test(
 
     let raw_output_store = FsRawOutputStore;
     let session_store = FsSessionStore;
-    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
+    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store)
+        .with_effective_config(effective_config.clone());
     let requirements_store = FsRequirementsStore;
     Ok(RequirementsService::new(agent_service, requirements_store)
         .with_workspace_defaults(workspace_defaults))

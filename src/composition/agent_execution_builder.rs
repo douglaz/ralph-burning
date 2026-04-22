@@ -147,11 +147,10 @@ pub fn build_agent_execution_service_for_config(
     effective_config: &EffectiveConfig,
 ) -> AppResult<ProductionAgentService> {
     let adapter = build_backend_adapter_with_config(Some(effective_config))?;
-    Ok(AgentExecutionService::new(
-        adapter,
-        FsRawOutputStore,
-        FsSessionStore,
-    ))
+    Ok(
+        AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore)
+            .with_effective_config(effective_config.clone()),
+    )
 }
 
 // ── Requirements service builder ────────────────────────────────────────────
@@ -188,7 +187,8 @@ pub fn build_requirements_service_for_selector(
     let adapter = apply_label_overrides_if_stub(adapter);
 
     let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
-    let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+    let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore)
+        .with_effective_config(effective_config.clone());
     let requirements_store = FsRequirementsStore;
     Ok(RequirementsService::new(agent_service, requirements_store)
         .with_workspace_defaults(workspace_defaults))

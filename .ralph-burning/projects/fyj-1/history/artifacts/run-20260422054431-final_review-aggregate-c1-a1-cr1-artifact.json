@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260422054431-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422054431-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T06:27:03.601805979Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-ca61896e`\n- `fr-1-5c50c7ee`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-ca61896e`\n\n`src/shared/domain.rs:270-277` introduces a reusable `BackendRole::to_policy_role()` helper, but `BackendRole::CompletionJudge` is also what `BackendRole::for_stage(StageId::FinalReview)` returns while `stage_to_policy_role(StageId::FinalReview)` still maps to `BackendPolicyRole::FinalReviewer` (`src/contexts/agent_execution/policy.rs:423-425`). `AgentExecutionService::timeout_for_role()` now delegates through that new helper (`src/contexts/agent_execution/service.rs:178-183`), so any future caller that reuses it for final-review work will silently pick completer timeouts instead of final-review timeouts. Keep this mapping local to requirements, or make the conversion stage/context-aware instead of exposing a misleading global mapping.\n\n### `fr-1-5c50c7ee`\n\n`src/contexts/automation_runtime/daemon_loop.rs:5088-5095` and `src/contexts/conformance_spec/scenarios.rs:159-172,295-304` still construct `RequirementsService` from an `EffectiveConfig` without calling `AgentExecutionService::with_effective_config(...)`. After this branch, those builders no longer match production timeout behavior: requirements invocations created through them ignore configured `backends.<family>.timeout_seconds` / `role_timeouts.*` and fall back to the default timeout. Update these helper builders to attach the same `effective_config` clone as the production builder so daemon/conformance regressions can actually exercise the configured-timeout path.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

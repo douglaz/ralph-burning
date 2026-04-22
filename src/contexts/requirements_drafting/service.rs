@@ -23,7 +23,7 @@ use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::RawOutputPort;
 use crate::contexts::milestone_record::bundle::MilestoneBundle;
 use crate::contexts::workspace_governance::template_catalog;
-use crate::shared::domain::{BackendRole, FlowPreset, ProjectId, SessionPolicy};
+use crate::shared::domain::{BackendPolicyRole, BackendRole, FlowPreset, ProjectId, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
 use super::contracts::{RequirementsContract, RequirementsPayload, RequirementsValidatedBundle};
@@ -37,6 +37,16 @@ use super::renderers;
 
 /// Maximum quick-mode revision cycles before forcing termination.
 const MAX_QUICK_REVISIONS: u32 = 5;
+
+fn requirements_backend_policy_role(role: BackendRole) -> BackendPolicyRole {
+    match role {
+        BackendRole::Planner => BackendPolicyRole::Planning,
+        BackendRole::Implementer => BackendPolicyRole::Implementer,
+        BackendRole::Reviewer => BackendPolicyRole::Reviewer,
+        BackendRole::QaValidator => BackendPolicyRole::Qa,
+        BackendRole::CompletionJudge => BackendPolicyRole::Completer,
+    }
+}
 
 // ── Port traits ─────────────────────────────────────────────────────────────
 
@@ -2140,6 +2150,10 @@ where
             None,
             self.workspace_defaults.as_ref(),
         )?;
+        let timeout = self.agent_service.timeout_for_policy_role(
+            target.backend.family,
+            requirements_backend_policy_role(role),
+        );
 
         let request = InvocationRequest {
             invocation_id: format!(
@@ -2158,7 +2172,7 @@ where
                 prompt: prompt.to_owned(),
                 context: serde_json::Value::Null,
             },
-            timeout: std::time::Duration::from_secs(300),
+            timeout,
             cancellation_token: CancellationToken::new(),
             session_policy: SessionPolicy::NewSession,
             prior_session: None,
