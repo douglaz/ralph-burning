@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 8
+      "completion_round": 9
     },
     "started_at": "2026-04-21T22:41:08.629161853Z",
     "prompt_hash_at_cycle_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "prompt_hash_at_stage_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 7
+    "final_review_restart_count": 8
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 8,
+  "completion_rounds": 9,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-8-48610949",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 8,
+        "body": "finding_summary: `build_checkpoint_tree` now removes tracked ignored/assume-unchanged paths from the checkpoint tree entirely, so the checkpoint commit records them as deletions instead of freezing their previously tracked contents.\naffected_files:\n- src/adapters/worktree.rs:218-223\n- src/adapters/worktree.rs:520-548\n- src/adapters/worktree.rs:600-601\n- tests/unit/checkpoint_test.rs:347-660\nremediation_hint: After `git add -A`, restore ignored/assume-unchanged paths to their current real-index/parent-tree entry instead of `update-index --force-remove` whenever the path is still tracked there; only remove paths that are already absent from the real index (for example after an explicit `git rm --cached`).",
+        "created_at": "2026-04-22T03:54:39.822125517Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d94639079b5bf641cbed81c18858a0fc284f3fb82b57cc66aec4f64dc2543752"
+      }
+    ],
     "processed_count": 10
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 9 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-22T03:07:25.292835466Z",
+    "resolved_at": "2026-04-22T03:39:03.316556138Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
