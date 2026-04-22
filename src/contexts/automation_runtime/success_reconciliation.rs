@@ -721,6 +721,10 @@ async fn capture_next_step_hint<V: BvProcessRunner>(bv: &BvAdapter<V>) -> HintCa
 /// (a missing hint simply means the operator decides the next bead manually),
 /// full crash durability is not required here.
 fn persist_next_step_hint(base_dir: &Path, milestone_id_str: &str, hint: &NextBeadResponse) {
+    // Atomic write (tmp + rename) prevents torn reads, but the rename is not
+    // crash-durable on all Linux filesystems without an fsync on the parent
+    // directory. Hints are best-effort and non-blocking, so losing one on
+    // crash is acceptable — we intentionally skip the fsync.
     let Ok(milestone_id) = MilestoneId::new(milestone_id_str) else {
         return;
     };
