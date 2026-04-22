@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T01:36:10.249363965Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against `ca4d23414de261e5b7d9716c8c608569045ab18d`, read the changed implementation files end-to-end, and checked the `result` untracking change. One medium fix-now issue remains: checkpoint cleanup intentionally skips standard ignore sources outside repository `.gitignore`, so the bead's tracked-but-ignored cleanup is not fully implemented.\n\n## Amendments\n\n1. `src/adapters/worktree.rs:142-152` narrows tracked ignored-path detection to `git ls-files -i -c --exclude-per-directory=.gitignore`, and `build_checkpoint_tree` only removes the paths returned by that scan (`src/adapters/worktree.rs:269-274`). That means tracked files ignored via other standard Git ignore sources, notably `.git/info/exclude` and `core.excludesFile`, still survive into checkpoint commits. The new tests at `tests/unit/checkpoint_test.rs:437-533` explicitly lock in that narrower behavior. The bead requires the standard-ignore behavior (`--exclude-standard` or equivalent), so this leaves `rb: checkpoint` incomplete and still able to leak unrelated locally ignored tracked files into diffs.\n   Rationale: This is the same correctness problem the bead is trying to solve, just for the rest of Git's standard ignore sources instead of only repository `.gitignore` files. A local reproduction shows `git ls-files -i -c --exclude-standard` reports these paths while the current `--exclude-per-directory=.gitignore` call does not.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

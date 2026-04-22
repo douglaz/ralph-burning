@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 4
+      "completion_round": 5
     },
     "started_at": "2026-04-21T22:41:08.629161853Z",
     "prompt_hash_at_cycle_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "prompt_hash_at_stage_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 3
+    "final_review_restart_count": 4
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 4,
+  "completion_rounds": 5,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-4-f5a0ed29",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 4,
+        "body": "`src/adapters/worktree.rs:142-152` narrows tracked ignored-path detection to `git ls-files -i -c --exclude-per-directory=.gitignore`, and `build_checkpoint_tree` only removes the paths returned by that scan (`src/adapters/worktree.rs:269-274`). That means tracked files ignored via other standard Git ignore sources, notably `.git/info/exclude` and `core.excludesFile`, still survive into checkpoint commits. The new tests at `tests/unit/checkpoint_test.rs:437-533` explicitly lock in that narrower behavior. The bead requires the standard-ignore behavior (`--exclude-standard` or equivalent), so this leaves `rb: checkpoint` incomplete and still able to leak unrelated locally ignored tracked files into diffs.",
+        "created_at": "2026-04-22T01:40:24.577069868Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "1c3d65c9867a0ae0b75aad3f32d8e2edafd65be4c4a11207664b0302d460d6a5"
+      }
+    ],
     "processed_count": 6
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 5 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-22T00:39:48.594946039Z",
+    "resolved_at": "2026-04-22T01:28:42.713490483Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T01:40:24.552595729Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nOne amendment reviewed. The implementation's ignore detection (`git ls-files -i -c --exclude-per-directory=.gitignore`) is narrower than the bead's explicit requirement (`--exclude-standard`), and the new tests lock in that narrower behavior. Tracked files ignored via `.git/info/exclude` or `core.excludesFile` still leak into checkpoint commits, contrary to the spec.\n\n## Votes\n\n- `fr-4-f5a0ed29`: Accept\n  Verified: `src/adapters/worktree.rs:151` uses `--exclude-per-directory=.gitignore`, and `build_checkpoint_tree` (lines 269-274) only removes paths returned by that scan. This excludes `.git/info/exclude` and `core.excludesFile` sources. The bead explicitly specifies `--exclude-standard` in both the implementation sketch (line 31) and the acceptance criterion (line 94). The listed alternative implementations also use `git check-ignore`, which honors standard ignore sources by default. The new tests at `tests/unit/checkpoint_test.rs:437-533` explicitly assert that files ignored via `.git/info/exclude` and `core.excludesFile` ARE included in the checkpoint tree, actively cementing a deviation from the bead. The implementer's plan artifact describes this as a deliberate narrowing to 'only repository-scoped tracked gitignored paths,' but there is no rationale in code, commit, or bead amendment — so the implementation ships incomplete relative to the required behavior. A developer with a tracked file in a local/global exclude source will still see those modifications leak into checkpoint diffs, which is the exact failure mode the bead set out to eliminate. Either the implementation should broaden to `--exclude-standard` (matching the spec), or the divergence should be justified and the bead amended; the current state is neither.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 4
+}
