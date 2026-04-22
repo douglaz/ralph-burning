@@ -1,0 +1,7 @@
+id = "q1a-1"
+name = "document-shadowed-task-binding"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "d2c475d5f02791245d6bb0d1f17e743c114784271441e8039ae560cf63b1d51d"
+created_at = "2026-04-22T09:20:02.531879580Z"
+status_summary = "created"
