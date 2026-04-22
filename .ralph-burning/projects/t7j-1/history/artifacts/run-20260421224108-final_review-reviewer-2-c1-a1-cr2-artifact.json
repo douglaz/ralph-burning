@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:17:12.664173312Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed branch vs fork point ca4d234. Part A adds tracked-gitignored and assume-unchanged path removal in build_checkpoint_tree via two ls-files queries (one against temp index with -i -c --exclude-standard, one against real index with -v to catch assume-unchanged bits not carried by read-tree), deduplicated in a BTreeSet, removed via update-index --force-remove. Part B untracks result with git rm --cached. Two tests cover both cases in tests/unit/checkpoint_test.rs. The -v output parser correctly filters the lowercase-letter-then-space tag format. git ls-files -i -c --exclude-standard on HEAD returns empty, confirming the acceptance criterion. The top-level prompt-t7j.md follows an existing repo pattern (18 similar prompt-*.md files from prior PRs) and is not a stray. No correctness, safety, or maintainability issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 2
+}

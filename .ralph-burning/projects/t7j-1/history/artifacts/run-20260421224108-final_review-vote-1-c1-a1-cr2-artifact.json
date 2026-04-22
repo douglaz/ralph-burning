@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:22:06.802743733Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. It identifies a real correctness bug in checkpoint filtering for tracked ignored and assume-unchanged paths with non-UTF-8 filenames.\n\n## Votes\n\n- `fr-2-8798c01f`: Accept\n  `git ls-files -z` produces raw pathname bytes, but the implementation in `src/adapters/worktree.rs` converts those entries with `String::from_utf8_lossy` and later feeds the rewritten UTF-8 text back into `git update-index --force-remove`. That is not a lossless round-trip on Unix for non-UTF-8 filenames, so the removal step can target a different path than the one present in the temporary checkpoint index. The consequence is real behavioral breakage: tracked gitignored or assume-unchanged files with invalid UTF-8 bytes can remain in the checkpoint tree even though the code intends to strip them. The existing tests only exercise UTF-8 names, so this regression would not be caught without the proposed coverage. Preserving raw path bytes or `OsStr`/`OsString` values through the Git round-trip is the right remediation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

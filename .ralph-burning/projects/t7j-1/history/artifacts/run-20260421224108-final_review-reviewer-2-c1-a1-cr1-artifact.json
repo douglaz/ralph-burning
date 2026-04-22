@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T23:36:31.973587784Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nPart A (code change in src/adapters/worktree.rs plus tests in tests/unit/checkpoint_test.rs) is implemented correctly: the temporary checkpoint index now has tracked-gitignored and assume-unchanged paths force-removed before write-tree, with unit tests covering both cases via the public VCS port API. However, Part B — running `git rm --cached -- result` and committing the removal on this branch — has not been done. `result` is still tracked in the index today, so two of the bead's acceptance criteria are unmet, and the PR effectively ships only half the fix; worse, Part A without Part B will cause the next checkpoint based on a master parent to show `result` as a spurious deletion.\n\n## Amendments\n\n1. Part B of the bead (untracking `result`) was not performed. `result` is still present in the git index on this branch (`git ls-files result` returns it; `git ls-files -i -c --exclude-standard` on HEAD lists `result`). The only commit on the branch (7518cc15) actually updates the `result` symlink target rather than removing it from the index.\n\nThe bead explicitly states: \"This has two parts. Both must land in this PR.\" It also lists as acceptance criteria:\n- `result` is no longer tracked on `master` (post-merge).\n- `git ls-files -i -c --exclude-standard` on a fresh clone of master prints nothing.\n\nNeither is currently met. Additionally, shipping Part A without Part B has a concrete downstream effect: the next post-merge ralph-burning checkpoint whose parent still tracks `result` will produce a tree that omits `result`, so the checkpoint commit diff shows `result` as a spurious **deletion** rather than the old symlink-target update — the review noise is reshaped rather than eliminated.\n\nRemediation (as specified by the bead): run `git rm --cached -- result` from the repo root and commit the removal on this branch. Do not delete the physical symlink. No other files need untracking — `git ls-files -i -c --exclude-standard` currently returns only `result`.\n\nAffected files: `result` (index entry), repo root.\n   Rationale: The bead's Required Fix section labels this as Part B and says both parts must land in this PR. Without it, two explicit acceptance criteria fail, and Part A alone merely reshapes the diff noise into a spurious deletion.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

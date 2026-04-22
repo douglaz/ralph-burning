@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:51:22.916115438Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments raise real issues. Two expose correctness/safety problems in checkpoint construction, and one identifies a tracked transient file that should not merge.\n\n## Votes\n\n- `fr-3-9b4ace14`: Accept\n  `assume-unchanged` is a local index hint, not a change in repository membership. The current code gathers those tracked paths and passes them to `git update-index --force-remove`, which converts a tracked parent-tree entry into a deletion in the checkpoint commit. That leaks local index state into persisted history and makes the checkpoint semantically wrong for tracked files; the safe behavior is to preserve the parent-tree version of those paths, not drop them from the tree.\n- `fr-3-db88e41e`: Accept\n  This is a real nondeterminism bug. `git ls-files -i -c --exclude-standard` consults repository ignores plus `.git/info/exclude` and `core.excludesFile`, and the result is then force-removed from the checkpoint index. That means user-local ignore config can silently delete tracked files from checkpoint commits on one machine but not another, which is a correctness and reproducibility failure.\n- `fr-3-b52d9ef4`: Accept\n  `prompt-t7j.md` is currently a tracked top-level file introduced by checkpoint commit `7518cc15`, it is byte-identical to `.ralph-burning/projects/t7j-1/prompt.md`, and it is not ignored. Leaving it in the branch would merge an obvious transient scratch artifact into the repo root. Removing it before merge is the correct cleanup.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

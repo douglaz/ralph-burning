@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:54:55.183062431Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nThe branch delivers both Part A (filter gitignored/assume-unchanged paths from the checkpoint temp index) and Part B (`git rm --cached result`, commit 70eabf73). `src/adapters/worktree.rs::build_checkpoint_tree` collects tracked-but-gitignored paths from both the real index (captured before `read-tree`) and the temp index (after `add -A`), plus assume-unchanged paths via `ls-files -z -s -v`. For paths present in the real index, it restores the real-index entry via `update-index --index-info`; for paths not in the real index, it issues `update-index --force-remove`. This preserves the parent/real-index version of tracked-but-gitignored paths rather than removing them from the tree entirely — slightly softer than the task sketch's literal `drop them out of the tree` instruction, but it satisfies the acceptance test phrasing (`checkpoint tree does NOT contain the modified blob`) and avoids creating unintended deletion diffs for paths that are still tracked on the base branch (e.g., merged from master before Part B propagated). The specific `result` scenario works correctly: after Part B, `result` is not in the real index, `add -A` skips it as gitignored+untracked, and the checkpoint tree never contains it. Test coverage is comprehensive: tracked+gitignored modifications, deletions, `git rm --cached` untrack-then-modify, assume-unchanged (including a tab-in-filename variant), `.git/info/exclude`, `core.excludesFile`, and non-UTF-8 paths via raw-bytes assertion helpers. Non-UTF-8 path handling uses `OsStr::from_bytes` on unix. Command-line argument passing uses `Command::args` (no shell injection risk). `restore_index_entries_in_index` correctly pipes NUL-separated `ls-files -s` entries to `update-index -z --index-info`, and `wait_with_output` ensures stdin is closed before waiting. No critical bugs, correctness gaps, or safety issues identified. `.gitignore` already contains `result` at line 5, and `git ls-tree HEAD -- result` confirms it is no longer tracked on this branch.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 10
+}

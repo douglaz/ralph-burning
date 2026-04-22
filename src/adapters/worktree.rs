@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -121,9 +122,164 @@ impl WorktreeAdapter {
             .map_err(AppError::from)
     }
 
+    #[cfg(unix)]
+    fn git_path_from_bytes(path: &[u8]) -> PathBuf {
+        use std::os::unix::ffi::OsStrExt;
+
+        PathBuf::from(OsStr::from_bytes(path))
+    }
+
+    #[cfg(not(unix))]
+    fn git_path_from_bytes(path: &[u8]) -> PathBuf {
+        PathBuf::from(String::from_utf8_lossy(path).into_owned())
+    }
+
+    fn tracked_gitignored_paths_from_output(ignored_output: Output) -> AppResult<Vec<PathBuf>> {
+        if !ignored_output.status.success() {
+            return Err(Self::git_error(&ignored_output));
+        }
+
+        Ok(ignored_output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty())
+            .map(Self::git_path_from_bytes)
+            .collect())
+    }
+
+    fn tracked_gitignored_paths(repo_root: &Path) -> AppResult<Vec<PathBuf>> {
+        let ignored_output = Self::git(
+            repo_root,
+            &["ls-files", "-z", "-i", "-c", "--exclude-standard"],
+        )?;
+        Self::tracked_gitignored_paths_from_output(ignored_output)
+    }
+
+    fn tracked_gitignored_paths_in_index(
+        repo_root: &Path,
+        index_path: &Path,
+    ) -> AppResult<Vec<PathBuf>> {
+        let ignored_output = Self::git_in_index(
+            repo_root,
+            index_path,
+            &["ls-files", "-z", "-i", "-c", "--exclude-standard"],
+        )?;
+        Self::tracked_gitignored_paths_from_output(ignored_output)
+    }
+
+    fn assume_unchanged_paths(repo_root: &Path) -> AppResult<Vec<PathBuf>> {
+        let tracked_output = Self::git(repo_root, &["ls-files", "-z", "-s", "-v"])?;
+        if !tracked_output.status.success() {
+            return Err(Self::git_error(&tracked_output));
+        }
+
+        Ok(tracked_output
+            .stdout
+            .split(|entry| *entry == 0)
+            .filter_map(|entry| match entry {
+                [status, b' ', index_info @ ..]
+                    if status.is_ascii_lowercase() && !index_info.is_empty() =>
+                {
+                    index_info
+                        .splitn(2, |byte| *byte == b'\t')
+                        .nth(1)
+                        .filter(|path| !path.is_empty())
+                        .map(Self::git_path_from_bytes)
+                }
+                _ => None,
+            })
+            .collect())
+    }
+
+    fn tracked_index_entries(
+        repo_root: &Path,
+        paths: &BTreeSet<PathBuf>,
+    ) -> AppResult<BTreeMap<PathBuf, Vec<u8>>> {
+        if paths.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+
+        let mut command = Self::git_command(repo_root);
+        command.args(["ls-files", "-z", "-s", "--"]);
+        command.args(paths.iter().map(|path| path.as_os_str()));
+        let tracked_output = command.output().map_err(AppError::from)?;
+        if !tracked_output.status.success() {
+            return Err(Self::git_error(&tracked_output));
+        }
+
+        Ok(tracked_output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|entry| !entry.is_empty())
+            .filter_map(|entry| {
+                entry
+                    .splitn(2, |byte| *byte == b'\t')
+                    .nth(1)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| (Self::git_path_from_bytes(path), entry.to_vec()))
+            })
+            .collect())
+    }
+
+    fn remove_paths_from_index(
+        repo_root: &Path,
+        index_path: &Path,
+        paths: &BTreeSet<PathBuf>,
+    ) -> AppResult<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+
+        let mut command = Self::git_command_with_index(repo_root, index_path);
+        command.args(["update-index", "--force-remove", "--"]);
+        command.args(paths.iter().map(|path| path.as_os_str()));
+        let remove_output = command.output().map_err(AppError::from)?;
+        if !remove_output.status.success() {
+            return Err(Self::git_error(&remove_output));
+        }
+
+        Ok(())
+    }
+
+    fn restore_index_entries_in_index(
+        repo_root: &Path,
+        index_path: &Path,
+        entries: &BTreeMap<PathBuf, Vec<u8>>,
+    ) -> AppResult<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut child = Self::git_command_with_index(repo_root, index_path)
+            .args(["update-index", "-z", "--index-info"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(AppError::from)?;
+
+        if let Some(stdin) = child.stdin.as_mut() {
+            for entry in entries.values() {
+                stdin.write_all(entry).map_err(AppError::from)?;
+                stdin.write_all(&[0]).map_err(AppError::from)?;
+            }
+        }
+
+        let restore_output = child.wait_with_output().map_err(AppError::from)?;
+        if !restore_output.status.success() {
+            return Err(Self::git_error(&restore_output));
+        }
+
+        Ok(())
+    }
+
     fn build_checkpoint_tree(repo_root: &Path, parent_sha: Option<&str>) -> AppResult<String> {
         let checkpoint_index = TemporaryGitIndex::new();
         let index_path = checkpoint_index.path();
+        let preexisting_tracked_gitignored_paths: BTreeSet<PathBuf> =
+            Self::tracked_gitignored_paths(repo_root)?
+                .into_iter()
+                .collect();
 
         let read_tree_output = match parent_sha {
             Some(parent_sha) => {
@@ -139,6 +295,21 @@ impl WorktreeAdapter {
         if !add_output.status.success() {
             return Err(Self::git_error(&add_output));
         }
+
+        let mut filtered_paths: BTreeSet<PathBuf> =
+            Self::tracked_gitignored_paths_in_index(repo_root, index_path)?
+                .into_iter()
+                .collect();
+        filtered_paths.extend(preexisting_tracked_gitignored_paths);
+        filtered_paths.extend(Self::assume_unchanged_paths(repo_root)?);
+
+        let tracked_entries = Self::tracked_index_entries(repo_root, &filtered_paths)?;
+        let tracked_paths: BTreeSet<PathBuf> = tracked_entries.keys().cloned().collect();
+        let remove_paths: BTreeSet<PathBuf> =
+            filtered_paths.difference(&tracked_paths).cloned().collect();
+
+        Self::restore_index_entries_in_index(repo_root, index_path, &tracked_entries)?;
+        Self::remove_paths_from_index(repo_root, index_path, &remove_paths)?;
 
         let write_tree_output = Self::git_in_index(repo_root, index_path, &["write-tree"])?;
         if !write_tree_output.status.success() {

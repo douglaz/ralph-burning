@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:53:05.412956787Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch delta against `ca4d23414de261e5b7d9716c8c608569045ab18d` and the changed source/tests. One fix-now correctness gap remains: `build_checkpoint_tree` still rehydrates explicitly staged ignored paths into checkpoint commits.\n\n## Amendments\n\n1. finding_summary: `src/adapters/worktree.rs:279-312` restores gitignored / assume-unchanged paths from the real index back into the temporary checkpoint index. That means an ignored file that is explicitly staged in the real index (`git add -f ignored.txt`, or a staged change to an already-tracked ignored path) is still written into the checkpoint tree instead of being dropped. This defeats the bead's core guarantee that checkpoint commits must not capture ignored paths, and it can still leak ignored artifacts or local config into rollback commits. The new tests at `tests/unit/checkpoint_test.rs:435-824` only cover unstaged workspace changes, so this regression is not exercised. affected_files: `src/adapters/worktree.rs`, `tests/unit/checkpoint_test.rs`. remediation_hint: remove ignored / assume-unchanged paths from the temporary index rather than restoring their real-index entries, and add a regression test that stages an ignored path before `create_checkpoint()` and asserts the checkpoint does not contain the staged ignored blob.\n   Rationale: The branch correctly untracks `result`, but the new checkpoint-tree filtering still allows ignored content to leak into checkpoint commits whenever that content is present in the real index, which is exactly the class of bug this bead is supposed to eliminate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

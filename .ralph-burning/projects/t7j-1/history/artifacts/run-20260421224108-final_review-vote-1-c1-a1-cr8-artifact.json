@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T03:49:56.142903769Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 1 amendment. The checkpoint filtering change is a real regression: it turns tracked ignored or assume-unchanged files into deletions instead of preserving their prior tracked contents.\n\n## Votes\n\n- `fr-8-48610949`: Accept\n  `build_checkpoint_tree` seeds the temporary index from `parent_sha` with `read-tree`, runs `git add -A`, then calls `update-index --force-remove` on every filtered path. For any ignored or assume-unchanged path that is still tracked in the real index or parent tree, that does not merely skip local modifications; it removes the entry from the checkpoint tree entirely, so the checkpoint commit records a deletion. Because `create_checkpoint` then immediately does `git reset --mixed` to that checkpoint, those paths become silently untracked in the live repo, and `reset_to_checkpoint` can no longer restore their previously tracked contents. Restoring the real tracked entry when the path is still tracked, and only removing it when the real index has already dropped it (for example after `git rm --cached`), is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

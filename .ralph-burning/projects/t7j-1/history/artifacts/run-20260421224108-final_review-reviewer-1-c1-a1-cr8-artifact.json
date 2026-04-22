@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T03:47:39.364265703Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the full branch delta against ca4d23414de261e5b7d9716c8c608569045ab18d, including `src/adapters/worktree.rs`, `tests/unit/checkpoint_test.rs`, and the `result` untracking change. I found one high-severity correctness/safety regression in how checkpoint trees handle tracked ignored/assume-unchanged paths; no other in-scope issues stood out.\n\n## Amendments\n\n1. finding_summary: `build_checkpoint_tree` now removes tracked ignored/assume-unchanged paths from the checkpoint tree entirely, so the checkpoint commit records them as deletions instead of freezing their previously tracked contents.\naffected_files:\n- src/adapters/worktree.rs:218-223\n- src/adapters/worktree.rs:520-548\n- src/adapters/worktree.rs:600-601\n- tests/unit/checkpoint_test.rs:347-660\nremediation_hint: After `git add -A`, restore ignored/assume-unchanged paths to their current real-index/parent-tree entry instead of `update-index --force-remove` whenever the path is still tracked there; only remove paths that are already absent from the real index (for example after an explicit `git rm --cached`).\n   Rationale: Because `create_checkpoint` immediately makes the checkpoint tree the new HEAD and rollback later uses `reset --hard`, this implementation turns any still-tracked ignored path into an unrelated deletion in branch diffs and can delete that file from disk during rollback/resume. The bead goal was to stop leaking local mutations, not to rewrite tracked files out of the branch history.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

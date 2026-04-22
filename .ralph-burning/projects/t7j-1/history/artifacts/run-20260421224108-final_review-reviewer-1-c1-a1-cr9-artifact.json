@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:21:22.262543410Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch delta against ca4d23414de261e5b7d9716c8c608569045ab18d, focusing on src/adapters/worktree.rs, tests/unit/checkpoint_test.rs, and the result untracking change. Found two fix-now correctness issues in the ignored-path checkpoint filtering logic.\n\n## Amendments\n\n1. src/adapters/worktree.rs:280-292 restores tracked gitignored and assume-unchanged entries from the real index back into the checkpoint index instead of removing them before write-tree, and tests/unit/checkpoint_test.rs:435-473, 522-562, 621-722, and 724-782 assert that those paths remain present in the checkpoint commit. The bead explicitly requires ignored paths to be dropped from checkpoint trees; as implemented, checkpoint commits still carry any ignored path that remains tracked, so Part A's generic fix is not actually implemented. Adjust the filtering to remove the ignored entries from the temporary index and update the tests to expect omission, not preservation.\n   Rationale: Part B cleans up the current tracked result symlink, but the code path that is supposed to prevent future tracked-and-ignored leaks still preserves those files in checkpoint trees. That leaves the underlying class of bug in place and codifies the wrong contract in tests.\n2. src/adapters/worktree.rs:137-152 and 280-289 discover tracked gitignored paths only from the temporary index after git add -A has already rewritten it. If a tracked-but-gitignored path is deleted or renamed in the worktree, add -A removes it from that index first, so tracked_gitignored_paths returns nothing and the checkpoint commit records an unrelated deletion. The new tests only cover modified ignored files, not this cleanup/remove case. Derive the candidate ignored set from the real index before staging, or otherwise merge the pre-add tracked ignored paths into the filter set so deletions are suppressed too.\n   Rationale: The original bug was noisy checkpoint diffs from ignored build artifacts. Deleting or renaming a tracked ignored artifact produces the same kind of unrelated checkpoint churn, and this implementation still lets that case through.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

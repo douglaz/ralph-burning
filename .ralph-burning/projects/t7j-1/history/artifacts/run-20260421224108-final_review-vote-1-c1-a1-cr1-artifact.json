@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T23:37:56.725795815Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments correctly identify the same unresolved defect: this branch still tracks the gitignored `result` symlink, so the bead is incomplete and the branch does not satisfy the stated acceptance criteria for untracking it.\n\n## Votes\n\n- `fr-1-1cce7e4f`: Accept\n  The finding is technically correct. On this branch, `git ls-files result` still returns `result`, and `git ls-files -i -c --exclude-standard` still reports it, which means Part B was not implemented. The branch commit updates the symlink target instead of removing the index entry, so the remediation to run `git rm --cached -- result` without deleting the working-tree symlink is the right fix.\n- `fr-1-116d0ab2`: Accept\n  This amendment is also correct and more fully substantiated. The prompt for this bead explicitly requires both parts in the same PR, but the current branch only lands the checkpoint-tree filtering logic and leaves `result` tracked in `HEAD`. That means the acceptance criteria about `result` no longer being tracked and `git ls-files -i -c --exclude-standard` returning nothing are still unmet. Its downstream-effect analysis is also sound: if the parent commit still tracks `result`, checkpoint commits that omit it will continue to produce a spurious `result` diff until the path is actually removed from the index.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

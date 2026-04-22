@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421224108-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260421224108-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:22:19.841322597Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-8798c01f`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-8798c01f`\n\nfinding_summary: Paths returned by `git ls-files -z ...` are byte strings, but the new ignored-path filtering lossy-decodes them to `String` before feeding them back to `git update-index --force-remove`. That breaks tracked gitignored and assume-unchanged files whose names are not valid UTF-8: the temporary checkpoint index keeps the original raw path, so the checkpoint still leaks that file. I reproduced this with a temp repo containing `bad\\xff.txt`, where removing the lossy-decoded name exits 0 but the raw path remains in the index.\naffected_files: `src/adapters/worktree.rs:134-138`, `src/adapters/worktree.rs:148-157`, `src/adapters/worktree.rs:170-174`, `tests/unit/checkpoint_test.rs:289-358`\nremediation_hint: Preserve raw path bytes / `OsString` values through the round-trip and pass them back to Git without UTF-8 conversion, for example by building command args from `OsStrExt::from_bytes` or by using a NUL-delimited stdin path channel.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

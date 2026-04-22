@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T03:43:52.818232996Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed branch delta (src/adapters/worktree.rs, tests/unit/checkpoint_test.rs, and the result symlink removal) against fork point ca4d23414de261e5b7d9716c8c608569045ab18d. Part A correctly filters both tracked+gitignored paths (via `ls-files -z -i -c --exclude-standard` against the temporary index) and assume-unchanged paths (via `ls-files -z -s -v` against the real index, which is the right scope since `read-tree` does not carry assume-unchanged bits into the temporary index), then removes them via `update-index --force-remove` on the temporary index only. Byte-oriented parsing (`OsStr::from_bytes` on Unix, NUL splitting, `splitn(2, b'\\t')`) correctly handles non-UTF8 paths and paths with embedded tabs. Part B is complete: `result` is untracked and `git ls-files -i -c --exclude-standard` on this branch is empty. Test coverage is strong and includes edge cases (tab-in-path, non-UTF8, .git/info/exclude, core.excludesFile, post-`rm --cached`, reset-to-checkpoint). No correctness, safety, or robustness issues worth fixing now; no new beads to propose.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T01:37:34.979329244Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed branch delta against ca4d23414de261e5b7d9716c8c608569045ab18d. The two-part fix is correctly implemented: (A) build_checkpoint_tree now drops tracked-but-gitignored paths via ls-files -i -c --exclude-per-directory=.gitignore + update-index --force-remove, and preserves parent-version blobs for assume-unchanged paths via ls-files -v -s -z piped into update-index --index-info; (B) commit 70eabf73 stops tracking the result symlink. Tests exercise the gitignored case, assume-unchanged preservation, explicit non-use of .git/info/exclude and core.excludesFile, and non-UTF-8 paths on Unix. Verified git ls-files -i -c --exclude-standard is empty on current HEAD, pre-existing checkpoint tests are unaffected (they introduce no .gitignore), and the ls-files -v -s -z format parsing matches git's actual record layout. Minor theoretical gaps exist (assume_unchanged_index_entries's nth(1) tab split truncates paths containing literal tabs but the index_info blob it feeds to update-index is still the full correct bytes, and remove_paths_from_index passes every path as argv which could hit ARG_MAX on repos with thousands of tracked+gitignored files) but neither produces a real-world correctness or safety problem given the filter logic and expected path counts. No amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 4
+}

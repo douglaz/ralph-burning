@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T05:00:02.237746326Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed fr-10-7fc894ca against the code at src/adapters/worktree.rs:276-329 and the test suite at tests/unit/checkpoint_test.rs:434-824. The amendment proposes dropping gitignored paths entirely rather than restoring their real-index entries. I reject it.\n\n## Votes\n\n- `fr-10-7fc894ca`: Reject\n  The 'preserve real-index entry' design is a deliberate, tested choice that better serves the bead's motivation than the literal 'remove' instruction. (1) Existing tests at checkpoint_test.rs:435-474, 564-604, 663-709, 712-763, 767-824 explicitly assert that the checkpoint CONTAINS the real-index blob for tracked-gitignored and assume-unchanged paths — the bead's own test spec phrasing 'does NOT contain the modified blob' is satisfied by preserving the unmodified real-index blob, not by absence. Implementing the remediation would require rewriting these tests. (2) Strict removal would create unintended deletion diffs in checkpoint commits whenever a tracked-gitignored path exists on the parent tree (e.g., during the transient pre-Part-B state, or for other tracked-gitignored paths beyond `result`), directly contradicting the acceptance criterion 'does NOT introduce changes in checkpoint commits'. (3) The concrete `result` symlink flip scenario works correctly under the current design: the workspace flip is staged by `git add -A`, then restore overwrites with the real-index entry (matching master's blob), yielding zero diff. (4) The finding's `git add -f` edge case is unusual in orchestration — ralph-burning phases don't force-add gitignored files, and if a user explicitly stages one, the real index already reflects their intent, so mirroring it in the checkpoint is consistent rather than broken. The reviewer-2 analysis on this same round reached the same conclusion independently.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 10
+}

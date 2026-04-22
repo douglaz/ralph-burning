@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-arbiter-c1-a1-cr10-artifact",
+  "payload_id": "run-20260421224108-final_review-arbiter-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T05:04:17.833210914Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. The current restore-from-real-index behavior is deliberate, covered by tests, consistent with the bead's explicit-staging carve-out, and avoids reintroducing the deletion/rollback regressions that earlier review rounds already fixed.\n\n## Rulings\n\n- `fr-10-7fc894ca`: Reject\n  `build_checkpoint_tree()` is intentionally split between restoring filtered paths that are still tracked in the real index and force-removing only the filtered paths that are already absent there (`src/adapters/worktree.rs:299-312`). That contract is exercised by the current regression suite: tracked gitignored paths keep their real-index blob (`tests/unit/checkpoint_test.rs:435-515`), explicitly untracked gitignored paths are omitted and stay untracked after reset (`tests/unit/checkpoint_test.rs:517-561`), and assume-unchanged paths also preserve their tracked blob (`tests/unit/checkpoint_test.rs:563-660`). The authoritative bead for `ralph-burning-t7j` also explicitly frames the user-facing goal as preventing `result` diffs 'unless the user explicitly stages it', and on this branch `result` is no longer tracked while `git ls-files -i -c --exclude-standard` is empty, so the motivating tracked-ignored leak has already been removed. The amendment's edge case is therefore a stricter design preference about explicitly staged ignored content, not a correctness defect in the current implementation. Accepting it would require reverting to drop-from-tree semantics that prior accepted review rounds changed precisely because they turned still-tracked ignored/assume-unchanged paths into deletions and broke checkpoint/reset safety.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

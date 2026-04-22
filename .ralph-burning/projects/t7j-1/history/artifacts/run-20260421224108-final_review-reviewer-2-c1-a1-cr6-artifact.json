@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T02:40:10.487891229Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed full branch delta against origin/master fork point. Part A (src/adapters/worktree.rs) captures parent-commit index entries for tracked+gitignored and assume-unchanged paths before `git add -A`, then restores them via `update-index --index-info` after the add, producing a checkpoint tree whose ignored-path content equals the parent's (no diff). This is a valid alternative to the bead's suggested `update-index --force-remove` approach — arguably safer because it doesn't introduce spurious deletions when the parent still tracks the path. Part B (commit 70eabf73) untracks `result`, and `git ls-files -i -c --exclude-standard` on the branch prints nothing. Test coverage in tests/unit/checkpoint_test.rs is comprehensive: tracked+gitignored, real-index-untracks edge case, assume-unchanged, .git/info/exclude, core.excludesFile, and non-UTF-8 gitignored paths. Non-UTF-8 paths are handled via raw-byte roundtripping (OsStrExt::from_bytes on Unix) and stored index_info bytes are piped back verbatim, preserving path bytes exactly. The `index_info_entry` TAB parser uses `split('\\t').nth(1)` which would truncate the `path` field for paths containing embedded TABs, but this only affects the deduplication filter — the restoration still uses the full raw bytes — and paths with embedded TABs are extremely rare. No real bugs, safety problems, correctness gaps, or significant maintainability risks found. Acceptance criteria are met; no amendments.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 6
+}

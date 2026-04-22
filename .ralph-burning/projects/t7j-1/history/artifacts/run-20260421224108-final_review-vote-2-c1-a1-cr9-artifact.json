@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:26:35.822912888Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nRejected fr-9-0d90157e: reverting to drop semantics reintroduces a destructive behavior (reset_to_checkpoint deletes tracked-but-gitignored worktree files) that was correctly fixed in round 6; the bead allows alternative implementations and its test spec ('not the modified blob') is met by preservation. Accepted fr-9-369d7ad4: tracked_gitignored_paths runs on the temp index after `git add -A`, so worktree deletions of tracked-but-gitignored paths slip through and become spurious D entries in checkpoint trees — the same class of diff noise the bead was meant to eliminate, and there is no test for the delete/rename case.\n\n## Votes\n\n- `fr-9-0d90157e`: Reject\n  The bead permits 'alternative acceptable implementations' and its test spec only requires that the checkpoint tree not contain the *modified* blob — the current restore-from-real-index approach satisfies that (parent blob is present, not the worktree-modified one). Round 5's review already established that literal-drop semantics are destructive because reset_to_checkpoint does `git reset --hard`, which deletes tracked-but-gitignored worktree files when they are absent from the target tree; round 6 deliberately switched to preservation to avoid this safety issue. Part A's actual goal (eliminate unrelated tracked-but-gitignored noise in PR diffs) is achieved by preservation, and the explicit-untrack case (the `result` scenario) is already covered by worktree_adapter_does_not_retrack_gitignored_paths_after_real_index_untracks_them, which force-removes paths absent from the real index. Accepting this amendment would re-open the destructive regression.\n- `fr-9-369d7ad4`: Accept\n  Verified in src/adapters/worktree.rs:137-152 and 275-292: `git add -A -- .` runs before `tracked_gitignored_paths`, and `ls-files -i -c --exclude-standard` on the temp index only reports still-tracked entries. If the worktree has deleted (or renamed away) a tracked-but-gitignored path, add -A removes it from the temp index, tracked_gitignored_paths returns nothing for it, tracked_index_entries never looks it up against the real index, and the deletion leaks into the checkpoint tree as an unrelated `D ignored.txt`. That is the same class of diff-noise bug the bead set out to kill (e.g., a `nix build` or garbage-collect that drops `result`). tests/unit/checkpoint_test.rs covers only modification cases — none of the tests delete or rename a tracked+ignored file. The suggested fix (union the pre-add real-index tracked-ignored set into filtered_paths, or query the real index instead of the temp index) is compatible with the preservation approach and closes the gap.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 9
+}

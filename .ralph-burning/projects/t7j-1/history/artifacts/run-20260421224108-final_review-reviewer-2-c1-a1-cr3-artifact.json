@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T00:48:55.503668271Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the branch delta against origin/master (fork point ca4d23414). Part A (`WorktreeAdapter::build_checkpoint_tree` now invokes `remove_ignored_paths_from_index` which uses `ls-files -i -c --exclude-standard` plus `ls-files -v` to strip both gitignored and assume-unchanged/skip-worktree entries from the temp index before `write-tree`) is implemented correctly, handles non-UTF-8 paths via `OsStr::from_bytes` on Unix, and is covered by three new tests in `tests/unit/checkpoint_test.rs` (gitignored, assume-unchanged, non-UTF-8 gitignored) — all three pass locally. Part B is complete: commit 70eabf73 removes the `result` symlink from the index, and `git ls-files -i -c --exclude-standard` against HEAD returns empty, satisfying the acceptance criterion. `cargo fmt --check` and `cargo clippy --locked -- -D warnings` are clean; the one failing test in the full suite (`workflow_engine_test::pre_commit_failure_remediation_survives_resume`) also fails on the fork point and is unrelated to this branch. One fix-now finding: `prompt-t7j.md` was accidentally committed at the repo root by the first checkpoint (prior to the Part A fix) and is a byte-identical duplicate of `.ralph-burning/projects/t7j-1/prompt.md`; since it is not gitignored, the Part A fix does not strip it, and it would land on master if merged. It should be `git rm`-ed from the branch before merge.\n\n## Amendments\n\n1. Remove the stray `prompt-t7j.md` file from the repo root before merging. It was added at the root by the first checkpoint commit (7518cc15) via `git add -A -- .`, is byte-identical to `.ralph-burning/projects/t7j-1/prompt.md`, and is not covered by `.gitignore`. It is therefore not excluded by the Part A fix and would land on master if this branch is merged, polluting the top-level tree with a transient scratchpad duplicate of the bead prompt. Recommended remediation: `git rm prompt-t7j.md && git commit -m \"chore: remove stray bead prompt scratchpad from repo root\"`. This is directly adjacent to the bead's stated acceptance goal of keeping master clean.\n   Rationale: The bead explicitly aims to keep master free of transient leaked artifacts. `prompt-t7j.md` at the repo root is a byte-for-byte duplicate of the in-workspace `.ralph-burning/projects/t7j-1/prompt.md`, was introduced on this branch, and would otherwise merge to master as a root-level scratch file. It is cheap to untrack now and carries no downside.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 3
+}

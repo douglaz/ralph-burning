@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T01:38:30.888986192Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe proposed amendment identifies a real correctness regression in checkpoint filtering: the current implementation only honors per-directory `.gitignore` files for tracked ignored-path cleanup and explicitly tests for preserving tracked files ignored by other standard Git mechanisms.\n\n## Votes\n\n- `fr-4-f5a0ed29`: Accept\n  `src/adapters/worktree.rs:142-152` now uses `git ls-files -i -c --exclude-per-directory=.gitignore`, and `build_checkpoint_tree` only removes the paths returned by that scan at `src/adapters/worktree.rs:269-274`. That command does not include ignores from `.git/info/exclude` or `core.excludesFile`; `--exclude-standard` does. The new tests at `tests/unit/checkpoint_test.rs:437-533` intentionally lock in keeping those tracked-but-ignored files in checkpoint commits. This means checkpoint commits can still capture unrelated locally ignored tracked files, which is exactly the class of leak the checkpoint cleanup is supposed to prevent. Even apart from bead wording, that is a real robustness defect and a regression from the earlier `--exclude-standard` behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

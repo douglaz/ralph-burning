@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-arbiter-c1-a1-cr8-artifact",
+  "payload_id": "run-20260421224108-final_review-arbiter-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T03:54:39.792008646Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the disputed amendment. Although the branch follows the prompt/tests literally, the unconditional `--force-remove` logic turns still-tracked ignored or assume-unchanged paths into deletion entries, silently untracks them via the post-checkpoint mixed reset, and breaks the checkpoint system's rollback-fidelity contract.\n\n## Rulings\n\n- `fr-8-48610949`: Accept\n  `build_checkpoint_tree` unconditionally force-removes every filtered path after seeding the temporary index from `parent_sha` and running `git add -A` (`src/adapters/worktree.rs:218-223`). For a path that is still tracked in the parent/real index, that does not mean 'ignore local edits'; it changes the checkpoint tree from 'same tracked entry as parent' to 'path deleted'. Reproducing the current flow yields a parent→checkpoint diff with `D ignored.txt`, so the checkpoint commit still includes the ignored path as a deletion rather than preserving the prior tracked blob. That matters because `create_checkpoint` immediately does `git reset --mixed` to the checkpoint commit (`src/adapters/worktree.rs:520-548`), which drops the entry from the live index, and `reset_to_checkpoint` later hard-resets to the same deletion tree (`src/adapters/worktree.rs:600-601`), so rollback cannot restore the previously tracked state. The omission tests in `tests/unit/checkpoint_test.rs:365-659` only assert tree absence; they do not verify checkpoint/rollback fidelity, and the existing `git rm --cached` case shows omission is only safe once the real index has already untracked the path. The spec/tests here codify the wrong behavior; the finding identifies a real correctness regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

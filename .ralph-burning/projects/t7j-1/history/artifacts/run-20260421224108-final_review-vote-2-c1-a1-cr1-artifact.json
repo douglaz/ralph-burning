@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-21T23:37:47.601350322Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nVerified both findings against the repo: `result` remains in the index on this branch, `git ls-files -i -c --exclude-standard` still prints `result`, and commit 7518cc15 merely updates the symlink target instead of running `git rm --cached`. Part B of the bead is unmet and is explicit acceptance criteria, so both amendments are accepted. They are duplicates of the same defect with the same correct remediation.\n\n## Votes\n\n- `fr-1-1cce7e4f`: Accept\n  Confirmed by direct inspection: `git ls-files result` returns `result` and `git ls-files -i -c --exclude-standard` also returns `result`, so Part B of the bead (untracking `result`) was not implemented. The bead explicitly lists both parts as required and calls out 'result is no longer tracked on master (post-merge)' and 'git ls-files -i -c --exclude-standard on a fresh clone of master prints nothing' as acceptance criteria. The proposed remediation (`git rm --cached -- result` without deleting the working-tree symlink) exactly matches the bead's Part B instructions. High severity is appropriate — shipping only Part A reshapes rather than eliminates the checkpoint-diff noise the bead was created to remove.\n- `fr-1-116d0ab2`: Accept\n  Same defect as fr-1-1cce7e4f, independently verified: `result` is still in the index, the sole branch commit (7518cc15) changes the symlink target (`result | 2 +-`) instead of removing it from tracking, and the bead explicitly says 'both must land in this PR' with acceptance criteria that are currently unmet. The downstream-effect analysis is correct — future checkpoint trees built by the Part A logic will omit `result` against a parent that still tracks it, converting the symlink-target churn into a spurious `result` deletion in the diff. Accepting both duplicates is fine; the remediation will be applied once.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

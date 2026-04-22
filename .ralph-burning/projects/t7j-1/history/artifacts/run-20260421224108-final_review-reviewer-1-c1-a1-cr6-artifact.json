@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T02:41:58.899654627Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `ca4d23414de261e5b7d9716c8c608569045ab18d` and the full changed implementations in `src/adapters/worktree.rs` and `tests/unit/checkpoint_test.rs`. Found one fix-now correctness issue: checkpoint creation restores ignored paths from the parent/index instead of dropping them, so checkpoints can resurrect files that were already untracked with `git rm --cached`.\n\n## Amendments\n\n1. finding_summary: `build_checkpoint_tree` restores ignored entries back into the temporary checkpoint index instead of dropping them, so checkpoint commits can resurrect files that were already intentionally untracked.\naffected_files:\n- `src/adapters/worktree.rs:265-283`\n- `tests/unit/checkpoint_test.rs:352-438`\nremediation_hint: After `git add -A` in the temp index, enumerate ignored / assume-unchanged paths in that temp index and remove them with `git update-index --force-remove -- ...`; then update the regression to assert those paths are absent from the checkpoint tree instead of preserving the parent blob.\n\nThis is not just a spec mismatch. In the `rm --cached` case covered by `worktree_adapter_preserves_parent_version_for_tracked_gitignored_paths_even_if_real_index_untracks_them`, the checkpoint commit reintroduces `ignored.txt` from the parent tree. A later `reset_to_checkpoint` will therefore re-track a file the user explicitly removed from the index, which is the opposite of the bead's goal for `result`-style paths.\n   Rationale: The current implementation snapshots a tree that no longer matches the user's actual index state for ignored paths. That can bring back removed files during checkpoint reset and keeps the wrong invariant encoded in the new tests.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
