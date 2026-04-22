@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422092007-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422092007-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T09:54:12.238764503Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the branch diff against fork point c0065f5a. The bead's only product-code change adds concise comments at src/contexts/automation_runtime/daemon_loop.rs:1139-1141 and 1835-1837 documenting that `task` at those `is_reconciliation_only_retry` assignments is a pre-claim snapshot (line 900 multi-repo path, line 1720 single-repo path) that shadows the outer parameter and retains `failure_class` (cleared on the post-claim `active_task` by `claim_task`). Comments are factually accurate, placed immediately before each of the two identified use sites, match the bead's example template, and introduce no variable renames, logic refactors, or new fields. The `.beads/issues.jsonl` hunk reconciles `ralph-burning-hg4` to closed (unrelated prior PR); `prompt-q1a.md` at repo root follows the pre-existing harness pattern (`prompt-hg4.md`, `prompt-9ni*.md`) from earlier beads, so it is not a scope regression introduced here. Remaining working-tree changes are under `.ralph-burning/projects/q1a-1/` and are out of review scope. No correctness, safety, or maintainability issues found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

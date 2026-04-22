@@ -1136,12 +1136,9 @@ where
                 // PR state (e.g. close-or-skip when the worktree is not
                 // ahead because no branch was resumed).
                 //
-                // NOTE: `task` here is the pre-claim snapshot (line ~647),
-                // which shadows the outer `task` parameter. `claim_task`
-                // calls `clear_failure()` on the claimed copy, so reading
-                // `failure_class` from the post-claim `active_task` would
-                // always be None. The pre-claim binding retains the original
-                // failure_class needed for this gate.
+                // `task` here is the pre-claim snapshot; post-claim
+                // `active_task` has `failure_class` cleared, so this
+                // shadowed binding must drive the retry gate.
                 let is_reconciliation_only_retry = is_post_completion_retry
                     && task
                         .failure_class
@@ -1835,8 +1832,9 @@ where
                 // Skip PR handler for reconciliation-only retries — see
                 // multi-repo path comment for rationale.
                 //
-                // NOTE: `task` is the pre-claim snapshot (line ~1445);
-                // `claim_task` clears failure_class on the claimed copy.
+                // `task` here is the pre-claim snapshot; post-claim
+                // `active_task` has `failure_class` cleared, so this
+                // shadowed binding must drive the retry gate.
                 let is_reconciliation_only_retry = is_post_completion_retry
                     && task
                         .failure_class
