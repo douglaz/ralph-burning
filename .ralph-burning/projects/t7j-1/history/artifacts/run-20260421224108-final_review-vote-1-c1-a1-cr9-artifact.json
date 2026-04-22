@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421224108-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:23:28.120377559Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne amendment identifies a real hole in the current checkpoint filtering for deleted tracked gitignored paths. The other overstates the required behavior and would change checkpoint/reset semantics in a riskier way than the bead requires.\n\n## Votes\n\n- `fr-9-0d90157e`: Reject\n  `src/adapters/worktree.rs:280-292` currently restores the real-index entry for tracked gitignored and assume-unchanged paths, so checkpoint commits ignore dirty worktree churn while preserving the repository’s tracked state. That is consistent with the bead’s allowed behavior of deliberately excluding those changes from checkpoint commits; it does not require forcibly dropping every tracked ignored path from the tree. Changing this to remove those entries from the temporary index would make `create_checkpoint`'s later `git reset --mixed` untrack them in the real index, and it would also incorrectly turn the tested assume-unchanged / exclude-file cases in `tests/unit/checkpoint_test.rs:523-782` into deletions.\n- `fr-9-369d7ad4`: Accept\n  `tracked_gitignored_paths` in `src/adapters/worktree.rs:137-152` reads from the temporary index after `git add -A` has already rewritten that index at line 275. If a tracked gitignored path was deleted or renamed in the worktree, it is removed from the temporary index before discovery, so it never enters `filtered_paths` and therefore is not restored from the real index in `build_checkpoint_tree` at lines 280-292. The resulting checkpoint commit can record an unintended deletion even though the current implementation otherwise tries to preserve tracked ignored paths. The existing tests in `tests/unit/checkpoint_test.rs:435-782` cover modified-path cases but not delete/rename cases, so this edge case is real and currently unguarded.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

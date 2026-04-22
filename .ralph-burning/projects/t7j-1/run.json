@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 9
+      "completion_round": 10
     },
     "started_at": "2026-04-21T22:41:08.629161853Z",
     "prompt_hash_at_cycle_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "prompt_hash_at_stage_start": "26c8cfa87db8c2305c616ebafc9ae1ecf75fa158ee39d17e7ea788f118eb2311",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 8
+    "final_review_restart_count": 9
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 9,
+  "completion_rounds": 10,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-9-369d7ad4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "src/adapters/worktree.rs:137-152 and 280-289 discover tracked gitignored paths only from the temporary index after git add -A has already rewritten it. If a tracked-but-gitignored path is deleted or renamed in the worktree, add -A removes it from that index first, so tracked_gitignored_paths returns nothing and the checkpoint commit records an unrelated deletion. The new tests only cover modified ignored files, not this cleanup/remove case. Derive the candidate ignored set from the real index before staging, or otherwise merge the pre-add tracked ignored paths into the filter set so deletions are suppressed too.",
+        "created_at": "2026-04-22T04:26:35.849355300Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "35522b200a5250f98657050d5bc0680b771cf3691417b1f6c9dbbee40bac3572"
+      }
+    ],
     "processed_count": 11
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 10 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-22T03:39:03.316556138Z",
+    "resolved_at": "2026-04-22T04:13:33.037986942Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

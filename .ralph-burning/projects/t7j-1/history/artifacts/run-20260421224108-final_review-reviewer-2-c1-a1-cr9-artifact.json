@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421224108-final_review-reviewer-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:21:21.049504640Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed Part A (build_checkpoint_tree filtering of tracked-but-gitignored and assume-unchanged paths in src/adapters/worktree.rs:124-309) and Part B (removal of `result` symlink from index in commit 70eabf73). Implementation correctly preserves the real-index version for tracked+gitignored paths so checkpoint commits no longer flip `result`-style symlinks; comprehensive test coverage in tests/unit/checkpoint_test.rs spans tracked+ignored, post-`rm --cached`, assume-unchanged (incl. tab in path), .git/info/exclude, core.excludesFile, and non-UTF-8 paths. Byte-level NUL-separated parsing is correct, the `update-index -z --index-info` pipe is closed properly via `wait_with_output`, and `git ls-files -i -c --exclude-standard` on the current tree returns empty. No critical bugs, correctness gaps, or maintainability risks identified.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 9
+}

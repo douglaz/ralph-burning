@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260421224108-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260421224108-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T04:26:35.849363475Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 9/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-9-369d7ad4`\n\n## Rejected\n\n- `fr-9-0d90157e`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-369d7ad4`\n\nsrc/adapters/worktree.rs:137-152 and 280-289 discover tracked gitignored paths only from the temporary index after git add -A has already rewritten it. If a tracked-but-gitignored path is deleted or renamed in the worktree, add -A removes it from that index first, so tracked_gitignored_paths returns nothing and the checkpoint commit records an unrelated deletion. The new tests only cover modified ignored files, not this cleanup/remove case. Derive the candidate ignored set from the real index before staging, or otherwise merge the pre-add tracked ignored paths into the filter set so deletions are suppressed too.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}
