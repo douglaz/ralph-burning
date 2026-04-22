@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422054431-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422054431-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T06:24:47.722066972Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-7-max\n\n## Summary\n\nReviewed the full branch delta against origin/master. The fix correctly replaces the hardcoded 300s timeout in RequirementsCliService::invoke_stage with a config-driven per-role timeout. `BackendRole::to_policy_role()` is added to src/shared/domain.rs with the exact mapping the bead specifies. `AgentExecutionService::with_effective_config` and `timeout_for_role` helpers mirror how workflow stage invocations resolve timeouts via BackendPolicyService, and both production builders (`build_requirements_service_for_selector`, `build_agent_execution_service_for_config`) plumb EffectiveConfig through. The integration test exercises per-role timeouts on two different backend families and asserts the values flow through for draft (Claude/planner), review (Codex/reviewer), and project-seed (Claude/planner) invocations without asserting a blanket 3600s. `target.backend.family` is used so operator overrides are honored. No hardcoded Duration::from_secs(300) remain in src/contexts/requirements_drafting/service.rs. The only other 300s literal in the codebase (daemon_loop.rs lease_ttl) is unrelated. No real bugs, correctness gaps, or safety concerns found.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "claude",
+    "requested_model_id": "claude-opus-4-7-max",
+    "actual_backend_family": "claude",
+    "actual_model_id": "claude-opus-4-7-max"
+  },
+  "completion_round": 1
+}

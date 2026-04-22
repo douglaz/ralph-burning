@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422054431-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422054431-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T06:24:05.888572531Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nStatic review found two low-severity fix-now issues in the new timeout plumbing: the new global `BackendRole -> BackendPolicyRole` helper is semantically inconsistent for `CompletionJudge`, and several config-driven requirements-service test/conformance builders were not updated to carry `EffectiveConfig`. I could not run cargo-based verification in this environment because `cargo` is unavailable.\n\n## Amendments\n\n1. `src/shared/domain.rs:270-277` introduces a reusable `BackendRole::to_policy_role()` helper, but `BackendRole::CompletionJudge` is also what `BackendRole::for_stage(StageId::FinalReview)` returns while `stage_to_policy_role(StageId::FinalReview)` still maps to `BackendPolicyRole::FinalReviewer` (`src/contexts/agent_execution/policy.rs:423-425`). `AgentExecutionService::timeout_for_role()` now delegates through that new helper (`src/contexts/agent_execution/service.rs:178-183`), so any future caller that reuses it for final-review work will silently pick completer timeouts instead of final-review timeouts. Keep this mapping local to requirements, or make the conversion stage/context-aware instead of exposing a misleading global mapping.\n   Rationale: The new shared helper bakes a requirements-specific assumption into a cross-cutting API, creating a silent misconfiguration trap for `CompletionJudge` callers outside the current requirements path.\n2. `src/contexts/automation_runtime/daemon_loop.rs:5088-5095` and `src/contexts/conformance_spec/scenarios.rs:159-172,295-304` still construct `RequirementsService` from an `EffectiveConfig` without calling `AgentExecutionService::with_effective_config(...)`. After this branch, those builders no longer match production timeout behavior: requirements invocations created through them ignore configured `backends.<family>.timeout_seconds` / `role_timeouts.*` and fall back to the default timeout. Update these helper builders to attach the same `effective_config` clone as the production builder so daemon/conformance regressions can actually exercise the configured-timeout path.\n   Rationale: These helpers are explicitly meant to mirror production wiring. Leaving them on the pre-change construction path makes timeout-related tests and conformance coverage diverge from the shipped behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
