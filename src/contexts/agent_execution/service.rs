@@ -7,8 +7,11 @@ use serde_json::Value;
 use crate::contexts::agent_execution::model::{
     CapabilityCheck, InvocationContract, InvocationEnvelope, InvocationRequest, RawOutputReference,
 };
+use crate::contexts::agent_execution::policy::BackendPolicyService;
 use crate::contexts::agent_execution::session::{SessionManager, SessionStorePort};
-use crate::contexts::workspace_governance::EffectiveConfig;
+use crate::contexts::workspace_governance::config::{
+    EffectiveConfig, DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
+};
 use crate::shared::domain::{
     BackendFamily, BackendRole, BackendSpec, FailureClass, ModelSpec, ResolvedBackendTarget,
 };
@@ -145,6 +148,7 @@ pub struct AgentExecutionService<A, R, S> {
     raw_output_store: R,
     session_manager: SessionManager<S>,
     resolver: BackendResolver,
+    effective_config: Option<EffectiveConfig>,
 }
 
 impl<A, R, S> AgentExecutionService<A, R, S> {
@@ -154,7 +158,13 @@ impl<A, R, S> AgentExecutionService<A, R, S> {
             raw_output_store,
             session_manager: SessionManager::new(session_store),
             resolver: BackendResolver::new(),
+            effective_config: None,
         }
+    }
+
+    pub fn with_effective_config(mut self, effective_config: EffectiveConfig) -> Self {
+        self.effective_config = Some(effective_config);
+        self
     }
 
     pub fn resolver(&self) -> &BackendResolver {
@@ -163,6 +173,15 @@ impl<A, R, S> AgentExecutionService<A, R, S> {
 
     pub fn adapter(&self) -> &A {
         &self.adapter
+    }
+
+    pub fn timeout_for_role(&self, backend: BackendFamily, role: BackendRole) -> Duration {
+        self.effective_config.as_ref().map_or_else(
+            || Duration::from_secs(DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS),
+            |config| {
+                BackendPolicyService::new(config).timeout_for_role(backend, role.to_policy_role())
+            },
+        )
     }
 }
 

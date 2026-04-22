@@ -633,13 +633,24 @@ fn render_project_seed_produces_markdown_with_project_details_and_suggested_comm
 
 #[cfg(feature = "test-stub")]
 mod service_integration {
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
     use chrono::{TimeZone, Utc};
     use serde_json::json;
     use tempfile::tempdir;
 
-    use ralph_burning::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+    use ralph_burning::adapters::fs::{
+        FileSystem, FsRawOutputStore, FsRequirementsStore, FsSessionStore,
+    };
     use ralph_burning::adapters::stub_backend::StubBackendAdapter;
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::contexts::agent_execution::service::{
+        AgentExecutionPort, AgentExecutionService,
+    };
     use ralph_burning::contexts::milestone_record::bundle::MILESTONE_BUNDLE_VERSION;
     use ralph_burning::contexts::requirements_drafting::model::{
         RequirementsMode, RequirementsOutputKind, RequirementsStatus,
@@ -647,13 +658,83 @@ mod service_integration {
     use ralph_burning::contexts::requirements_drafting::service::{
         extract_milestone_bundle_handoff, is_requirements_run_complete, RequirementsService,
     };
+    use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
+    use ralph_burning::shared::domain::{
+        BackendRoleTimeouts, BackendRuntimeSettings, ResolvedBackendTarget, WorkspaceConfig,
+    };
+    use ralph_burning::shared::error::AppResult;
 
-    use crate::workspace_test::initialize_workspace_fixture;
+    use crate::workspace_test::{initialize_workspace_fixture, live_workspace_root};
 
     fn deterministic_now() -> chrono::DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 3, 12, 12, 0, 0)
             .single()
             .expect("valid timestamp")
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct RecordedInvocationTimeout {
+        label: String,
+        timeout: Duration,
+    }
+
+    #[derive(Clone)]
+    struct RecordingStubBackendAdapter {
+        inner: StubBackendAdapter,
+        invocations: Arc<Mutex<Vec<RecordedInvocationTimeout>>>,
+    }
+
+    impl RecordingStubBackendAdapter {
+        fn new(inner: StubBackendAdapter) -> Self {
+            Self {
+                inner,
+                invocations: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn recorded_invocations(&self) -> Vec<RecordedInvocationTimeout> {
+            self.invocations
+                .lock()
+                .expect("recorded invocation lock poisoned")
+                .clone()
+        }
+    }
+
+    impl AgentExecutionPort for RecordingStubBackendAdapter {
+        async fn check_capability(
+            &self,
+            backend: &ResolvedBackendTarget,
+            contract: &InvocationContract,
+        ) -> AppResult<()> {
+            self.inner.check_capability(backend, contract).await
+        }
+
+        async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
+            self.inner.check_availability(backend).await
+        }
+
+        async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+            self.invocations
+                .lock()
+                .expect("recorded invocation lock poisoned")
+                .push(RecordedInvocationTimeout {
+                    label: request.contract.label(),
+                    timeout: request.timeout,
+                });
+            self.inner.invoke(request).await
+        }
+
+        async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+            self.inner.cancel(invocation_id).await
+        }
+    }
+
+    fn write_workspace_config(base_dir: &Path, config: &WorkspaceConfig) {
+        FileSystem::write_atomic(
+            &live_workspace_root(base_dir).join("workspace.toml"),
+            &toml::to_string_pretty(config).expect("serialize workspace config"),
+        )
+        .expect("write workspace config");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -675,6 +756,72 @@ mod service_integration {
             run_id.starts_with("req-"),
             "run_id should start with 'req-'"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quick_mode_uses_configured_backend_timeouts_for_stage_invocations() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let mut workspace = WorkspaceConfig::new(deterministic_now());
+        workspace.backends.insert(
+            "claude".to_owned(),
+            BackendRuntimeSettings {
+                role_timeouts: BackendRoleTimeouts {
+                    planner: Some(111),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        workspace.backends.insert(
+            "codex".to_owned(),
+            BackendRuntimeSettings {
+                role_timeouts: BackendRoleTimeouts {
+                    reviewer: Some(222),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        write_workspace_config(temp_dir.path(), &workspace);
+
+        let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+        let adapter = RecordingStubBackendAdapter::new(StubBackendAdapter::default());
+        let recorder = adapter.clone();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore)
+            .with_effective_config(effective);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        service
+            .quick(
+                temp_dir.path(),
+                "Build a caching layer",
+                deterministic_now(),
+                None,
+                true,
+            )
+            .await
+            .expect("quick should succeed");
+
+        let invocations = recorder.recorded_invocations();
+        let draft = invocations
+            .iter()
+            .find(|invocation| invocation.label == "requirements:requirements_draft")
+            .expect("draft invocation should be recorded");
+        assert_eq!(Duration::from_secs(111), draft.timeout);
+
+        let review = invocations
+            .iter()
+            .find(|invocation| invocation.label == "requirements:requirements_review")
+            .expect("review invocation should be recorded");
+        assert_eq!(Duration::from_secs(222), review.timeout);
+
+        let seed = invocations
+            .iter()
+            .find(|invocation| invocation.label == "requirements:project_seed")
+            .expect("project seed invocation should be recorded");
+        assert_eq!(Duration::from_secs(111), seed.timeout);
     }
 
     #[tokio::test(flavor = "multi_thread")]

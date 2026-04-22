@@ -2140,6 +2140,9 @@ where
             None,
             self.workspace_defaults.as_ref(),
         )?;
+        let timeout = self
+            .agent_service
+            .timeout_for_role(target.backend.family, role);
 
         let request = InvocationRequest {
             invocation_id: format!(
@@ -2158,7 +2161,7 @@ where
                 prompt: prompt.to_owned(),
                 context: serde_json::Value::Null,
             },
-            timeout: std::time::Duration::from_secs(300),
+            timeout,
             cancellation_token: CancellationToken::new(),
             session_policy: SessionPolicy::NewSession,
             prior_session: None,
