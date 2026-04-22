@@ -98,6 +98,10 @@ fn assert_checkpoint_omits_path(repo_root: &Path, checkpoint_sha: &str, path: &s
     }
 }
 
+fn checkpoint_file_contents(repo_root: &Path, checkpoint_sha: &str, path: &str) -> String {
+    run_git(repo_root, &["show", &format!("{checkpoint_sha}:{path}")])
+}
+
 #[cfg(unix)]
 fn assert_checkpoint_omits_raw_path(repo_root: &Path, checkpoint_sha: &str, path: &Path) {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -381,7 +385,7 @@ fn worktree_adapter_drops_tracked_gitignored_paths_from_checkpoint_commits() {
 }
 
 #[test]
-fn worktree_adapter_drops_assume_unchanged_paths_from_checkpoint_commits() {
+fn worktree_adapter_preserves_parent_version_for_assume_unchanged_paths_in_checkpoint_commits() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -414,7 +418,118 @@ fn worktree_adapter_drops_assume_unchanged_paths_from_checkpoint_commits() {
         &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
     );
     assert!(tree.lines().any(|line| line == "README.md"));
-    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "assume.txt");
+    assert!(tree.lines().any(|line| line == "assume.txt"));
+    assert_eq!(
+        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "assume.txt"),
+        "tracked content"
+    );
+
+    adapter
+        .reset_to_checkpoint(tmp.path(), &checkpoint_sha)
+        .expect("reset to checkpoint");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("assume.txt")).expect("read assume.txt"),
+        "tracked content\n"
+    );
+}
+
+#[test]
+fn worktree_adapter_does_not_use_git_info_exclude_for_checkpoint_cleanup() {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+
+    fs::write(tmp.path().join("locally-ignored.txt"), "tracked content\n")
+        .expect("write locally ignored file");
+    run_git(tmp.path(), &["add", "locally-ignored.txt"]);
+    run_git(tmp.path(), &["commit", "-m", "track locally ignored file"]);
+
+    fs::write(
+        tmp.path().join(".git/info/exclude"),
+        "locally-ignored.txt\n",
+    )
+    .expect("write info exclude");
+    fs::write(
+        tmp.path().join("locally-ignored.txt"),
+        "modified tracked content\n",
+    )
+    .expect("modify locally ignored file");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert!(tree.lines().any(|line| line == "locally-ignored.txt"));
+    assert_eq!(
+        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "locally-ignored.txt"),
+        "modified tracked content"
+    );
+}
+
+#[test]
+fn worktree_adapter_does_not_use_core_excludes_file_for_checkpoint_cleanup() {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+
+    fs::write(tmp.path().join("globally-ignored.txt"), "tracked content\n")
+        .expect("write globally ignored file");
+    run_git(tmp.path(), &["add", "globally-ignored.txt"]);
+    run_git(tmp.path(), &["commit", "-m", "track globally ignored file"]);
+
+    let excludes_path = tmp.path().join("global-excludes");
+    fs::write(&excludes_path, "globally-ignored.txt\n").expect("write global excludes file");
+    run_git(
+        tmp.path(),
+        &[
+            "config",
+            "core.excludesFile",
+            excludes_path.to_str().expect("utf-8 excludes path"),
+        ],
+    );
+    fs::write(
+        tmp.path().join("globally-ignored.txt"),
+        "modified tracked content\n",
+    )
+    .expect("modify globally ignored file");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert!(tree.lines().any(|line| line == "globally-ignored.txt"));
+    assert_eq!(
+        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "globally-ignored.txt"),
+        "modified tracked content"
+    );
 }
 
 #[cfg(unix)]
