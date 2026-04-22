@@ -27,11 +27,6 @@ struct TemporaryGitIndex {
     path: PathBuf,
 }
 
-struct GitIndexInfoEntry {
-    path: PathBuf,
-    index_info: Vec<u8>,
-}
-
 impl TemporaryGitIndex {
     fn new() -> Self {
         Self {
@@ -157,46 +152,7 @@ impl WorktreeAdapter {
             .collect())
     }
 
-    fn index_info_entry(index_info: &[u8]) -> Option<GitIndexInfoEntry> {
-        let path = index_info
-            .split(|byte| *byte == b'\t')
-            .nth(1)
-            .filter(|path| !path.is_empty())?;
-        Some(GitIndexInfoEntry {
-            path: Self::git_path_from_bytes(path),
-            index_info: index_info.to_vec(),
-        })
-    }
-
-    fn tracked_index_entries_in_index(
-        repo_root: &Path,
-        index_path: &Path,
-        paths: &BTreeSet<PathBuf>,
-    ) -> AppResult<Vec<GitIndexInfoEntry>> {
-        if paths.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut command = Self::git_command_with_index(repo_root, index_path);
-        command.args(["ls-files", "-z", "-s", "--"]);
-        command.args(paths.iter().map(|path| path.as_os_str()));
-        let tracked_output = command.output().map_err(AppError::from)?;
-        if !tracked_output.status.success() {
-            return Err(Self::git_error(&tracked_output));
-        }
-
-        Ok(tracked_output
-            .stdout
-            .split(|entry| *entry == 0)
-            .filter_map(|entry| {
-                (!entry.is_empty())
-                    .then_some(entry)
-                    .and_then(Self::index_info_entry)
-            })
-            .collect())
-    }
-
-    fn assume_unchanged_index_entries(repo_root: &Path) -> AppResult<Vec<GitIndexInfoEntry>> {
+    fn assume_unchanged_paths(repo_root: &Path) -> AppResult<Vec<PathBuf>> {
         let tracked_output = Self::git(repo_root, &["ls-files", "-z", "-s", "-v"])?;
         if !tracked_output.status.success() {
             return Err(Self::git_error(&tracked_output));
@@ -209,40 +165,32 @@ impl WorktreeAdapter {
                 [status, b' ', index_info @ ..]
                     if status.is_ascii_lowercase() && !index_info.is_empty() =>
                 {
-                    Self::index_info_entry(index_info)
+                    index_info
+                        .split(|byte| *byte == b'\t')
+                        .nth(1)
+                        .filter(|path| !path.is_empty())
+                        .map(Self::git_path_from_bytes)
                 }
                 _ => None,
             })
             .collect())
     }
 
-    fn restore_index_entries(
+    fn remove_paths_from_index(
         repo_root: &Path,
         index_path: &Path,
-        entries: &[GitIndexInfoEntry],
+        paths: &BTreeSet<PathBuf>,
     ) -> AppResult<()> {
-        if entries.is_empty() {
+        if paths.is_empty() {
             return Ok(());
         }
 
-        let mut child = Self::git_command_with_index(repo_root, index_path)
-            .args(["update-index", "-z", "--index-info"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(AppError::from)?;
-
-        if let Some(stdin) = child.stdin.as_mut() {
-            for entry in entries {
-                stdin.write_all(&entry.index_info).map_err(AppError::from)?;
-                stdin.write_all(&[0]).map_err(AppError::from)?;
-            }
-        }
-
-        let restore_output = child.wait_with_output().map_err(AppError::from)?;
-        if !restore_output.status.success() {
-            return Err(Self::git_error(&restore_output));
+        let mut command = Self::git_command_with_index(repo_root, index_path);
+        command.args(["update-index", "--force-remove", "--"]);
+        command.args(paths.iter().map(|path| path.as_os_str()));
+        let remove_output = command.output().map_err(AppError::from)?;
+        if !remove_output.status.success() {
+            return Err(Self::git_error(&remove_output));
         }
 
         Ok(())
@@ -262,25 +210,17 @@ impl WorktreeAdapter {
             return Err(Self::git_error(&read_tree_output));
         }
 
-        let ignored_paths: BTreeSet<PathBuf> =
-            Self::tracked_gitignored_paths(repo_root, index_path)?
-                .into_iter()
-                .collect();
-        let ignored_parent_entries =
-            Self::tracked_index_entries_in_index(repo_root, index_path, &ignored_paths)?;
-        let assume_unchanged_entries: Vec<GitIndexInfoEntry> =
-            Self::assume_unchanged_index_entries(repo_root)?
-                .into_iter()
-                .filter(|entry| !ignored_paths.contains(&entry.path))
-                .collect();
-
         let add_output = Self::git_in_index(repo_root, index_path, &["add", "-A", "--", "."])?;
         if !add_output.status.success() {
             return Err(Self::git_error(&add_output));
         }
 
-        Self::restore_index_entries(repo_root, index_path, &ignored_parent_entries)?;
-        Self::restore_index_entries(repo_root, index_path, &assume_unchanged_entries)?;
+        let mut filtered_paths: BTreeSet<PathBuf> =
+            Self::tracked_gitignored_paths(repo_root, index_path)?
+                .into_iter()
+                .collect();
+        filtered_paths.extend(Self::assume_unchanged_paths(repo_root)?);
+        Self::remove_paths_from_index(repo_root, index_path, &filtered_paths)?;
 
         let write_tree_output = Self::git_in_index(repo_root, index_path, &["write-tree"])?;
         if !write_tree_output.status.success() {
