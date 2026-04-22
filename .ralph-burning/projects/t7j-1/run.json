@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260421224108",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 6
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-5-ed34cdf0",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 5,
-        "body": "finding_summary: `build_checkpoint_tree` deletes tracked-but-gitignored files from checkpoint commits instead of preserving their parent blob. `src/adapters/worktree.rs:263-268` unconditionally `update-index --force-remove`s every tracked ignored path after `read-tree` loaded the parent tree, so a checkpoint/reset turns any still-tracked ignored file into a real deletion. The new assertions in `tests/unit/checkpoint_test.rs:352-385` and `tests/unit/checkpoint_test.rs:437-525` lock in that destructive behavior.\naffected_files:\n- src/adapters/worktree.rs:263-268\n- tests/unit/checkpoint_test.rs:352-385\n- tests/unit/checkpoint_test.rs:437-525\nremediation_hint: Keep tracked gitignored paths at their parent/index entry in the temporary index, the same way assume-unchanged paths are restored, and compute the ignored set from the pre-staging tracked state so ignored edits/deletions do not leak without deleting the tracked file from the checkpoint tree.",
-        "created_at": "2026-04-22T02:17:00.957548606Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "2f64f272b70b129a763713c2f746a6285e8c0e441a410c6584aba333632b14f5"
-      }
-    ],
-    "processed_count": 7
+    "pending": [],
+    "processed_count": 8
   },
-  "status_summary": "running: final review restart round 6 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-22T01:55:49.288962395Z",

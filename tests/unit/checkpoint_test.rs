@@ -77,23 +77,23 @@ fn git_output(repo_root: &Path, args: &[&str]) -> std::process::Output {
         .expect("git command")
 }
 
-fn assert_checkpoint_omits_path(repo_root: &Path, checkpoint_sha: &str, path: &str) {
+fn assert_checkpoint_retains_path(repo_root: &Path, checkpoint_sha: &str, path: &str) {
     #[cfg(unix)]
     {
-        assert_checkpoint_omits_raw_path(repo_root, checkpoint_sha, Path::new(path));
+        assert_checkpoint_retains_raw_path(repo_root, checkpoint_sha, Path::new(path));
     }
     #[cfg(not(unix))]
     {
         let tree = run_git(repo_root, &["ls-tree", "-r", "--name-only", checkpoint_sha]);
         assert!(
-            !tree.lines().any(|line| line == path),
-            "checkpoint commit should omit {path}, got:\n{tree}"
+            tree.lines().any(|line| line == path),
+            "checkpoint commit should retain {path}, got:\n{tree}"
         );
 
         let show_path = git_output(repo_root, &["show", &format!("{checkpoint_sha}:{path}")]);
         assert!(
-            !show_path.status.success(),
-            "checkpoint commit should not retain {path}"
+            show_path.status.success(),
+            "checkpoint commit should retain {path}"
         );
     }
 }
@@ -103,7 +103,7 @@ fn checkpoint_file_contents(repo_root: &Path, checkpoint_sha: &str, path: &str) 
 }
 
 #[cfg(unix)]
-fn assert_checkpoint_omits_raw_path(repo_root: &Path, checkpoint_sha: &str, path: &Path) {
+fn assert_checkpoint_retains_raw_path(repo_root: &Path, checkpoint_sha: &str, path: &Path) {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
     let tree = git_command()
@@ -126,8 +126,8 @@ fn assert_checkpoint_omits_raw_path(repo_root: &Path, checkpoint_sha: &str, path
         .any(|entry| !entry.is_empty() && entry == path.as_os_str().as_bytes());
     let tree = run_git(repo_root, &["ls-tree", "-r", "--name-only", checkpoint_sha]);
     assert!(
-        !tree_has_path,
-        "checkpoint commit should omit {:?}, got:\n{tree}",
+        tree_has_path,
+        "checkpoint commit should retain {:?}, got:\n{tree}",
         path
     );
 
@@ -145,8 +145,8 @@ fn assert_checkpoint_omits_raw_path(repo_root: &Path, checkpoint_sha: &str, path
         .output()
         .expect("git show");
     assert!(
-        !show_path.status.success(),
-        "checkpoint commit should not retain {:?}",
+        show_path.status.success(),
+        "checkpoint commit should retain {:?}",
         path
     );
 }
@@ -349,7 +349,7 @@ fn worktree_adapter_includes_tracked_workspace_in_checkpoint_commits() {
 }
 
 #[test]
-fn worktree_adapter_drops_tracked_gitignored_paths_from_checkpoint_commits() {
+fn worktree_adapter_preserves_parent_version_for_tracked_gitignored_paths_in_checkpoint_commits() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -381,7 +381,61 @@ fn worktree_adapter_drops_tracked_gitignored_paths_from_checkpoint_commits() {
         &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
     );
     assert!(tree.lines().any(|line| line == "README.md"));
-    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "ignored.txt");
+    assert_checkpoint_retains_path(tmp.path(), checkpoint_sha.as_str(), "ignored.txt");
+    assert_eq!(
+        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "ignored.txt"),
+        "tracked but ignored"
+    );
+
+    adapter
+        .reset_to_checkpoint(tmp.path(), &checkpoint_sha)
+        .expect("reset to checkpoint");
+    assert_eq!(
+        fs::read_to_string(tmp.path().join("ignored.txt")).expect("read ignored.txt"),
+        "tracked but ignored\n"
+    );
+}
+
+#[test]
+fn worktree_adapter_preserves_parent_version_for_tracked_gitignored_paths_even_if_real_index_untracks_them(
+) {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+
+    fs::write(tmp.path().join(".gitignore"), "ignored.txt\n").expect("write .gitignore");
+    fs::write(tmp.path().join("ignored.txt"), "tracked but ignored\n").expect("write ignored");
+    run_git(tmp.path(), &["add", ".gitignore"]);
+    run_git(tmp.path(), &["add", "-f", "ignored.txt"]);
+    run_git(tmp.path(), &["commit", "-m", "track ignored file"]);
+
+    run_git(tmp.path(), &["rm", "--cached", "--", "ignored.txt"]);
+    fs::write(tmp.path().join("ignored.txt"), "modified ignored content\n")
+        .expect("modify ignored");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert_checkpoint_retains_path(tmp.path(), checkpoint_sha.as_str(), "ignored.txt");
+    assert_eq!(
+        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "ignored.txt"),
+        "tracked but ignored"
+    );
 }
 
 #[test]
@@ -434,7 +488,7 @@ fn worktree_adapter_preserves_parent_version_for_assume_unchanged_paths_in_check
 }
 
 #[test]
-fn worktree_adapter_drops_git_info_exclude_paths_from_checkpoint_commits() {
+fn worktree_adapter_preserves_parent_version_for_git_info_exclude_paths_in_checkpoint_commits() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -473,11 +527,15 @@ fn worktree_adapter_drops_git_info_exclude_paths_from_checkpoint_commits() {
         &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
     );
     assert!(tree.lines().any(|line| line == "README.md"));
-    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "locally-ignored.txt");
+    assert_checkpoint_retains_path(tmp.path(), checkpoint_sha.as_str(), "locally-ignored.txt");
+    assert_eq!(
+        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "locally-ignored.txt"),
+        "tracked content"
+    );
 }
 
 #[test]
-fn worktree_adapter_drops_core_excludes_file_paths_from_checkpoint_commits() {
+fn worktree_adapter_preserves_parent_version_for_core_excludes_file_paths_in_checkpoint_commits() {
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
     let project_id = ProjectId::new("checkpoint-proj").expect("project id");
@@ -521,13 +579,17 @@ fn worktree_adapter_drops_core_excludes_file_paths_from_checkpoint_commits() {
         &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
     );
     assert!(tree.lines().any(|line| line == "README.md"));
-    assert_checkpoint_omits_path(tmp.path(), checkpoint_sha.as_str(), "globally-ignored.txt");
+    assert_checkpoint_retains_path(tmp.path(), checkpoint_sha.as_str(), "globally-ignored.txt");
+    assert_eq!(
+        checkpoint_file_contents(tmp.path(), checkpoint_sha.as_str(), "globally-ignored.txt"),
+        "tracked content"
+    );
 }
 
 #[cfg(unix)]
 #[test]
-fn worktree_adapter_drops_non_utf8_gitignored_paths_from_checkpoint_commits() {
-    use std::os::unix::ffi::OsStringExt;
+fn worktree_adapter_preserves_parent_version_for_non_utf8_gitignored_paths_in_checkpoint_commits() {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
     let tmp = init_repo();
     let adapter = WorktreeAdapter;
@@ -576,5 +638,28 @@ fn worktree_adapter_drops_non_utf8_gitignored_paths_from_checkpoint_commits() {
         &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
     );
     assert!(tree.lines().any(|line| line == "README.md"));
-    assert_checkpoint_omits_raw_path(tmp.path(), checkpoint_sha.as_str(), &path);
+    assert_checkpoint_retains_raw_path(tmp.path(), checkpoint_sha.as_str(), &path);
+
+    let mut show_spec = checkpoint_sha.as_bytes().to_vec();
+    show_spec.push(b':');
+    show_spec.extend_from_slice(path.as_os_str().as_bytes());
+    let show_path = git_command()
+        .arg("show")
+        .arg(OsString::from_vec(show_spec))
+        .current_dir(tmp.path())
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .expect("git show");
+    assert!(
+        show_path.status.success(),
+        "checkpoint commit should retain {:?}",
+        path
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&show_path.stdout).trim(),
+        "tracked but ignored"
+    );
 }
