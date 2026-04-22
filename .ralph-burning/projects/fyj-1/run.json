@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260422054431",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-ca61896e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "`src/shared/domain.rs:270-277` introduces a reusable `BackendRole::to_policy_role()` helper, but `BackendRole::CompletionJudge` is also what `BackendRole::for_stage(StageId::FinalReview)` returns while `stage_to_policy_role(StageId::FinalReview)` still maps to `BackendPolicyRole::FinalReviewer` (`src/contexts/agent_execution/policy.rs:423-425`). `AgentExecutionService::timeout_for_role()` now delegates through that new helper (`src/contexts/agent_execution/service.rs:178-183`), so any future caller that reuses it for final-review work will silently pick completer timeouts instead of final-review timeouts. Keep this mapping local to requirements, or make the conversion stage/context-aware instead of exposing a misleading global mapping.",
-        "created_at": "2026-04-22T06:27:03.601791492Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e927b8b8adf44647e97e9ee1b44e8bdaa3cc134daa6f5c407371c0120c68688f"
-      },
-      {
-        "amendment_id": "fr-1-5c50c7ee",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "`src/contexts/automation_runtime/daemon_loop.rs:5088-5095` and `src/contexts/conformance_spec/scenarios.rs:159-172,295-304` still construct `RequirementsService` from an `EffectiveConfig` without calling `AgentExecutionService::with_effective_config(...)`. After this branch, those builders no longer match production timeout behavior: requirements invocations created through them ignore configured `backends.<family>.timeout_seconds` / `role_timeouts.*` and fall back to the default timeout. Update these helper builders to attach the same `effective_config` clone as the production builder so daemon/conformance regressions can actually exercise the configured-timeout path.",
-        "created_at": "2026-04-22T06:27:03.601799958Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "6926da67a7e6321f47bcebe2083ab70f816f8d690824780b265fc84eac63b4f5"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 2
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-22T06:18:59.768951534Z",

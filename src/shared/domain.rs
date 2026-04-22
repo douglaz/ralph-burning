@@ -267,16 +267,6 @@ impl BackendRole {
         matches!(self, Self::Implementer | Self::Reviewer | Self::QaValidator)
     }
 
-    pub fn to_policy_role(self) -> BackendPolicyRole {
-        match self {
-            Self::Planner => BackendPolicyRole::Planning,
-            Self::Implementer => BackendPolicyRole::Implementer,
-            Self::Reviewer => BackendPolicyRole::Reviewer,
-            Self::QaValidator => BackendPolicyRole::Qa,
-            Self::CompletionJudge => BackendPolicyRole::Completer,
-        }
-    }
-
     pub fn for_stage(stage_id: StageId) -> Self {
         match stage_id {
             StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {

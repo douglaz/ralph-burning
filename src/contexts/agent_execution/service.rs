@@ -13,7 +13,8 @@ use crate::contexts::workspace_governance::config::{
     EffectiveConfig, DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
 };
 use crate::shared::domain::{
-    BackendFamily, BackendRole, BackendSpec, FailureClass, ModelSpec, ResolvedBackendTarget,
+    BackendFamily, BackendPolicyRole, BackendRole, BackendSpec, FailureClass, ModelSpec,
+    ResolvedBackendTarget,
 };
 use crate::shared::error::{AppError, AppResult, ContractError};
 
@@ -175,12 +176,14 @@ impl<A, R, S> AgentExecutionService<A, R, S> {
         &self.adapter
     }
 
-    pub fn timeout_for_role(&self, backend: BackendFamily, role: BackendRole) -> Duration {
+    pub fn timeout_for_policy_role(
+        &self,
+        backend: BackendFamily,
+        role: BackendPolicyRole,
+    ) -> Duration {
         self.effective_config.as_ref().map_or_else(
             || Duration::from_secs(DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS),
-            |config| {
-                BackendPolicyService::new(config).timeout_for_role(backend, role.to_policy_role())
-            },
+            |config| BackendPolicyService::new(config).timeout_for_role(backend, role),
         )
     }
 }

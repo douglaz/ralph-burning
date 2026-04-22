@@ -163,7 +163,8 @@ fn run_daemon_iteration_with_label_overrides(
                     adapter,
                     crate::adapters::fs::FsRawOutputStore,
                     crate::adapters::fs::FsSessionStore,
-                );
+                )
+                .with_effective_config(config.clone());
             Ok(
                 crate::contexts::requirements_drafting::service::RequirementsService::new(
                     agent_service,
@@ -299,7 +300,8 @@ fn run_daemon_iteration_with_process_backend(
                     reason: e.to_string(),
                 })?;
             let agent_service =
-                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore)
+                    .with_effective_config(_config.clone());
             Ok(RequirementsService::new(agent_service, FsRequirementsStore)
                 .with_workspace_defaults(workspace_defaults))
         })),
