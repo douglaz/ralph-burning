@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260422075643-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422075643-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T08:44:17.302546667Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted no amendments.\n**Restart Required:** false\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 0/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\nNone.\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-1-732ae5c5`\n\n## Final Accepted Amendments\n\nNone.\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

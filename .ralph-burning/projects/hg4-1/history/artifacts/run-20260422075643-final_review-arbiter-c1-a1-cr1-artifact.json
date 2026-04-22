@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260422075643-final_review-arbiter-c1-a1-cr1-artifact",
+  "payload_id": "run-20260422075643-final_review-arbiter-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-22T08:44:17.261520722Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the disputed amendment. Although `prompt-hg4.md` duplicates the project prompt and is unreferenced by code, the stronger evidence is that root-level `prompt-*.md` files are an existing, repeatedly committed repository convention, so this file is not convincingly a one-off stray artifact introduced by the refactor.\n\n## Rulings\n\n- `fr-1-732ae5c5`: Reject\n  The evidence confirms that `prompt-hg4.md` is byte-identical to `.ralph-burning/projects/hg4-1/prompt.md` and is not referenced by code, but that does not make it a branch-specific stray file. This repository already tracks a substantial set of root-level `prompt-*.md` artifacts (`git ls-files prompt-*.md` shows 19), and prior commits explicitly added them as normal workflow output, including `7609ee4c` ('add prompts for kvc, utm, wt3, pfr') and merged feature work such as `13e6e578`, which kept both `prompt-fyj.md` and `.ralph-burning/projects/fyj-1/prompt.md`. Because the duplication is an established repo convention rather than something unique to the `hg4` refactor, removing only `prompt-hg4.md` is not a well-supported corrective amendment for this change; it would be a broader repository cleanup/policy change instead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

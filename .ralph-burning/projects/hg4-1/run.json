@@ -1,20 +1,6 @@
 {
-  "active_run": {
-    "run_id": "run-20260422075643",
-    "stage_cursor": {
-      "stage": "final_review",
-      "cycle": 1,
-      "attempt": 1,
-      "completion_round": 1
-    },
-    "started_at": "2026-04-22T07:56:43.196294163Z",
-    "prompt_hash_at_cycle_start": "6c0e361ebfd96f5dbfee9c289046db31c3ba4fb8da6fab579eca6b354f524d33",
-    "prompt_hash_at_stage_start": "6c0e361ebfd96f5dbfee9c289046db31c3ba4fb8da6fab579eca6b354f524d33",
-    "qa_iterations_current_cycle": 0,
-    "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
-  },
-  "status": "running",
+  "active_run": null,
+  "status": "completed",
   "cycle_history": [],
   "completion_rounds": 1,
   "max_completion_rounds": 25,
@@ -26,5 +12,5 @@
     "pending": [],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "completed"
 }
