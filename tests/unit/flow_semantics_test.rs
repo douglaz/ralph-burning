@@ -34,17 +34,11 @@ fn quick_dev_flow_semantics_are_defined() {
 }
 
 #[test]
-fn docs_change_flow_semantics_match_spec() {
-    let semantics = flow_semantics(FlowPreset::DocsChange);
-
-    assert_eq!(semantics.planning_stage, StageId::DocsPlan);
-    assert_eq!(semantics.execution_stage, StageId::DocsUpdate);
+fn docs_change_flow_semantics_alias_minimal() {
     assert_eq!(
-        semantics.remediation_trigger_stages,
-        &[StageId::DocsValidation, StageId::Review]
+        flow_semantics(FlowPreset::DocsChange),
+        flow_semantics(FlowPreset::Minimal)
     );
-    assert!(semantics.late_stages.is_empty());
-    assert_eq!(semantics.prompt_review_stage, None);
 }
 
 #[test]

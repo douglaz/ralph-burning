@@ -13184,20 +13184,16 @@ fn run_start_completes_docs_change_flow_end_to_end() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let payload_files: Vec<_> =
-        fs::read_dir(project_root(temp_dir.path(), "docs-run").join("history/payloads"))
-            .expect("read payloads dir")
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
-            .collect();
-    assert_eq!(payload_files.len(), 5);
-
+    // `docs_change` is now an alias of `minimal` (plan_and_implement +
+    // final_review), so the journal should reflect those two stages.
     let journal =
         fs::read_to_string(project_root(temp_dir.path(), "docs-run").join("journal.ndjson"))
             .expect("read journal");
-    assert!(journal.contains("\"docs_plan\""));
-    assert!(journal.contains("\"docs_update\""));
-    assert!(journal.contains("\"docs_validation\""));
+    assert!(journal.contains("\"plan_and_implement\""));
+    assert!(journal.contains("\"final_review\""));
+    assert!(!journal.contains("\"docs_plan\""));
+    assert!(!journal.contains("\"docs_update\""));
+    assert!(!journal.contains("\"docs_validation\""));
 }
 
 #[cfg(feature = "test-stub")]

@@ -59,13 +59,6 @@ const QUICK_DEV_STAGES: [StageId; 4] = [
     StageId::FinalReview,
 ];
 
-const DOCS_CHANGE_STAGES: [StageId; 4] = [
-    StageId::DocsPlan,
-    StageId::DocsUpdate,
-    StageId::DocsValidation,
-    StageId::Review,
-];
-
 const CI_IMPROVEMENT_STAGES: [StageId; 4] = [
     StageId::CiPlan,
     StageId::CiUpdate,
@@ -84,11 +77,14 @@ const STANDARD_LATE_STAGES: [StageId; 3] = [
 ];
 const QUICK_DEV_REMEDIATION_TRIGGER_STAGES: [StageId; 1] = [StageId::Review];
 const QUICK_DEV_LATE_STAGES: [StageId; 1] = [StageId::FinalReview];
-const DOCS_CHANGE_REMEDIATION_TRIGGER_STAGES: [StageId; 2] =
-    [StageId::DocsValidation, StageId::Review];
 const CI_IMPROVEMENT_REMEDIATION_TRIGGER_STAGES: [StageId; 2] =
     [StageId::CiValidation, StageId::Review];
 const MINIMAL_LATE_STAGES: [StageId; 1] = [StageId::FinalReview];
+const MINIMAL_VALIDATION_PROFILE: ValidationProfile = ValidationProfile {
+    name: "minimal-default",
+    summary: "Final review only, no intermediate review or fix stages.",
+    final_review_enabled: true,
+};
 
 const FLOW_DEFINITIONS: [FlowDefinition; 6] = [
     FlowDefinition {
@@ -114,13 +110,11 @@ const FLOW_DEFINITIONS: [FlowDefinition; 6] = [
     },
     FlowDefinition {
         preset: FlowPreset::DocsChange,
-        description: "Documentation-focused flow for planning, content updates, and validation.",
-        stages: &DOCS_CHANGE_STAGES,
-        validation_profile: ValidationProfile {
-            name: "docs-default",
-            summary: "Documentation validation with final review disabled by default.",
-            final_review_enabled: false,
-        },
+        // `docs_change` is kept as an accepted preset name for UX clarity
+        // (`--flow docs_change`), but it aliases the `minimal` flow.
+        description: "Documentation-focused alias of the minimal flow.",
+        stages: &MINIMAL_STAGES,
+        validation_profile: MINIMAL_VALIDATION_PROFILE,
     },
     FlowDefinition {
         preset: FlowPreset::CiImprovement,
@@ -136,11 +130,7 @@ const FLOW_DEFINITIONS: [FlowDefinition; 6] = [
         preset: FlowPreset::Minimal,
         description: "Minimal flow with plan+implement and final review only.",
         stages: &MINIMAL_STAGES,
-        validation_profile: ValidationProfile {
-            name: "minimal-default",
-            summary: "Final review only, no intermediate review or fix stages.",
-            final_review_enabled: true,
-        },
+        validation_profile: MINIMAL_VALIDATION_PROFILE,
     },
     FlowDefinition {
         preset: FlowPreset::IterativeMinimal,
@@ -191,10 +181,10 @@ pub fn flow_semantics(preset: FlowPreset) -> FlowSemantics {
             prompt_review_stage: None,
         },
         FlowPreset::DocsChange => FlowSemantics {
-            planning_stage: StageId::DocsPlan,
-            execution_stage: StageId::DocsUpdate,
-            remediation_trigger_stages: &DOCS_CHANGE_REMEDIATION_TRIGGER_STAGES,
-            late_stages: &[],
+            planning_stage: StageId::PlanAndImplement,
+            execution_stage: StageId::PlanAndImplement,
+            remediation_trigger_stages: &[],
+            late_stages: &MINIMAL_LATE_STAGES,
             prompt_review_stage: None,
         },
         FlowPreset::CiImprovement => FlowSemantics {
