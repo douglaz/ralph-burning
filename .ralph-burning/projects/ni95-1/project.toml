@@ -1,0 +1,7 @@
+id = "ni95-1"
+name = "cli-help-milestone-task"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d"
+created_at = "2026-04-23T05:37:18.043405184Z"
+status_summary = "created"

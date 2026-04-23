@@ -56,6 +56,7 @@ const PENDING_BEAD_EXPORT_LOCK_FILE: &str = "bead-export-attempt.lock";
 const MAX_MILESTONE_RUN_STEPS: usize = 256;
 
 #[derive(Debug, Args)]
+#[command(about = "Manage milestones and their bead graphs.")]
 pub struct MilestoneCommand {
     #[command(subcommand)]
     pub command: MilestoneSubcommand,
@@ -63,39 +64,71 @@ pub struct MilestoneCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum MilestoneSubcommand {
+    #[command(
+        about = "Create a milestone record from a name or idea.",
+        long_about = "Create a milestone record and make it available for planning.\n\nExample: ralph-burning milestone create ms-dogfood --from-idea \"dogfood the next milestone flow\""
+    )]
     Create(MilestoneCreateArgs),
-    Plan {
-        milestone_id: String,
-    },
-    ExportBeads {
-        milestone_id: String,
-    },
+    #[command(
+        about = "Plan a milestone's bead graph via the requirements pipeline.",
+        long_about = "Draft requirements and turn the milestone into a planned bead graph.\n\nExample: ralph-burning milestone plan ms-alpha-plan"
+    )]
+    Plan { milestone_id: String },
+    #[command(
+        about = "Export a milestone's bead graph to the beads store.",
+        long_about = "Write planned milestone beads into the workspace beads graph.\n\nExample: ralph-burning milestone export-beads ms-alpha-plan"
+    )]
+    ExportBeads { milestone_id: String },
+    #[command(
+        about = "Report the next actionable bead for the active milestone.",
+        long_about = "Find the next unblocked bead for a milestone, or use the active milestone when omitted.\n\nExample: ralph-burning milestone next ms-dogfood"
+    )]
     Next {
         milestone_id: Option<String>,
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Start the next actionable bead as a task run.",
+        long_about = "Create and start a task for the next unblocked bead, or use the active milestone when omitted.\n\nExample: ralph-burning milestone run ms-dogfood"
+    )]
     Run {
         milestone_id: Option<String>,
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Show milestone details and bead summary.",
+        long_about = "Show milestone metadata, plan state, and bead progress.\n\nExample: ralph-burning milestone show ms-alpha-plan"
+    )]
     Show {
         milestone_id: String,
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Show history of bead-backed runs for a milestone.",
+        long_about = "Show task run attempts and outcomes for a specific milestone bead.\n\nExample: ralph-burning milestone bead-history ms-dogfood ralph-burning-9ni.4.1"
+    )]
     BeadHistory {
         milestone_id: String,
         bead_id: String,
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Show milestone progress (completed / in-progress / blocked / remaining).",
+        long_about = "Summarize milestone progress, or use the active milestone when omitted.\n\nExample: ralph-burning milestone status ms-alpha-plan"
+    )]
     Status {
         milestone_id: Option<String>,
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "List tasks (bead-backed projects) for a milestone.",
+        long_about = "List task runs created from the milestone's beads.\n\nExample: ralph-burning milestone tasks ms-dogfood"
+    )]
     Tasks {
         milestone_id: String,
         #[arg(long)]

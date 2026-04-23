@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260423053722-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-23T06:05:01.184543782Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated milestone and task clap help text in `src/cli/milestone.rs` and `src/cli/task.rs`. Milestone and task commands now have concise `about` descriptions, focused `long_about` examples where useful, and task argument help avoids the old task/project ambiguity except for the legacy `--project-id` flag name.\n\n## Steps\n\n0. [Completed] Inspect existing milestone/task clap definitions and current working-tree state before editing/reviewing the target files.\n1. [Completed] Add or confirm concise `about` text and short examples for all milestone subcommands: create, plan, show, status, next, run, export-beads, bead-history, and tasks.\n2. [Completed] Add or confirm concise `about` text and short examples for all task subcommands: create, show, select, and list, with task/bead/milestone vocabulary preserved.\n3. [Skipped] Skip README and snapshot updates because no relevant README or help-output snapshot needed changes for this help-text-only update.\n4. [Completed] Run focused help output and full requested validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo run --locked --quiet -- milestone --help` passed and listed descriptions for every milestone subcommand.\n- `nix develop -c cargo run --locked --quiet -- task --help` passed and listed descriptions for every task subcommand.\n- `nix develop -c cargo run --locked --quiet -- milestone create --help` and `task create --help` showed the new long help examples.\n- `git diff --check -- src/cli/milestone.rs src/cli/task.rs` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed: lib, CLI, tmux attach, unit, and doctest targets completed with no failures.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- Working tree still contains unrelated untracked live orchestration/prompt files: `.ralph-burning/projects/ni95-1/` and `prompt-9ni-9-5.md`; these were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}
