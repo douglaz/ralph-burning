@@ -21,7 +21,7 @@ pub struct TaskCommand {
 #[derive(Debug, Subcommand)]
 pub enum TaskSubcommand {
     #[command(
-        about = "Create a task (project) from a bead.",
+        about = "Create a task from a bead.",
         long_about = "Create a task from a milestone bead and optionally choose a flow.\n\nExample: ralph-burning task create --milestone-id ms-dogfood --bead-id ralph-burning-9ni.4.1 --flow minimal"
     )]
     Create(TaskCreateArgs),
@@ -37,7 +37,7 @@ pub enum TaskSubcommand {
         id: Option<String>,
     },
     #[command(
-        about = "Select a task as the active project.",
+        about = "Select a task as the active task.",
         long_about = "Select which task subsequent run commands operate on.\n\nExample: ralph-burning task select task-ms-dogfood-ralph-burning-xyz"
     )]
     Select {
@@ -45,7 +45,7 @@ pub enum TaskSubcommand {
         id: String,
     },
     #[command(
-        about = "List tasks (bead-backed projects) in the workspace.",
+        about = "List tasks in the workspace.",
         long_about = "List known tasks and mark the active task.\n\nExample: ralph-burning task list"
     )]
     List,

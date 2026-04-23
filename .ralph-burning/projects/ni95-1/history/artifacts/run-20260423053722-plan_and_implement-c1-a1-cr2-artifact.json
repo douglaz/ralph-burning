@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260423053722-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-23T07:05:51.126914667Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending vocabulary finding by updating the visible clap `about` strings for milestone/task help so tasks are no longer described as projects. `milestone tasks` now says `List tasks for a milestone.`, and `task create/select/list` now use task-first wording: `Create a task from a bead.`, `Select a task as the active task.`, and `List tasks in the workspace.`\n\n## Steps\n\n0. [Completed] Inspect the target clap definitions and confirm the pending amendment scope in `src/cli/milestone.rs` and `src/cli/task.rs`.\n1. [Completed] Apply/confirm the task-first help text remediation for the four affected visible `about` strings without changing command names, command structure, or project subcommand help.\n2. [Skipped] Skip README and snapshot updates because this remediation only affected existing clap help strings and no help snapshot required an update.\n3. [Completed] Run focused help output checks to verify `ralph-burning milestone --help` and `ralph-burning task --help` surface the remediated descriptions.\n4. [Completed] Run the required format, lint, test, and nix build gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo run --locked --quiet -- milestone --help` passed and listed `tasks         List tasks for a milestone.`\n- `nix develop -c cargo run --locked --quiet -- task --help` passed and listed task-first descriptions for create/show/select/list.\n- `git diff --check -- src/cli/milestone.rs src/cli/task.rs` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- An initial full cargo test run hit one unrelated structured-logging unit failure; the failed test passed when rerun directly with `nix develop -c cargo test --locked --features test-stub --test unit agent_execution_test::service_emits_invocation_completed_trace_with_token_fields -- --exact`.\n- A second full `nix develop -c cargo test --locked --features test-stub` passed, including lib tests, CLI integration tests, tmux attach test, unit tests, and doctests.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- Working tree still contains live orchestration state changes under `.ralph-burning/projects/ni95-1/`; these are outside review scope and were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

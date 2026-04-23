@@ -126,7 +126,7 @@ pub enum MilestoneSubcommand {
         json: bool,
     },
     #[command(
-        about = "List tasks (bead-backed projects) for a milestone.",
+        about = "List tasks for a milestone.",
         long_about = "List task runs created from the milestone's beads.\n\nExample: ralph-burning milestone tasks ms-dogfood"
     )]
     Tasks {

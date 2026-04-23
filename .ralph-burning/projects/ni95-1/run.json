@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260423053722",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-6dd91a3d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The new help text still describes tasks as projects in several visible `about` strings, which violates the bead's vocabulary rule and the acceptance criterion for consistent milestone/bead/task terminology. `ralph-burning task --help` surfaces `Create a task (project) from a bead.`, `Select a task as the active project.`, and `List tasks (bead-backed projects) in the workspace.`, and `ralph-burning milestone --help` surfaces `List tasks (bead-backed projects) for a milestone.` affected_files: src/cli/task.rs:24, src/cli/task.rs:40, src/cli/task.rs:48, src/cli/milestone.rs:129. remediation_hint: Use task-first wording such as `Create a task from a bead.`, `Select a task as the active task.`, `List tasks in the workspace.`, and `List tasks for a milestone.`",
-        "created_at": "2026-04-23T06:20:14.284042477Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "d2b791ccea58005334449d64eed7cfcd5eb9d1c37eb03540d87160e85baf9997"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-23T06:05:01.433155854Z",
