@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260423053722-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260423053722-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-23T06:20:14.284053458Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-6dd91a3d`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-6dd91a3d`\n\nfinding_summary: The new help text still describes tasks as projects in several visible `about` strings, which violates the bead's vocabulary rule and the acceptance criterion for consistent milestone/bead/task terminology. `ralph-burning task --help` surfaces `Create a task (project) from a bead.`, `Select a task as the active project.`, and `List tasks (bead-backed projects) in the workspace.`, and `ralph-burning milestone --help` surfaces `List tasks (bead-backed projects) for a milestone.` affected_files: src/cli/task.rs:24, src/cli/task.rs:40, src/cli/task.rs:48, src/cli/milestone.rs:129. remediation_hint: Use task-first wording such as `Create a task from a bead.`, `Select a task as the active task.`, `List tasks in the workspace.`, and `List tasks for a milestone.`\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
