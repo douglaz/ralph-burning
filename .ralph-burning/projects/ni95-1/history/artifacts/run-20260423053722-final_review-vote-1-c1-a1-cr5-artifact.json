@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260423053722-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T04:45:20.624189249Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real user-facing CLI help mismatches. The implementations and tests show the commands behave differently from the advertised help, so the findings should be accepted; for the first one, the compatible fix is to update help text rather than remove legacy behavior.\n\n## Votes\n\n- `fr-5-c2f61e15`: Accept\n  `src/cli/task.rs` advertises the `task` family as managing only tasks created from milestone beads, but `handle_show`, `handle_select`, and `handle_list` all operate on the generic project store with no bead-backed filter. The tests explicitly preserve standalone/legacy compatibility (`task_show_supports_standalone_projects`, `task_select_supports_standalone_projects`, `task_list_matches_project_list_for_legacy_projects`), so the help text is materially misleading. The finding is correct. The safer remediation is to loosen the help text, because restricting behavior would contradict intentional compatibility coverage.\n- `fr-5-cf7be5a2`: Accept\n  The `milestone tasks` help says it lists \"task runs\", but the implementation returns linked task/project records, not run attempts. `list_tasks_for_milestone` iterates project records and builds `MilestoneTaskView` entries with `project_id`, `status_summary`, `created_at`, and `bead_id`; `print_milestone_task_list` renders that project/task listing. Run-attempt history is separately handled by `bead_execution_history` and exposed through `milestone bead-history`. The amendment accurately identifies a documentation bug, and updating the help text is the correct low-risk fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

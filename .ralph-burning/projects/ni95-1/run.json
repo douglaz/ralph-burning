@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260423053722",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-24T02:24:25.693774513Z",
     "prompt_hash_at_cycle_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "prompt_hash_at_stage_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-c2f61e15",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: `task --help` now says the command family manages only tasks \"created from milestone beads\", but the implementation still intentionally fronts the generic project store, including standalone legacy projects.\naffected_files:\n- src/cli/task.rs:15-16\n- src/cli/task.rs:96-149\n- tests/cli.rs:19302-19342\n- tests/cli.rs:19443-19465\n- tests/cli.rs:19670-19701\nremediation_hint: Either restrict `task show`/`task select`/`task list` to bead-backed records, or loosen the new top-level help text so it explicitly covers legacy/standalone project compatibility.",
+        "created_at": "2026-04-24T04:45:20.659744268Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d6d13a93b04967b9fcb657eccd637af2164cd64ab859377d8c0f12ae42f29b9a"
+      },
+      {
+        "amendment_id": "fr-5-cf7be5a2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: `milestone tasks --help` says the command lists \"task runs\", but the command actually lists linked tasks/projects; run attempts are handled by `milestone bead-history`.\naffected_files:\n- src/cli/milestone.rs:128-130\n- src/cli/milestone.rs:1413-1431\n- src/cli/milestone.rs:2038-2048\n- src/contexts/milestone_record/queries.rs:161-180\nremediation_hint: Change the long help text to describe tasks/projects linked to the milestone, not run attempts.",
+        "created_at": "2026-04-24T04:45:20.659747304Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "1809370c3aaecf238dac5e8039933f10172f89533f8ac252319b4f08c0728eec"
+      }
+    ],
     "processed_count": 5
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-24T03:59:17.544553139Z",
+    "resolved_at": "2026-04-24T04:37:11.323477028Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
