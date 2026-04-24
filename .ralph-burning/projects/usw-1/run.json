@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 9
+      "completion_round": 10
     },
     "started_at": "2026-04-24T06:52:22.511124747Z",
     "prompt_hash_at_cycle_start": "cdf2d760247fd89d2928b8163fac92576590e1393ca2f1a7a29d999de381bb1c",
     "prompt_hash_at_stage_start": "cdf2d760247fd89d2928b8163fac92576590e1393ca2f1a7a29d999de381bb1c",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 8
+    "final_review_restart_count": 9
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 9,
+  "completion_rounds": 10,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-9-9b28eac7",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 9,
+        "body": "Transient rate limits during availability probes are still not retried. `AgentExecutionService::invoke` always calls `check_availability` before invoke (`src/contexts/agent_execution/service.rs:197-208`). OpenRouter's probe path returns non-exhaustion 429s as `AppError::BackendUnavailable { failure_class: None, details: \"HTTP 429: ...\" }` (`src/adapters/openrouter_backend.rs:214-231`), but `final_review_retry_failure_class` only retries `is_timeout_related` or `is_transient_codex_failure` (`src/contexts/workflow_composition/final_review.rs:221-227`), and that classifier's string list omits `429` / rate-limit terms (`src/adapters/process_backend.rs:55-79`). So one of the motivating transient classes from the bead description, a transient rate limit, still fails a final-review reviewer/arbiter immediately if it happens in the probe rather than the invoke call.",
+        "created_at": "2026-04-24T15:29:08.087428109Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "a8d49e2d140efc3aacfa160dd5d2e7702351a2bcfb72946ebd6ac3676a96f4a7"
+      }
+    ],
     "processed_count": 10
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 10 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-24T14:31:21.066050075Z",
+    "resolved_at": "2026-04-24T15:14:28.277415980Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

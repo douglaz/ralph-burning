@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T15:29:08.087433119Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 9/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-9-9b28eac7`\n\n## Rejected\n\n- `fr-9-54ca218a`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-9b28eac7`\n\nTransient rate limits during availability probes are still not retried. `AgentExecutionService::invoke` always calls `check_availability` before invoke (`src/contexts/agent_execution/service.rs:197-208`). OpenRouter's probe path returns non-exhaustion 429s as `AppError::BackendUnavailable { failure_class: None, details: \"HTTP 429: ...\" }` (`src/adapters/openrouter_backend.rs:214-231`), but `final_review_retry_failure_class` only retries `is_timeout_related` or `is_transient_codex_failure` (`src/contexts/workflow_composition/final_review.rs:221-227`), and that classifier's string list omits `429` / rate-limit terms (`src/adapters/process_backend.rs:55-79`). So one of the motivating transient classes from the bead description, a transient rate limit, still fails a final-review reviewer/arbiter immediately if it happens in the probe rather than the invoke call.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}
