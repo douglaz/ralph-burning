@@ -241,6 +241,28 @@ where
     R: crate::contexts::agent_execution::service::RawOutputPort,
     S: SessionStorePort,
 {
+    check_final_review_availability_with_retry_on_adapter(
+        agent_service.adapter(),
+        target,
+        role,
+        reviewer_id,
+        panel_role,
+        cancellation_token,
+    )
+    .await
+}
+
+pub(crate) async fn check_final_review_availability_with_retry_on_adapter<A>(
+    adapter: &A,
+    target: &ResolvedBackendTarget,
+    role: BackendPolicyRole,
+    reviewer_id: &str,
+    panel_role: &str,
+    cancellation_token: CancellationToken,
+) -> AppResult<u32>
+where
+    A: AgentExecutionPort,
+{
     let retry_policy = final_review_retry_policy(role);
     let contract_id = final_review_contract_id(panel_role);
     let mut retry_count = 0;
@@ -253,7 +275,7 @@ where
             });
         }
 
-        match agent_service.adapter().check_availability(target).await {
+        match adapter.check_availability(target).await {
             Ok(()) => return Ok(retry_count),
             Err(error) => {
                 if matches!(error.failure_class(), Some(FailureClass::Cancellation)) {

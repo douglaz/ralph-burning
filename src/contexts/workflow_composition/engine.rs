@@ -378,25 +378,26 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                 let policy = BackendPolicyService::new(effective_config);
                 let panel = resolve_final_review_panel_for_preflight(&policy, cycle)?;
                 let mut probed = Vec::new();
-                preflight_required_panel_target(
+                preflight_final_review_required_panel_target(
                     adapter,
                     entry.stage_id,
                     "arbiter",
+                    BackendPolicyRole::Arbiter,
                     &panel.arbiter,
                     "final-review arbiter",
                     &mut probed,
                 )
                 .await?;
-                preflight_panel_members(
+                preflight_final_review_panel_members(
                     adapter,
                     entry.stage_id,
                     "reviewer",
                     "final_review",
                     "final-review reviewer",
                     &panel.reviewers,
+                    BackendPolicyRole::FinalReviewer,
                     effective_config.final_review_policy().min_reviewers,
                     &mut probed,
-                    true, // final_review supports graceful degradation
                 )
                 .await?;
             }
@@ -505,6 +506,48 @@ async fn preflight_required_panel_target<A: AgentExecutionPort>(
     Ok(())
 }
 
+async fn preflight_final_review_required_panel_target<A: AgentExecutionPort>(
+    adapter: &A,
+    stage_id: StageId,
+    role: &'static str,
+    policy_role: BackendPolicyRole,
+    target: &ResolvedBackendTarget,
+    member_name: &str,
+    probed: &mut Vec<ResolvedBackendTarget>,
+) -> AppResult<()> {
+    let contract = InvocationContract::Panel {
+        stage_id,
+        role: role.to_owned(),
+    };
+    adapter
+        .check_capability(target, &contract)
+        .await
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id,
+            details: format!(
+                "required {member_name} failed capability preflight for '{}': {error}",
+                contract.label()
+            ),
+        })?;
+    if !probed.contains(target) {
+        final_review::check_final_review_availability_with_retry_on_adapter(
+            adapter,
+            target,
+            policy_role,
+            role,
+            role,
+            CancellationToken::new(),
+        )
+        .await
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id,
+            details: format!("required {member_name} failed availability preflight: {error}"),
+        })?;
+        probed.push(target.clone());
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn preflight_panel_members<A: AgentExecutionPort>(
     adapter: &A,
@@ -585,6 +628,119 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
 
     // Only BackendExhausted skips reduce quorum — other optional
     // unavailability keeps the original configured minimum.
+    let effective_min = minimum
+        .min(members.len().saturating_sub(exhausted_count))
+        .max(1);
+    if available_members < effective_min {
+        return Err(AppError::PreflightFailed {
+            stage_id,
+            details: AppError::InsufficientPanelMembers {
+                panel: panel_name.to_owned(),
+                resolved: available_members,
+                minimum: effective_min,
+            }
+            .to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn preflight_final_review_panel_members<A: AgentExecutionPort>(
+    adapter: &A,
+    stage_id: StageId,
+    role: &'static str,
+    panel_name: &'static str,
+    member_name: &str,
+    members: &[ResolvedPanelMember],
+    policy_role: BackendPolicyRole,
+    minimum: usize,
+    probed: &mut Vec<ResolvedBackendTarget>,
+) -> AppResult<()> {
+    let mut available_members = 0usize;
+    let mut exhausted_count = 0usize;
+
+    for (idx, member) in members.iter().enumerate() {
+        let contract = InvocationContract::Panel {
+            stage_id,
+            role: role.to_owned(),
+        };
+        let required_prefix = if member.required {
+            "required"
+        } else {
+            "optional"
+        };
+
+        match adapter.check_capability(&member.target, &contract).await {
+            Ok(()) => {}
+            Err(error) => {
+                if member.required {
+                    return Err(AppError::PreflightFailed {
+                        stage_id,
+                        details: format!(
+                            "{required_prefix} {member_name} failed capability preflight for '{}': {error}",
+                            contract.label()
+                        ),
+                    });
+                }
+                continue;
+            }
+        }
+
+        if probed.contains(&member.target) {
+            available_members += 1;
+            continue;
+        }
+
+        let reviewer_id = final_review::final_review_reviewer_id(idx);
+        match final_review::check_final_review_availability_with_retry_on_adapter(
+            adapter,
+            &member.target,
+            policy_role,
+            &reviewer_id,
+            role,
+            CancellationToken::new(),
+        )
+        .await
+        {
+            Ok(_) => {
+                probed.push(member.target.clone());
+                available_members += 1;
+            }
+            Err(error)
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
+            {
+                exhausted_count += 1;
+            }
+            Err(error)
+                if final_review::is_final_review_retry_exhaustion_error(&error)
+                    && !member.required =>
+            {
+                tracing::warn!(
+                    reviewer = reviewer_id,
+                    backend = %member.target.backend.family,
+                    model = %member.target.model.model_id,
+                    error = %error,
+                    "optional final-review reviewer preflight exhausted transient retries; preserving reviewer for invocation-time handling"
+                );
+                available_members += 1;
+            }
+            Err(error) => {
+                if member.required {
+                    return Err(AppError::PreflightFailed {
+                        stage_id,
+                        details: format!(
+                            "{required_prefix} {member_name} failed availability preflight: {error}",
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
     let effective_min = minimum
         .min(members.len().saturating_sub(exhausted_count))
         .max(1);
@@ -10398,9 +10554,10 @@ mod tests {
         git_change_scope_fingerprint, git_diff_fingerprint, git_repo_available_with_program,
         invocation_id_for_stage, iterative_loop_exit_reason, mark_running_run_interrupted,
         milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
-        probe_final_review_reviewers, resolution_has_drifted, resolve_runtime_final_review_panel,
-        resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
-        role_for_stage, should_retry_stage_failure, stage_running_summary_for_active_run,
+        preflight_check, probe_final_review_reviewers, resolution_has_drifted,
+        resolve_runtime_final_review_panel, resolve_stage_plan, resume_iteration_counters,
+        resume_run_with_retry, resume_terminal_iterative_stage_result, role_for_stage,
+        should_retry_stage_failure, stage_running_summary_for_active_run,
         sync_milestone_bead_start, validate_iterative_minimal_loop_settings,
         FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
         IterativeInvocationSidecar, IterativeLoopExitReason, QueuedAmendment,
@@ -10654,6 +10811,74 @@ mod tests {
         assert!(
             adapter.availability_checks_for(arbiter_model.as_str()) >= 2,
             "arbiter availability should be rechecked after the transient failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_check_retries_transient_final_review_arbiter_probe_failures() {
+        let config = final_review_effective_config();
+        let resolver = crate::contexts::agent_execution::service::BackendResolver::new();
+        let plan = resolve_stage_plan(&[StageId::FinalReview], &resolver, None)
+            .expect("resolve final-review stage plan");
+        let policy = crate::contexts::agent_execution::policy::BackendPolicyService::new(&config);
+        let resolved_panel = policy
+            .resolve_final_review_panel(1)
+            .expect("resolve final-review panel");
+        let arbiter_model = resolved_panel.arbiter.model.model_id.clone();
+
+        let adapter = ScriptedAvailabilityAdapter::with_failures(&[(
+            arbiter_model.as_str(),
+            vec![ScriptedAvailabilityFailure::BackendUnavailable {
+                backend: resolved_panel.arbiter.backend.family.as_str(),
+                details: "stream disconnected before completion",
+                failure_class: None,
+            }],
+        )]);
+
+        preflight_check(&adapter, &config, 1, &plan)
+            .await
+            .expect("preflight should retry a transient final-review arbiter probe failure");
+        assert!(
+            adapter.availability_checks_for(arbiter_model.as_str()) >= 2,
+            "preflight should recheck the arbiter after a transient availability failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_check_keeps_optional_final_review_reviewers_after_transient_probe_exhaustion(
+    ) {
+        let config = final_review_effective_config();
+        let resolver = crate::contexts::agent_execution::service::BackendResolver::new();
+        let plan = resolve_stage_plan(&[StageId::FinalReview], &resolver, None)
+            .expect("resolve final-review stage plan");
+        let policy = crate::contexts::agent_execution::policy::BackendPolicyService::new(&config);
+        let resolved_panel = policy
+            .resolve_final_review_panel(1)
+            .expect("resolve final-review panel");
+        let optional_reviewer = resolved_panel
+            .reviewers
+            .iter()
+            .find(|member| !member.required)
+            .expect("expected optional final-review reviewer");
+
+        let adapter = ScriptedAvailabilityAdapter::with_failures(&[(
+            optional_reviewer.target.model.model_id.as_str(),
+            (0..5)
+                .map(|_| ScriptedAvailabilityFailure::BackendUnavailable {
+                    backend: optional_reviewer.target.backend.family.as_str(),
+                    details: "stream disconnected before completion",
+                    failure_class: None,
+                })
+                .collect(),
+        )]);
+
+        preflight_check(&adapter, &config, 1, &plan)
+            .await
+            .expect("preflight should preserve optional final-review reviewers after transient probe exhaustion");
+        assert_eq!(
+            adapter.availability_checks_for(optional_reviewer.target.model.model_id.as_str()),
+            5,
+            "preflight should consume the configured final-review retry budget before preserving the optional reviewer"
         );
     }
 

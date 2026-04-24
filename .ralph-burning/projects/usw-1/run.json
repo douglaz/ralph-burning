@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 9
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-8-81a36416",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "Transient final-review availability failures still hard-fail `run start` and `run resume` before the new retry wrapper is ever reached. `execute_run` and `resume_run_with_retry_internal` still call `preflight_check` (`src/contexts/workflow_composition/engine.rs:1559`, `src/contexts/workflow_composition/engine.rs:2346-2356`), and the final-review branch there performs single-shot `check_availability` probes through `preflight_required_panel_target` / `preflight_panel_members` (`src/contexts/workflow_composition/engine.rs:377-401`, `src/contexts/workflow_composition/engine.rs:473-503`, `src/contexts/workflow_composition/engine.rs:509-603`). A one-off arbiter/reviewer network blip in those preflights still aborts the whole run, so the original “single transient final_review backend error kills the run” failure mode remains reachable outside the stage-dispatch path.",
-        "created_at": "2026-04-24T14:41:33.651439351Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "85afb8b64a5488fa13382a210893ba52e12ff263ec3f7ecc0640963fd3beac31"
-      }
-    ],
-    "processed_count": 9
+    "pending": [],
+    "processed_count": 10
   },
-  "status_summary": "running: final review restart round 9 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T14:31:21.066050075Z",

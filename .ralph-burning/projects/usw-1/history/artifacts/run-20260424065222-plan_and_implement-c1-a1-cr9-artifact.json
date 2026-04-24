@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T15:14:27.989676035Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining final_review transient-availability gap by routing `preflight_check`'s final-review arbiter and reviewer availability probes in `src/contexts/workflow_composition/engine.rs` through the shared `final_review::check_final_review_availability_with_retry_on_adapter(...)` helper instead of single-shot `check_availability` calls. This adds the same per-role retry policy to `run start` and `run resume` preflight, preserves graceful degradation for optional reviewers after transient retry exhaustion, and keeps required-member failures terminal. `src/contexts/workflow_composition/final_review.rs` now exposes the adapter-level availability retry helper so engine preflight and stage execution share identical transient classification and exhaustion behavior.\n\n## Steps\n\n1. [Completed] Inspect the remaining amendment path in `engine.rs` and confirm that `preflight_check` was still doing single-shot final-review availability probes before stage dispatch retry logic could run.\n2. [Completed] Patch final-review preflight so required arbiter probes and reviewer panel probes reuse the shared final-review availability retry helper, while preserving existing quorum/degradation semantics for optional reviewers.\n3. [Completed] Add focused regressions for transient final-review preflight availability handling on `run start`, then rerun the targeted resume regression and the required repository verification gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub preflight_check_retries_transient_final_review_arbiter_probe_failures -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub preflight_check_keeps_optional_final_review_reviewers_after_transient_probe_exhaustion -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub resume_retries_transient_final_review_probe_failures_without_drift -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- There is still no dedicated end-to-end regression that injects a transient arbiter availability failure specifically during `run resume`; coverage is split between the new preflight arbiter test and the broader resume drift regression.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 9
+}
