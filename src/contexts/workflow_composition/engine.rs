@@ -84,6 +84,20 @@ pub fn role_for_stage(stage_id: StageId) -> BackendRole {
     BackendRole::for_stage(stage_id)
 }
 
+fn should_retry_stage_failure(
+    retry_policy: &RetryPolicy,
+    failure_class: FailureClass,
+    error: &AppError,
+    cursor: &StageCursor,
+    cancellation_token: &CancellationToken,
+) -> bool {
+    retry_policy.is_retryable(failure_class)
+        && !final_review::is_final_review_retry_exhaustion_error(error)
+        && cursor.attempt < retry_policy.max_attempts(failure_class)
+        && !matches!(failure_class, FailureClass::Cancellation)
+        && !cancellation_token.is_cancelled()
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_stage_prompt(
     artifact_store: &dyn ArtifactStorePort,
@@ -5841,11 +5855,13 @@ where
                     .await;
                 };
 
-                let max_attempts = retry_policy.max_attempts(failure_class);
-                let will_retry = retry_policy.is_retryable(failure_class)
-                    && cursor.attempt < max_attempts
-                    && !matches!(failure_class, FailureClass::Cancellation)
-                    && !cancellation_token.is_cancelled();
+                let will_retry = should_retry_stage_failure(
+                    retry_policy,
+                    failure_class,
+                    &error,
+                    &cursor,
+                    &cancellation_token,
+                );
 
                 let error_display = error.to_string();
                 let failed_invocation_id =
@@ -10328,7 +10344,7 @@ mod tests {
         invocation_id_for_stage, iterative_loop_exit_reason, mark_running_run_interrupted,
         milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
         resolution_has_drifted, resume_iteration_counters, resume_run_with_retry,
-        resume_terminal_iterative_stage_result, role_for_stage,
+        resume_terminal_iterative_stage_result, role_for_stage, should_retry_stage_failure,
         stage_running_summary_for_active_run, sync_milestone_bead_start,
         validate_iterative_minimal_loop_settings, FinalReviewQueuedAmendment,
         InterruptedRunContext, InterruptedRunUpdate, IterativeInvocationSidecar,
@@ -10349,6 +10365,26 @@ mod tests {
                 configured_index: 1,
             },
         ]
+    }
+
+    #[test]
+    fn stage_retry_budget_stops_after_final_review_member_retry_exhaustion() {
+        let retry_policy = RetryPolicy::default_policy().with_no_backoff();
+        let error = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "final_review:reviewer".to_owned(),
+            failure_class: FailureClass::TransportFailure,
+            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: ERROR: stream disconnected before completion".to_owned(),
+        };
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+
+        assert!(!should_retry_stage_failure(
+            &retry_policy,
+            FailureClass::TransportFailure,
+            &error,
+            &cursor,
+            &crate::contexts::agent_execution::model::CancellationToken::new(),
+        ));
     }
 
     fn final_review_effective_config() -> EffectiveConfig {

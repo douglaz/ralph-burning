@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-973dcfd9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "`fix-now` High: exhausted per-member retries still bubble up as retryable stage failures. In [src/contexts/workflow_composition/final_review.rs](/home/user/ralph-burning/src/contexts/workflow_composition/final_review.rs:172) and [src/contexts/workflow_composition/final_review.rs](/home/user/ralph-burning/src/contexts/workflow_composition/final_review.rs:2390), `rewrite_transient_retry_exhaustion_error` preserves the original `FailureClass`, and `invoke_final_review_member` returns that retryable `TransportFailure`/`Timeout` after the member has already exhausted its own retry budget. The engine then sees that class in [src/contexts/workflow_composition/engine.rs](/home/user/ralph-burning/src/contexts/workflow_composition/engine.rs:5844) and retries the entire `final_review` stage again. That turns a supposed per-invocation retry into compounded stage-level retries, multiplying backend calls and backoff delays. The changed resume test at [tests/unit/workflow_engine_test.rs](/home/user/ralph-burning/tests/unit/workflow_engine_test.rs:1227) now takes about 72s for exactly this reason. This violates the bead’s scope guard (`per-invocation transient retry, not per-stage restart`) and means an exhausted reviewer/arbiter failure is not actually terminal for the stage.",
-        "created_at": "2026-04-24T10:55:05.912812298Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "b983a9997a820007a96fff5cd66a2bd5513317cfe40095283f29eca79c095ae1"
-      }
-    ],
-    "processed_count": 4
+    "pending": [],
+    "processed_count": 5
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T10:44:47.477708379Z",

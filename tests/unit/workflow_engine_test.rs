@@ -201,6 +201,7 @@ impl Drop for ScopedJournalAppendFailpoint {
 }
 
 const MAX_COMPLETION_ROUNDS_ENV: &str = "RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS";
+const DISABLE_RETRY_BACKOFF_ENV: &str = "RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF";
 
 struct ScopedMaxCompletionRounds {
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -219,6 +220,26 @@ impl ScopedMaxCompletionRounds {
 impl Drop for ScopedMaxCompletionRounds {
     fn drop(&mut self) {
         std::env::remove_var(MAX_COMPLETION_ROUNDS_ENV);
+    }
+}
+
+struct ScopedRetryBackoffDisabled {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ScopedRetryBackoffDisabled {
+    fn set() -> Self {
+        let lock = FAILPOINT_ENV_MUTEX
+            .lock()
+            .expect("failpoint env mutex poisoned");
+        std::env::set_var(DISABLE_RETRY_BACKOFF_ENV, "1");
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for ScopedRetryBackoffDisabled {
+    fn drop(&mut self) {
+        std::env::remove_var(DISABLE_RETRY_BACKOFF_ENV);
     }
 }
 
@@ -1228,23 +1249,26 @@ async fn resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes() {
     // the stage fail deterministically on every invocation. Resume uses a clean
     // adapter and should still start from FinalReview without re-running
     // ApplyFixes.
-    let failing_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
-    );
-    let first_result = engine::execute_run(
-        &failing_agent_service,
-        &FsRunSnapshotStore,
-        &FsRunSnapshotWriteStore,
-        &FsJournalStore,
-        &FsPayloadArtifactWriteStore,
-        &FsRuntimeLogWriteStore,
-        &FsAmendmentQueueStore,
-        base_dir,
-        &pid,
-        FlowPreset::QuickDev,
-        &config,
-    )
-    .await;
+    let first_result = {
+        let _disable_retry_backoff = ScopedRetryBackoffDisabled::set();
+        let failing_agent_service = build_agent_service_with_adapter(
+            StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
+        );
+        engine::execute_run(
+            &failing_agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::QuickDev,
+            &config,
+        )
+        .await
+    };
     assert!(first_result.is_err());
 
     // Verify that the StageSkipped event was committed before the failure.
@@ -1255,6 +1279,29 @@ async fn resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes() {
         .collect();
     assert_eq!(skipped.len(), 1, "apply_fixes skip event must be committed");
     assert_eq!(skipped[0].details["stage_id"], "apply_fixes");
+    let final_review_entered = stage_events(
+        &events_before,
+        JournalEventType::StageEntered,
+        "final_review",
+    );
+    assert_eq!(
+        final_review_entered.len(),
+        1,
+        "final_review should fail terminally after inner retry exhaustion, not restart the stage"
+    );
+    let final_review_failed: Vec<_> = events_before
+        .iter()
+        .filter(|event| {
+            event.event_type == JournalEventType::StageFailed
+                && event.details["stage_id"] == "final_review"
+        })
+        .collect();
+    assert!(
+        final_review_failed
+            .iter()
+            .all(|event| event.details["will_retry"] == false),
+        "final_review transport exhaustion must not schedule a stage-level retry"
+    );
 
     // Resume — should pick up at FinalReview, not re-run ApplyFixes.
     let resume_agent_service = build_agent_service();

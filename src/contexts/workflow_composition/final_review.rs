@@ -207,6 +207,26 @@ fn rewrite_transient_retry_exhaustion_error(
     }
 }
 
+pub(crate) fn is_final_review_retry_exhaustion_error(error: &AppError) -> bool {
+    match error {
+        AppError::InvocationFailed {
+            contract_id,
+            details,
+            ..
+        }
+        | AppError::InvocationTimeout {
+            contract_id,
+            details,
+            ..
+        } => {
+            contract_id.starts_with("final_review:")
+                && details.contains(" exhausted ")
+                && details.contains(" transient retries:")
+        }
+        _ => false,
+    }
+}
+
 pub fn normalize_amendment_body(body: &str) -> String {
     let normalized_newlines = body.replace("\r\n", "\n").replace('\r', "\n");
     let trimmed = normalized_newlines.trim();
