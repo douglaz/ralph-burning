@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T10:05:13.864150008Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment: the final-review retry gate incorrectly makes all domain-validation failures terminal, which prevents retries for Codex transient disconnects that the new classifier explicitly recognizes.\n\n## Votes\n\n- `fr-3-268947ee`: Accept\n  `invoke_final_review_member` computes `retryable_transient` with `is_transient_codex_failure(&error)`, but then immediately returns on any `FailureClass::DomainValidationFailure` before that classification can matter. Since `is_transient_codex_failure` explicitly treats Codex messages like `stream disconnected before completion` and `You can retry your request` as transient even when they arrive as `DomainValidationFailure`, the current final-review logic will still fail those invocations instead of retrying them. The added no-retry test reinforces the bug by asserting that all domain-validation failures are terminal, so a required single-reviewer panel would still fail on this reproduced Codex disconnect path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

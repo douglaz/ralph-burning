@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-24T06:52:22.511124747Z",
     "prompt_hash_at_cycle_start": "cdf2d760247fd89d2928b8163fac92576590e1393ca2f1a7a29d999de381bb1c",
     "prompt_hash_at_stage_start": "cdf2d760247fd89d2928b8163fac92576590e1393ca2f1a7a29d999de381bb1c",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-268947ee",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "src/contexts/workflow_composition/final_review.rs:2437-2445 makes every `FailureClass::DomainValidationFailure` terminal before the new transient classifier is consulted. That breaks the exact codex path this bead was meant to fix: `src/adapters/process_backend.rs:2679-2705` explicitly treats `ERROR: stream disconnected before completion` / `You can retry your request...` carried as `DomainValidationFailure` as transient, but the final-review loop will still fail them immediately instead of retrying. The new no-retry test at src/contexts/workflow_composition/final_review.rs:4494-4587 also hard-codes the wrong rule by asserting that all domain-validation failures are non-retryable, so a 1-reviewer panel can still fail on the reproduced codex disconnect path.",
+        "created_at": "2026-04-24T10:05:13.890769856Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "44a057f1daeda8298a0048568c966d251359dc833d4614751a6f06ea9b727458"
+      }
+    ],
     "processed_count": 3
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-24T09:06:24.787431906Z",
+    "resolved_at": "2026-04-24T09:56:41.802504693Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
