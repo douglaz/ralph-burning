@@ -2436,12 +2436,10 @@ where
             Err(error) => {
                 let retryable_transient =
                     is_timeout_related(&error) || is_transient_codex_failure(&error);
-                if error
-                    .failure_class()
-                    .is_some_and(|fc| fc == FailureClass::DomainValidationFailure)
-                    || !retryable_transient
-                    || matches!(error.failure_class(), Some(FailureClass::Cancellation))
-                {
+                if matches!(error.failure_class(), Some(FailureClass::Cancellation)) {
+                    return Err(FinalReviewMemberInvocationFailure { error, retry_count });
+                }
+                if !retryable_transient {
                     return Err(FinalReviewMemberInvocationFailure { error, retry_count });
                 }
 
@@ -4303,7 +4301,7 @@ mod tests {
         let project_id = setup_project(base_dir, "fr-transient-reviewer-success");
         let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
             "reviewer-1",
-            vec![PlannedInvocationFailure::Transport(
+            vec![PlannedInvocationFailure::DomainValidation(
                 "ERROR: stream disconnected before completion",
             )],
         );
@@ -4349,7 +4347,7 @@ mod tests {
             CancellationToken::new(),
         )
         .await
-        .expect("transient reviewer failure should succeed on retry");
+        .expect("transient codex domain-validation failure should succeed on retry");
 
         assert!(
             !result.aggregate_artifact.is_empty(),
@@ -4492,14 +4490,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_review_does_not_retry_domain_validation_failures() {
+    async fn final_review_does_not_retry_non_transient_domain_validation_failures() {
         let tmp = tempdir().expect("tempdir");
         let base_dir = tmp.path();
         let project_id = setup_project(base_dir, "fr-domain-validation-no-retry");
         let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
             "reviewer-1",
             vec![PlannedInvocationFailure::DomainValidation(
-                "proposal payload failed domain validation",
+                "proposal payload omitted required amendment ids",
             )],
         );
         let agent_service =
@@ -4565,7 +4563,7 @@ mod tests {
         assert_eq!(
             reviewer_attempts.len(),
             1,
-            "domain validation failures must not be retried"
+            "non-transient domain validation failures must not be retried"
         );
 
         let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T10:44:47.202695084Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the final pending amendment in `final_review` by removing the blanket `DomainValidationFailure` short-circuit from the final-review retry loop so codex disconnect/retry stderr carried in domain-validation-shaped errors now flows through `is_transient_codex_failure` and retries correctly. Updated the regression coverage so the transient reviewer-success case uses the reproduced codex `stream disconnected before completion` domain-validation path, while the no-retry test is narrowed to explicitly non-transient domain-validation failures.\n\n## Steps\n\n1. [Completed] Inspect the pending amendment against the current final_review retry loop and confirm the remaining blocker was the explicit `DomainValidationFailure` early return bypassing the transient classifier.\n2. [Completed] Adjust the final_review retry decision so cancellation remains terminal, non-transient failures still fail immediately, and domain-validation-shaped codex transport errors are retried when `is_transient_codex_failure` matches.\n3. [Completed] Update the final_review regression tests to cover the reproduced transient codex disconnect path via `DomainValidationFailure` details and keep the no-retry assertion scoped to non-transient domain-validation failures.\n4. [Completed] Run the targeted regressions plus the required repository verification gates on the amended tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub final_review_retries_transient_reviewer_failure_and_records_single_success` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_fails_after_exhausting_transient_reviewer_retries` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_does_not_retry_non_transient_domain_validation_failures` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- Arbiter transient retries still rely on the shared final_review retry helper without a dedicated arbiter-specific transient regression test.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}
