@@ -130,7 +130,7 @@ struct FinalReviewMemberInvocationFailure {
     retry_count: u32,
 }
 
-fn final_review_reviewer_id(member_index: usize) -> String {
+pub(crate) fn final_review_reviewer_id(member_index: usize) -> String {
     format!("reviewer-{}", member_index + 1)
 }
 
@@ -153,7 +153,7 @@ fn panel_member_identity_from_producer(
     Ok((backend_family.to_owned(), model_id.to_owned()))
 }
 
-fn final_review_retry_policy(_role: BackendPolicyRole) -> RetryPolicy {
+pub(crate) fn final_review_retry_policy(_role: BackendPolicyRole) -> RetryPolicy {
     let policy = apply_test_retry_policy_overrides(RetryPolicy::default_policy());
     #[cfg(test)]
     {
@@ -218,7 +218,7 @@ fn rewrite_transient_retry_exhaustion_error(
     }
 }
 
-fn final_review_retry_failure_class(error: &AppError) -> Option<FailureClass> {
+pub(crate) fn final_review_retry_failure_class(error: &AppError) -> Option<FailureClass> {
     if is_timeout_related(error) {
         Some(FailureClass::Timeout)
     } else if is_transient_codex_failure(error) {
@@ -226,6 +226,90 @@ fn final_review_retry_failure_class(error: &AppError) -> Option<FailureClass> {
     } else {
         None
     }
+}
+
+pub(crate) async fn check_final_review_availability_with_retry<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    target: &ResolvedBackendTarget,
+    role: BackendPolicyRole,
+    reviewer_id: &str,
+    panel_role: &str,
+    cancellation_token: CancellationToken,
+) -> AppResult<u32>
+where
+    A: AgentExecutionPort,
+    R: crate::contexts::agent_execution::service::RawOutputPort,
+    S: SessionStorePort,
+{
+    let retry_policy = final_review_retry_policy(role);
+    let contract_id = final_review_contract_id(panel_role);
+    let mut retry_count = 0;
+
+    for probe_attempt in 1.. {
+        if cancellation_token.is_cancelled() {
+            return Err(AppError::InvocationCancelled {
+                backend: target.backend.family.to_string(),
+                contract_id: contract_id.clone(),
+            });
+        }
+
+        match agent_service.adapter().check_availability(target).await {
+            Ok(()) => return Ok(retry_count),
+            Err(error) => {
+                if matches!(error.failure_class(), Some(FailureClass::Cancellation)) {
+                    return Err(error);
+                }
+                let Some(retry_failure_class) = final_review_retry_failure_class(&error) else {
+                    return Err(error);
+                };
+
+                retry_count += 1;
+                let max_attempts = retry_policy.max_attempts(retry_failure_class).max(1);
+                if probe_attempt >= max_attempts {
+                    return Err(rewrite_transient_retry_exhaustion_error(
+                        error,
+                        &contract_id,
+                        reviewer_id,
+                        target,
+                        retry_count,
+                    ));
+                }
+
+                let backoff = retry_policy.backoff_for_attempt(probe_attempt);
+                tracing::warn!(
+                    reviewer_id = reviewer_id,
+                    panel_role = panel_role,
+                    backend = %target.backend.family.as_str(),
+                    model = %target.model.model_id.as_str(),
+                    contract_id = contract_id,
+                    retry_count = retry_count,
+                    max_attempts = max_attempts,
+                    backoff_ms = backoff.as_millis().min(u128::from(u64::MAX)) as u64,
+                    error = %error,
+                    "final_review transient availability failure; retrying"
+                );
+                if !backoff.is_zero() {
+                    tokio::select! {
+                        () = tokio::time::sleep(backoff) => {}
+                        () = cancellation_token.cancelled() => {
+                            return Err(AppError::InvocationCancelled {
+                                backend: target.backend.family.to_string(),
+                                contract_id: contract_id.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(AppError::InvocationFailed {
+        backend: target.backend.family.to_string(),
+        contract_id,
+        failure_class: FailureClass::TransportFailure,
+        details: "final-review availability retry loop terminated without a probe result"
+            .to_owned(),
+    })
 }
 
 pub(crate) fn is_final_review_retry_exhaustion_error(error: &AppError) -> bool {

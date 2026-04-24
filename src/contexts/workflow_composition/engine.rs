@@ -2247,66 +2247,34 @@ where
                 build_completion_snapshot(current_stage, &panel.completers)
             }
             StageId::FinalReview => {
-                let mut panel = policy.resolve_final_review_panel(resume_state.cursor.cycle)?;
-                let min_reviewers = effective_config.final_review_policy().min_reviewers;
-                agent_service
-                    .adapter()
-                    .check_availability(&panel.arbiter)
-                    .await
-                    .map_err(|_| AppError::ResumeDriftFailure {
-                        stage_id: current_stage,
-                        details: format!(
-                            "required final-review arbiter ({}) unavailable on resume",
-                            panel.arbiter.backend.family,
-                        ),
-                    })?;
-                let mut available = Vec::new();
-                let mut resume_exhausted: usize = 0;
-                for member in &panel.reviewers {
-                    match agent_service
-                        .adapter()
-                        .check_availability(&member.target)
-                        .await
-                    {
-                        Ok(()) => available.push(member.clone()),
-                        Err(e) => {
-                            // BackendExhausted on resume → skip for graceful
-                            // degradation instead of aborting.
-                            if e.failure_class()
-                                .is_some_and(|fc| fc == FailureClass::BackendExhausted)
-                            {
-                                resume_exhausted += 1;
-                                continue;
-                            }
-                            if member.required {
-                                return Err(AppError::ResumeDriftFailure {
-                                    stage_id: current_stage,
-                                    details: format!(
-                                        "required final-review reviewer unavailable on resume: {e}"
-                                    ),
-                                });
-                            }
+                match resolve_runtime_final_review_panel(
+                    agent_service,
+                    effective_config,
+                    resume_state.cursor.cycle,
+                    cancellation_token.clone(),
+                )
+                .await
+                {
+                    Ok(runtime_panel) => {
+                        if runtime_panel.probe_exhausted_reviewers > 0 {
+                            resume_effective_min = Some(runtime_panel.effective_min_reviewers);
                         }
+                        build_final_review_snapshot(
+                            current_stage,
+                            &runtime_panel.panel.reviewers,
+                            &runtime_panel.panel.arbiter,
+                        )
+                    }
+                    Err(error) if final_review::is_final_review_retry_exhaustion_error(&error) => {
+                        return Err(error);
+                    }
+                    Err(error) => {
+                        return Err(AppError::ResumeDriftFailure {
+                            stage_id: current_stage,
+                            details: error.to_string(),
+                        });
                     }
                 }
-                let effective_min = min_reviewers
-                    .min(panel.reviewers.len().saturating_sub(resume_exhausted))
-                    .max(1);
-                if resume_exhausted > 0 {
-                    resume_effective_min = Some(effective_min);
-                }
-                if available.len() < effective_min {
-                    return Err(AppError::ResumeDriftFailure {
-                        stage_id: current_stage,
-                        details: format!(
-                            "available final-review reviewers ({}) < effective min_reviewers ({}) on resume",
-                            available.len(),
-                            effective_min,
-                        ),
-                    });
-                }
-                panel.reviewers = available;
-                build_final_review_snapshot(current_stage, &panel.reviewers, &panel.arbiter)
             }
             _ => {
                 let target =
@@ -8895,6 +8863,162 @@ enum FinalReviewPanelOutcome {
     Restart(StageCursor, FinalReviewCommitData),
 }
 
+struct RuntimeFinalReviewPanelResolution {
+    panel: FinalReviewPanelResolution,
+    probe_exhausted_reviewers: usize,
+    effective_min_reviewers: usize,
+}
+
+async fn probe_final_review_reviewers<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    reviewers: &[ResolvedPanelMember],
+    min_reviewers: usize,
+    cancellation_token: CancellationToken,
+) -> AppResult<(Vec<ResolvedPanelMember>, usize, usize)>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let mut available_reviewers = Vec::new();
+    let mut probe_exhausted_reviewers = 0usize;
+    let mut first_optional_probe_failure: Option<(usize, AppError)> = None;
+    let mut last_probe_exhaustion_error: Option<AppError> = None;
+
+    for (idx, member) in reviewers.iter().enumerate() {
+        let reviewer_id = final_review::final_review_reviewer_id(idx);
+        match final_review::check_final_review_availability_with_retry(
+            agent_service,
+            &member.target,
+            BackendPolicyRole::FinalReviewer,
+            &reviewer_id,
+            "reviewer",
+            cancellation_token.clone(),
+        )
+        .await
+        {
+            Ok(_) => available_reviewers.push(member.clone()),
+            Err(error)
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
+            {
+                probe_exhausted_reviewers += 1;
+                tracing::warn!(
+                    backend = %member.target.backend.family,
+                    required = member.required,
+                    "reviewer unavailable during probe (backend exhausted), skipping"
+                );
+                last_probe_exhaustion_error = Some(error);
+            }
+            Err(error)
+                if final_review::is_final_review_retry_exhaustion_error(&error)
+                    && !member.required =>
+            {
+                tracing::warn!(
+                    reviewer = reviewer_id,
+                    backend = %member.target.backend.family,
+                    model = %member.target.model.model_id,
+                    error = %error,
+                    "optional reviewer probe exhausted transient retries; preserving reviewer for invocation-time handling"
+                );
+                available_reviewers.push(member.clone());
+            }
+            Err(error) if member.required => return Err(error),
+            Err(error) => match &first_optional_probe_failure {
+                None => {
+                    first_optional_probe_failure = Some((idx, error));
+                }
+                Some((prev_idx, _)) if idx < *prev_idx => {
+                    first_optional_probe_failure = Some((idx, error));
+                }
+                _ => {}
+            },
+        }
+    }
+
+    let effective_min_reviewers = min_reviewers
+        .min(reviewers.len().saturating_sub(probe_exhausted_reviewers))
+        .max(1);
+    if available_reviewers.len() < effective_min_reviewers {
+        if let Some((_, error)) = first_optional_probe_failure {
+            return Err(error);
+        }
+        if let Some(error) = last_probe_exhaustion_error {
+            return Err(error);
+        }
+        return Err(AppError::InsufficientPanelMembers {
+            panel: "final_review".to_owned(),
+            resolved: available_reviewers.len(),
+            minimum: effective_min_reviewers,
+        });
+    }
+
+    Ok((
+        available_reviewers,
+        probe_exhausted_reviewers,
+        effective_min_reviewers,
+    ))
+}
+
+async fn resolve_runtime_final_review_panel<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    effective_config: &EffectiveConfig,
+    cycle: u32,
+    cancellation_token: CancellationToken,
+) -> AppResult<RuntimeFinalReviewPanelResolution>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let policy = BackendPolicyService::new(effective_config);
+    let mut panel = policy.resolve_final_review_panel(cycle)?;
+    let min_reviewers = effective_config.final_review_policy().min_reviewers;
+
+    final_review::check_final_review_availability_with_retry(
+        agent_service,
+        &panel.arbiter,
+        BackendPolicyRole::Arbiter,
+        "arbiter",
+        "arbiter",
+        cancellation_token.clone(),
+    )
+    .await
+    .map_err(|error| {
+        if final_review::is_final_review_retry_exhaustion_error(&error) {
+            error
+        } else {
+            let failure_class = match &error {
+                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
+                _ => None,
+            };
+            AppError::BackendUnavailable {
+                backend: panel.arbiter.backend.family.to_string(),
+                details: format!("required final-review arbiter unavailable: {error}"),
+                failure_class,
+            }
+        }
+    })?;
+
+    let (available_reviewers, probe_exhausted_reviewers, effective_min_reviewers) =
+        probe_final_review_reviewers(
+            agent_service,
+            &panel.reviewers,
+            min_reviewers,
+            cancellation_token,
+        )
+        .await?;
+
+    panel.reviewers = available_reviewers;
+
+    Ok(RuntimeFinalReviewPanelResolution {
+        panel,
+        probe_exhausted_reviewers,
+        effective_min_reviewers,
+    })
+}
+
 /// Dispatch the prompt-review panel stage: resolve panel, persist snapshot,
 /// invoke refiner + validators, persist primary record, and emit
 /// stage_completed. Returns the cursor on success.
@@ -9460,92 +9584,20 @@ where
 {
     let stage_id = StageId::FinalReview;
     let policy = BackendPolicyService::new(effective_config);
-    let mut panel = policy.resolve_final_review_panel(cursor.cycle)?;
+    let RuntimeFinalReviewPanelResolution {
+        panel,
+        probe_exhausted_reviewers,
+        ..
+    } = resolve_runtime_final_review_panel(
+        agent_service,
+        effective_config,
+        cursor.cycle,
+        cancellation_token.clone(),
+    )
+    .await?;
     let min_reviewers = effective_config.final_review_policy().min_reviewers;
     let consensus_threshold = effective_config.final_review_policy().consensus_threshold;
     let max_restarts = effective_config.final_review_policy().max_restarts;
-
-    agent_service
-        .adapter()
-        .check_availability(&panel.arbiter)
-        .await
-        .map_err(|error| {
-            let failure_class = match &error {
-                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
-                _ => None,
-            };
-            AppError::BackendUnavailable {
-                backend: panel.arbiter.backend.family.to_string(),
-                details: format!("required final-review arbiter unavailable: {error}"),
-                failure_class,
-            }
-        })?;
-
-    let mut available_reviewers = Vec::new();
-    let mut probe_exhausted_reviewers: usize = 0;
-    let mut probe_failed_reviewers: usize = 0;
-    for member in &panel.reviewers {
-        match agent_service
-            .adapter()
-            .check_availability(&member.target)
-            .await
-        {
-            Ok(()) => available_reviewers.push(member.clone()),
-            Err(error) => {
-                probe_failed_reviewers += 1;
-                // BackendExhausted during probe → skip for graceful
-                // degradation instead of aborting the entire stage.
-                if error
-                    .failure_class()
-                    .is_some_and(|fc| fc == FailureClass::BackendExhausted)
-                {
-                    probe_exhausted_reviewers += 1;
-                    tracing::warn!(
-                        backend = %member.target.backend.family,
-                        required = member.required,
-                        "reviewer unavailable during probe (backend exhausted), skipping"
-                    );
-                    continue;
-                }
-                if member.required {
-                    return Err(error);
-                }
-            }
-        }
-    }
-    let effective_min_reviewers = min_reviewers
-        .min(
-            panel
-                .reviewers
-                .len()
-                .saturating_sub(probe_exhausted_reviewers),
-        )
-        .max(1);
-    if available_reviewers.len() < effective_min_reviewers {
-        // Only surface BackendExhausted when the shortfall is caused
-        // solely by exhausted members.  Mixed failures (exhausted +
-        // transiently unavailable) preserve the retryable
-        // InsufficientPanelMembers path so transient errors can retry.
-        if probe_exhausted_reviewers > 0 && probe_exhausted_reviewers == probe_failed_reviewers {
-            return Err(AppError::BackendUnavailable {
-                backend: "final_review".to_owned(),
-                details: format!(
-                    "insufficient final-review reviewers after exhaustion: {} available, {} needed (original min={}, {} exhausted)",
-                    available_reviewers.len(),
-                    effective_min_reviewers,
-                    min_reviewers,
-                    probe_exhausted_reviewers,
-                ),
-                failure_class: Some(FailureClass::BackendExhausted),
-            });
-        }
-        return Err(AppError::InsufficientPanelMembers {
-            panel: "final_review".to_owned(),
-            resolved: available_reviewers.len(),
-            minimum: effective_min_reviewers,
-        });
-    }
-    panel.reviewers = available_reviewers;
 
     let resolution = build_final_review_snapshot(stage_id, &panel.reviewers, &panel.arbiter);
     let reviewer_timeout_for_backend = |family: BackendFamily| -> Duration {
@@ -10288,11 +10340,13 @@ pub fn emit_resume_drift_warning(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::Command;
+    use std::sync::{Arc, Mutex};
 
     use chrono::Utc;
     use serde_json::{json, Value};
@@ -10305,7 +10359,8 @@ mod tests {
         FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore, RunPidOwner, RunPidRecord,
     };
     use crate::contexts::agent_execution::model::{
-        InvocationEnvelope, InvocationMetadata, InvocationRequest, RawOutputReference, TokenCounts,
+        InvocationContract, InvocationEnvelope, InvocationMetadata, InvocationRequest,
+        RawOutputReference, TokenCounts,
     };
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
     use crate::contexts::agent_execution::{AgentExecutionPort, AgentExecutionService};
@@ -10343,13 +10398,13 @@ mod tests {
         git_change_scope_fingerprint, git_diff_fingerprint, git_repo_available_with_program,
         invocation_id_for_stage, iterative_loop_exit_reason, mark_running_run_interrupted,
         milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
-        resolution_has_drifted, resume_iteration_counters, resume_run_with_retry,
-        resume_terminal_iterative_stage_result, role_for_stage, should_retry_stage_failure,
-        stage_running_summary_for_active_run, sync_milestone_bead_start,
-        validate_iterative_minimal_loop_settings, FinalReviewQueuedAmendment,
-        InterruptedRunContext, InterruptedRunUpdate, IterativeInvocationSidecar,
-        IterativeLoopExitReason, QueuedAmendment, RunningAttemptIdentity, StagePlan,
-        TerminalIterativeResumeResult,
+        probe_final_review_reviewers, resolution_has_drifted, resolve_runtime_final_review_panel,
+        resume_iteration_counters, resume_run_with_retry, resume_terminal_iterative_stage_result,
+        role_for_stage, should_retry_stage_failure, stage_running_summary_for_active_run,
+        sync_milestone_bead_start, validate_iterative_minimal_loop_settings,
+        FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
+        IterativeInvocationSidecar, IterativeLoopExitReason, QueuedAmendment,
+        RunningAttemptIdentity, StagePlan, TerminalIterativeResumeResult,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -10365,6 +10420,122 @@ mod tests {
                 configured_index: 1,
             },
         ]
+    }
+
+    #[derive(Clone, Default)]
+    struct ScriptedAvailabilityAdapter {
+        scripted_failures: Arc<Mutex<HashMap<String, VecDeque<ScriptedAvailabilityFailure>>>>,
+        availability_checks: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[derive(Clone)]
+    enum ScriptedAvailabilityFailure {
+        BackendUnavailable {
+            backend: &'static str,
+            details: &'static str,
+            failure_class: Option<FailureClass>,
+        },
+    }
+
+    impl ScriptedAvailabilityFailure {
+        fn into_error(self) -> AppError {
+            match self {
+                Self::BackendUnavailable {
+                    backend,
+                    details,
+                    failure_class,
+                } => AppError::BackendUnavailable {
+                    backend: backend.to_owned(),
+                    details: details.to_owned(),
+                    failure_class,
+                },
+            }
+        }
+    }
+
+    impl ScriptedAvailabilityAdapter {
+        fn with_failures(entries: &[(&str, Vec<ScriptedAvailabilityFailure>)]) -> Self {
+            Self {
+                scripted_failures: Arc::new(Mutex::new(
+                    entries
+                        .iter()
+                        .map(|(model_id, failures)| {
+                            (
+                                (*model_id).to_owned(),
+                                failures.iter().cloned().collect::<VecDeque<_>>(),
+                            )
+                        })
+                        .collect(),
+                )),
+                ..Default::default()
+            }
+        }
+
+        fn availability_checks_for(&self, model_id: &str) -> usize {
+            self.availability_checks
+                .lock()
+                .expect("availability checks lock poisoned")
+                .iter()
+                .filter(|seen| seen.as_str() == model_id)
+                .count()
+        }
+    }
+
+    impl AgentExecutionPort for ScriptedAvailabilityAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
+            self.availability_checks
+                .lock()
+                .expect("availability checks lock poisoned")
+                .push(backend.model.model_id.clone());
+
+            let mut scripted_failures = self
+                .scripted_failures
+                .lock()
+                .expect("scripted failures lock poisoned");
+            let key = backend.model.model_id.clone();
+            let Some(queue) = scripted_failures.get_mut(&key) else {
+                return Ok(());
+            };
+            let Some(error) = queue.pop_front() else {
+                return Ok(());
+            };
+            if queue.is_empty() {
+                scripted_failures.remove(&key);
+            }
+            Err(error.into_error())
+        }
+
+        async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+            Ok(InvocationEnvelope {
+                raw_output_reference: RawOutputReference::Inline(r#"{"status":"ok"}"#.to_owned()),
+                parsed_payload: serde_json::json!({"status": "ok"}),
+                metadata: InvocationMetadata {
+                    invocation_id: request.invocation_id,
+                    duration: std::time::Duration::ZERO,
+                    token_counts: TokenCounts::default(),
+                    backend_used: request.resolved_target.backend.clone(),
+                    model_used: request.resolved_target.model.clone(),
+                    adapter_reported_backend: None,
+                    adapter_reported_model: None,
+                    attempt_number: 0,
+                    session_id: None,
+                    session_reused: false,
+                },
+                timestamp: Utc::now(),
+            })
+        }
+
+        async fn cancel(&self, _invocation_id: &str) -> AppResult<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -10385,6 +10556,105 @@ mod tests {
             &cursor,
             &crate::contexts::agent_execution::model::CancellationToken::new(),
         ));
+    }
+
+    #[tokio::test]
+    async fn final_review_probe_retries_transient_optional_reviewers_before_shrinking_panel() {
+        let adapter = ScriptedAvailabilityAdapter::with_failures(&[(
+            "reviewer-b",
+            vec![ScriptedAvailabilityFailure::BackendUnavailable {
+                backend: "codex",
+                details: "stream disconnected before completion",
+                failure_class: None,
+            }],
+        )]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+
+        let (available_reviewers, exhausted_reviewers, effective_min_reviewers) =
+            probe_final_review_reviewers(
+                &agent_service,
+                &final_review_reviewers(),
+                2,
+                crate::contexts::agent_execution::CancellationToken::new(),
+            )
+            .await
+            .expect("transient reviewer probe failure should retry and recover");
+
+        assert_eq!(available_reviewers.len(), 2);
+        assert_eq!(exhausted_reviewers, 0);
+        assert_eq!(effective_min_reviewers, 2);
+        assert_eq!(adapter.availability_checks_for("reviewer-b"), 2);
+    }
+
+    #[tokio::test]
+    async fn final_review_probe_keeps_optional_reviewers_after_transient_retry_exhaustion() {
+        let adapter = ScriptedAvailabilityAdapter::with_failures(&[(
+            "reviewer-b",
+            (0..5)
+                .map(|_| ScriptedAvailabilityFailure::BackendUnavailable {
+                    backend: "codex",
+                    details: "stream disconnected before completion",
+                    failure_class: None,
+                })
+                .collect(),
+        )]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+
+        let (available_reviewers, exhausted_reviewers, effective_min_reviewers) =
+            probe_final_review_reviewers(
+                &agent_service,
+                &final_review_reviewers(),
+                2,
+                crate::contexts::agent_execution::CancellationToken::new(),
+            )
+            .await
+            .expect("transient probe exhaustion should not shrink the runtime panel");
+
+        assert_eq!(available_reviewers.len(), 2);
+        assert_eq!(exhausted_reviewers, 0);
+        assert_eq!(effective_min_reviewers, 2);
+        assert_eq!(adapter.availability_checks_for("reviewer-b"), 5);
+    }
+
+    #[tokio::test]
+    async fn resolve_runtime_final_review_panel_retries_transient_arbiter_probe_failures() {
+        let config = final_review_effective_config();
+        let policy = crate::contexts::agent_execution::policy::BackendPolicyService::new(&config);
+        let resolved_panel = policy
+            .resolve_final_review_panel(1)
+            .expect("resolve final-review panel");
+        let arbiter_model = resolved_panel.arbiter.model.model_id.clone();
+
+        let adapter = ScriptedAvailabilityAdapter::with_failures(&[(
+            arbiter_model.as_str(),
+            vec![ScriptedAvailabilityFailure::BackendUnavailable {
+                backend: resolved_panel.arbiter.backend.family.as_str(),
+                details: "stream disconnected before completion",
+                failure_class: None,
+            }],
+        )]);
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+
+        let runtime_panel = resolve_runtime_final_review_panel(
+            &agent_service,
+            &config,
+            1,
+            crate::contexts::agent_execution::CancellationToken::new(),
+        )
+        .await
+        .expect("transient arbiter probe failure should retry and recover");
+
+        assert_eq!(
+            runtime_panel.panel.arbiter.model.model_id,
+            resolved_panel.arbiter.model.model_id
+        );
+        assert!(
+            adapter.availability_checks_for(arbiter_model.as_str()) >= 2,
+            "arbiter availability should be rechecked after the transient failure"
+        );
     }
 
     fn final_review_effective_config() -> EffectiveConfig {
