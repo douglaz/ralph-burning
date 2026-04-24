@@ -29,27 +29,27 @@ pub enum TaskSubcommand {
     )]
     Create(TaskCreateArgs),
     #[command(
-        about = "Show task details including milestone and bead lineage.",
-        long_about = "Show details for a task, or use the active task when omitted.\n\nExample: ralph-burning task show task-ms-dogfood-ralph-burning-xyz"
+        about = "Show task or legacy standalone project details, including milestone and bead lineage when available.",
+        long_about = "Show details for a task, or use the active selection when omitted.\nLegacy standalone projects also work here.\n\nExample: ralph-burning task show task-ms-dogfood-ralph-burning-xyz"
     )]
     Show {
         /// Emit a stable JSON object for scripts.
         #[arg(long)]
         json: bool,
-        /// Task ID. Defaults to the active task if omitted.
+        /// Task or legacy standalone project ID. Defaults to the active selection if omitted.
         id: Option<String>,
     },
     #[command(
-        about = "Select a task as the active task.",
-        long_about = "Select which task subsequent run commands operate on.\n\nExample: ralph-burning task select task-ms-dogfood-ralph-burning-xyz"
+        about = "Select a task or legacy standalone project as active.",
+        long_about = "Select which entry the task interface uses by default.\nLegacy standalone projects remain selectable for compatibility.\n\nExample: ralph-burning task select task-ms-dogfood-ralph-burning-xyz"
     )]
     Select {
-        /// Task ID to make active.
+        /// Task or legacy standalone project ID to make active.
         id: String,
     },
     #[command(
-        about = "List tasks in the workspace.",
-        long_about = "List known tasks and mark the active task.\n\nExample: ralph-burning task list"
+        about = "List tasks in the workspace, including legacy standalone projects.",
+        long_about = "List task interface entries and mark the active selection.\nLegacy standalone projects remain visible for compatibility.\n\nExample: ralph-burning task list"
     )]
     List,
 }

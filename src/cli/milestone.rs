@@ -81,7 +81,7 @@ pub enum MilestoneSubcommand {
     ExportBeads { milestone_id: String },
     #[command(
         about = "Report the next actionable bead for the active milestone.",
-        long_about = "Find the next unblocked bead for a milestone, or use the active milestone when omitted.\n\nExample: ralph-burning milestone next ms-dogfood"
+        long_about = "Find the next actionable bead for a milestone, or use the active milestone when omitted.\nRetryable failed beads remain actionable.\n\nExample: ralph-burning milestone next ms-dogfood"
     )]
     Next {
         milestone_id: Option<String>,
@@ -90,7 +90,7 @@ pub enum MilestoneSubcommand {
     },
     #[command(
         about = "Start the next actionable bead as a task run.",
-        long_about = "Start or resume the next unblocked bead's task run, or use the active milestone when omitted.\n\nExample: ralph-burning milestone run ms-dogfood"
+        long_about = "Start or resume the next actionable bead's task run, or use the active milestone when omitted.\nRetryable failed beads remain actionable.\n\nExample: ralph-burning milestone run ms-dogfood"
     )]
     Run {
         milestone_id: Option<String>,

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260423053722-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T06:06:42.820426381Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the remaining CLI help-text mismatches without expanding scope beyond bead 9ni.9.5. In `src/cli/milestone.rs`, `milestone next` and `milestone run` now describe the next actionable bead and explicitly note that retryable failed beads remain actionable. In `src/cli/task.rs`, the `task show` subcommand `about` text now explicitly covers legacy standalone projects so the task help family stays consistent with the existing compatibility behavior.\n\n## Steps\n\n0. [Completed] Inspect the pending amendments, current milestone/task clap help text, and working-tree state to confirm the remaining scope in `src/cli/milestone.rs` and `src/cli/task.rs`.\n1. [Completed] Update the `milestone next` and `milestone run` `long_about` strings so they describe the next actionable bead and the retryable-failed-bead behavior instead of promising only unblocked beads.\n2. [Completed] Update the `task show` subcommand `about` text so the visible task help matches legacy standalone-project compatibility already described by the top-level task help and existing command behavior.\n3. [Skipped] Skip README and snapshot updates because this remediation stayed within existing clap help strings and no separate help snapshot required changes.\n4. [Completed] Run focused help checks plus the required validation gates on the current tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo run --locked --quiet -- milestone next --help` passed and printed `Find the next actionable bead for a milestone, or use the active milestone when omitted.` plus `Retryable failed beads remain actionable.`\n- `nix develop -c cargo run --locked --quiet -- milestone run --help` passed and printed `Start or resume the next actionable bead's task run, or use the active milestone when omitted.` plus `Retryable failed beads remain actionable.`\n- `nix develop -c cargo run --locked --quiet -- task --help` passed and listed `show    Show task or legacy standalone project details, including milestone and bead lineage when available.`\n- `git diff --check -- src/cli/milestone.rs src/cli/task.rs` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed, including lib tests, 366 CLI integration tests, `tests/run_attach_tmux.rs`, 1078 unit tests, and doctests.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- The working tree still contains live orchestration state changes under `.ralph-burning/projects/ni95-1/`; per repo instructions those files were left untouched and excluded from review scope.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}
