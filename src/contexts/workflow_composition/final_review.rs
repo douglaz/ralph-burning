@@ -21,7 +21,9 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::adapters::process_backend::processed_contract_schema_value;
+use crate::adapters::process_backend::{
+    is_timeout_related, is_transient_codex_failure, processed_contract_schema_value,
+};
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -43,11 +45,12 @@ use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewVoteDecision, FinalReviewVotePayload, RecordKind, RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
+use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
 use crate::contexts::workflow_composition::review_classification;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
-    BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
-    StageId,
+    BackendPolicyRole, BackendRole, FailureClass, ProjectId, ResolvedBackendTarget, RunId,
+    SessionPolicy, StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -114,6 +117,17 @@ struct ReviewerProposalRecord {
     payload: FinalReviewProposalPayload,
 }
 
+struct FinalReviewMemberInvocationSuccess {
+    payload: Value,
+    producer: RecordProducer,
+    retry_count: u32,
+}
+
+struct FinalReviewMemberInvocationFailure {
+    error: AppError,
+    retry_count: u32,
+}
+
 fn final_review_reviewer_id(member_index: usize) -> String {
     format!("reviewer-{}", member_index + 1)
 }
@@ -135,6 +149,60 @@ fn panel_member_identity_from_producer(
         details,
     )?;
     Ok((backend_family.to_owned(), model_id.to_owned()))
+}
+
+fn final_review_retry_policy(_role: BackendPolicyRole) -> RetryPolicy {
+    let policy = RetryPolicy::default_policy();
+    #[cfg(test)]
+    {
+        policy.with_no_backoff()
+    }
+    #[cfg(not(test))]
+    {
+        policy
+    }
+}
+
+fn final_review_contract_id(panel_role: &str) -> String {
+    format!("final_review:{panel_role}")
+}
+
+fn rewrite_transient_retry_exhaustion_error(
+    error: AppError,
+    reviewer_id: &str,
+    target: &ResolvedBackendTarget,
+    retry_count: u32,
+) -> AppError {
+    let prefix = format!(
+        "{reviewer_id} ({}/{}) exhausted {retry_count} transient retries: ",
+        target.backend.family.as_str(),
+        target.model.model_id.as_str()
+    );
+    match error {
+        AppError::InvocationFailed {
+            backend,
+            contract_id,
+            failure_class,
+            details,
+        } => AppError::InvocationFailed {
+            backend,
+            contract_id,
+            failure_class,
+            details: format!("{prefix}{details}"),
+        },
+        AppError::InvocationTimeout {
+            backend,
+            contract_id,
+            timeout_ms,
+            details,
+        } => AppError::InvocationTimeout {
+            backend,
+            contract_id,
+            timeout_ms,
+            details: format!("{prefix}{details}"),
+        },
+        other => other,
+    }
 }
 
 pub fn normalize_amendment_body(body: &str) -> String {
@@ -454,12 +522,14 @@ where
     }
 
     // --- Proposal phase: invoke all reviewers concurrently ---
+    let reviewer_retry_policy = final_review_retry_policy(BackendPolicyRole::FinalReviewer);
     let mut proposal_futures = FuturesUnordered::new();
     for (prep_idx, (_, member, reviewer_id, reviewer_prompt)) in proposal_preps.iter().enumerate() {
         let cancellation_token = cancellation_token.clone();
         let target = member.target.clone();
         let reviewer_id = reviewer_id.clone();
         let reviewer_prompt = reviewer_prompt.clone();
+        let retry_policy = reviewer_retry_policy.clone();
         let timeout = reviewer_timeout_for_backend(member.target.backend.family);
         proposal_futures.push(async move {
             let started_at = Instant::now();
@@ -474,10 +544,12 @@ where
                 BackendRole::Reviewer,
                 &reviewer_id,
                 "reviewer",
+                &reviewer_id,
                 reviewer_prompt,
                 Value::Null,
                 timeout,
                 cancellation_token,
+                &retry_policy,
             )
             .await;
             (prep_idx, started_at, result)
@@ -496,11 +568,11 @@ where
     while let Some((prep_idx, started_at, reviewer_payload)) = proposal_futures.next().await {
         let (idx, member, reviewer_id, _) = &proposal_preps[prep_idx];
         let idx = *idx;
-        let (reviewer_payload, producer) = match reviewer_payload {
-            Ok(payload) => payload,
+        let (reviewer_payload, producer, retry_count) = match reviewer_payload {
+            Ok(payload) => (payload.payload, payload.producer, payload.retry_count),
             // BackendExhausted is handled first regardless of required/optional
             // status — an exhausted backend is skipped gracefully.
-            Err(error)
+            Err(FinalReviewMemberInvocationFailure { error, retry_count })
                 if error
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
@@ -525,7 +597,7 @@ where
                     "failed_exhausted",
                     0,
                 )?;
-                append_panel_member_runtime_log(
+                append_panel_member_runtime_log_with_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -537,11 +609,12 @@ where
                     Some(started_at.elapsed()),
                     Some("failed_exhausted"),
                     Some(0),
+                    Some(retry_count),
                 );
                 last_proposal_exhaustion_error = Some(error);
                 continue;
             }
-            Err(error) if !member.required => {
+            Err(FinalReviewMemberInvocationFailure { error, retry_count }) if !member.required => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -557,7 +630,7 @@ where
                     "failed_optional",
                     0,
                 )?;
-                append_panel_member_runtime_log(
+                append_panel_member_runtime_log_with_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -569,6 +642,7 @@ where
                     Some(started_at.elapsed()),
                     Some("failed_optional"),
                     Some(0),
+                    Some(retry_count),
                 );
                 match &first_optional_proposal_failure {
                     None => {
@@ -581,7 +655,7 @@ where
                 }
                 continue;
             }
-            Err(error) => {
+            Err(FinalReviewMemberInvocationFailure { error, retry_count }) => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -597,7 +671,7 @@ where
                     "failed",
                     0,
                 )?;
-                append_panel_member_runtime_log(
+                append_panel_member_runtime_log_with_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -609,6 +683,7 @@ where
                     Some(started_at.elapsed()),
                     Some("failed"),
                     Some(0),
+                    Some(retry_count),
                 );
                 {
                     let is_cancellation = error
@@ -670,7 +745,7 @@ where
                         "failed_schema_validation",
                         0,
                     );
-                    append_panel_member_runtime_log_with_identity(
+                    append_panel_member_runtime_log_with_identity_and_retry_count(
                         log_write,
                         base_dir,
                         project_id,
@@ -683,6 +758,7 @@ where
                         Some(duration),
                         Some("failed_schema_validation"),
                         Some(0),
+                        Some(retry_count),
                     );
                     if deferred_processing_error.is_none() {
                         deferred_processing_error = Some(AppError::InvocationFailed {
@@ -719,7 +795,7 @@ where
             }
             continue;
         }
-        append_panel_member_runtime_log_with_identity(
+        append_panel_member_runtime_log_with_identity_and_retry_count(
             log_write,
             base_dir,
             project_id,
@@ -732,6 +808,7 @@ where
             Some(duration),
             Some("proposed_amendments"),
             Some(proposal.amendments.len()),
+            Some(retry_count),
         );
         let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
         if let Err(e) = persist_supporting_record(
@@ -917,7 +994,7 @@ where
         let timeout = reviewer_timeout_for_backend(reviewer.target.backend.family);
         vote_futures.push(async move {
             let started_at = Instant::now();
-            let result = invoke_final_review_member(
+            let result = invoke_final_review_member_once(
                 agent_service,
                 project_root,
                 backend_working_dir,
@@ -932,6 +1009,7 @@ where
                 amendments_context,
                 timeout,
                 cancellation_token,
+                1,
             )
             .await;
             (prep_idx, started_at, result)
@@ -1118,7 +1196,7 @@ where
                     "failed_schema_validation",
                     0,
                 );
-                append_panel_member_runtime_log_with_identity(
+                append_panel_member_runtime_log_with_identity_and_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -1131,6 +1209,7 @@ where
                     Some(duration),
                     Some("failed_schema_validation"),
                     Some(0),
+                    None,
                 );
                 if deferred_vote_processing_error.is_none() {
                     deferred_vote_processing_error = Some(AppError::InvocationFailed {
@@ -1161,7 +1240,7 @@ where
                 "failed_domain_validation",
                 0,
             );
-            append_panel_member_runtime_log_with_identity(
+            append_panel_member_runtime_log_with_identity_and_retry_count(
                 log_write,
                 base_dir,
                 project_id,
@@ -1174,6 +1253,7 @@ where
                 Some(duration),
                 Some("failed_domain_validation"),
                 Some(0),
+                None,
             );
             if deferred_vote_processing_error.is_none() {
                 deferred_vote_processing_error = Some(error);
@@ -1349,6 +1429,7 @@ where
             None,
             None,
         );
+        let arbiter_retry_policy = final_review_retry_policy(BackendPolicyRole::Arbiter);
         let arbiter_started_at = Instant::now();
         let arbiter_payload = invoke_final_review_member(
             agent_service,
@@ -1359,6 +1440,7 @@ where
             cursor,
             &panel.arbiter,
             BackendRole::Reviewer,
+            "arbiter",
             "arbiter",
             "arbiter",
             arbiter_prompt,
@@ -1375,11 +1457,12 @@ where
             }),
             arbiter_timeout,
             cancellation_token,
+            &arbiter_retry_policy,
         )
         .await;
-        let (arbiter_payload, producer) = match arbiter_payload {
-            Ok(payload) => payload,
-            Err(error) => {
+        let (arbiter_payload, producer, arbiter_retry_count) = match arbiter_payload {
+            Ok(payload) => (payload.payload, payload.producer, payload.retry_count),
+            Err(FinalReviewMemberInvocationFailure { error, retry_count }) => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -1395,7 +1478,7 @@ where
                     "failed",
                     0,
                 )?;
-                append_panel_member_runtime_log(
+                append_panel_member_runtime_log_with_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -1407,6 +1490,7 @@ where
                     Some(arbiter_started_at.elapsed()),
                     Some("failed"),
                     Some(0),
+                    Some(retry_count),
                 );
                 return Err(error);
             }
@@ -1437,7 +1521,7 @@ where
                     "failed_schema_validation",
                     0,
                 );
-                append_panel_member_runtime_log_with_identity(
+                append_panel_member_runtime_log_with_identity_and_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -1450,6 +1534,7 @@ where
                     Some(duration),
                     Some("failed_schema_validation"),
                     Some(0),
+                    Some(arbiter_retry_count),
                 );
                 AppError::InvocationFailed {
                     backend: panel.arbiter.backend.family.to_string(),
@@ -1476,7 +1561,7 @@ where
                 "failed_domain_validation",
                 0,
             );
-            append_panel_member_runtime_log_with_identity(
+            append_panel_member_runtime_log_with_identity_and_retry_count(
                 log_write,
                 base_dir,
                 project_id,
@@ -1489,6 +1574,7 @@ where
                 Some(duration),
                 Some("failed_domain_validation"),
                 Some(0),
+                Some(arbiter_retry_count),
             );
         })?;
         let arbiter_duration = arbiter_started_at.elapsed();
@@ -1508,7 +1594,7 @@ where
             "arbiter_rulings_recorded",
             arbiter.rulings.len(),
         )?;
-        append_panel_member_runtime_log_with_identity(
+        append_panel_member_runtime_log_with_identity_and_retry_count(
             log_write,
             base_dir,
             project_id,
@@ -1521,6 +1607,7 @@ where
             Some(arbiter_duration),
             Some("arbiter_rulings_recorded"),
             Some(arbiter.rulings.len()),
+            Some(arbiter_retry_count),
         );
         let artifact = renderers::render_final_review_arbiter(&arbiter, &producer.to_string());
         persist_supporting_record(
@@ -1840,7 +1927,7 @@ fn append_panel_member_runtime_log(
     outcome: Option<&str>,
     amendment_count: Option<usize>,
 ) {
-    append_panel_member_runtime_log_with_identity(
+    append_panel_member_runtime_log_with_identity_and_retry_count(
         log_write,
         base_dir,
         project_id,
@@ -1853,6 +1940,7 @@ fn append_panel_member_runtime_log(
         duration,
         outcome,
         amendment_count,
+        None,
     );
 }
 
@@ -1871,6 +1959,71 @@ fn append_panel_member_runtime_log_with_identity(
     outcome: Option<&str>,
     amendment_count: Option<usize>,
 ) {
+    append_panel_member_runtime_log_with_identity_and_retry_count(
+        log_write,
+        base_dir,
+        project_id,
+        state,
+        phase,
+        reviewer_id,
+        role,
+        backend_family,
+        model_id,
+        duration,
+        outcome,
+        amendment_count,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_panel_member_runtime_log_with_retry_count(
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    state: &str,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    target: &ResolvedBackendTarget,
+    duration: Option<Duration>,
+    outcome: Option<&str>,
+    amendment_count: Option<usize>,
+    retry_count: Option<u32>,
+) {
+    append_panel_member_runtime_log_with_identity_and_retry_count(
+        log_write,
+        base_dir,
+        project_id,
+        state,
+        phase,
+        reviewer_id,
+        role,
+        target.backend.family.as_str(),
+        target.model.model_id.as_str(),
+        duration,
+        outcome,
+        amendment_count,
+        retry_count,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_panel_member_runtime_log_with_identity_and_retry_count(
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    state: &str,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    backend_family: &str,
+    model_id: &str,
+    duration: Option<Duration>,
+    outcome: Option<&str>,
+    amendment_count: Option<usize>,
+    retry_count: Option<u32>,
+) {
     let mut message = format!(
         "final_review {state}: role={role} phase={phase} reviewer_id={reviewer_id} backend={backend_family} model={model_id}",
     );
@@ -1885,6 +2038,9 @@ fn append_panel_member_runtime_log_with_identity(
     }
     if let Some(amendment_count) = amendment_count {
         message.push_str(&format!(" amendment_count={amendment_count}"));
+    }
+    if let Some(retry_count) = retry_count {
+        message.push_str(&format!(" retry_count={retry_count}"));
     }
     let _ = log_write.append_runtime_log(
         base_dir,
@@ -2174,7 +2330,7 @@ fn validate_arbiter_payload(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn invoke_final_review_member<A, R, S>(
+async fn invoke_final_review_member_once<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     project_root: &Path,
     backend_working_dir: &Path,
@@ -2189,14 +2345,21 @@ async fn invoke_final_review_member<A, R, S>(
     context: Value,
     timeout: Duration,
     cancellation_token: CancellationToken,
+    invocation_attempt: u32,
 ) -> AppResult<(Value, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: crate::contexts::agent_execution::service::RawOutputPort,
     S: SessionStorePort,
 {
-    let invocation_id =
-        final_review_invocation_id(run_id, stage_id, cursor, panel_role, member_key);
+    let invocation_id = final_review_invocation_id(
+        run_id,
+        stage_id,
+        cursor,
+        panel_role,
+        member_key,
+        invocation_attempt,
+    );
 
     let request = InvocationRequest {
         invocation_id,
@@ -2221,21 +2384,163 @@ where
     Ok((envelope.parsed_payload, producer))
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn invoke_final_review_member<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    project_root: &Path,
+    backend_working_dir: &Path,
+    run_id: &RunId,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    target: &ResolvedBackendTarget,
+    role: BackendRole,
+    member_key: &str,
+    panel_role: &str,
+    reviewer_id: &str,
+    prompt: String,
+    context: Value,
+    timeout: Duration,
+    cancellation_token: CancellationToken,
+    retry_policy: &RetryPolicy,
+) -> Result<FinalReviewMemberInvocationSuccess, FinalReviewMemberInvocationFailure>
+where
+    A: AgentExecutionPort,
+    R: crate::contexts::agent_execution::service::RawOutputPort,
+    S: SessionStorePort,
+{
+    let max_attempts = retry_policy
+        .max_attempts(FailureClass::TransportFailure)
+        .max(1);
+    let contract_id = final_review_contract_id(panel_role);
+    let mut retry_count = 0;
+
+    for invocation_attempt in 1..=max_attempts {
+        if cancellation_token.is_cancelled() {
+            return Err(FinalReviewMemberInvocationFailure {
+                error: AppError::InvocationCancelled {
+                    backend: target.backend.family.to_string(),
+                    contract_id: contract_id.clone(),
+                },
+                retry_count,
+            });
+        }
+
+        let prompt = prompt.clone();
+        let context = context.clone();
+        let cancellation_token = cancellation_token.clone();
+        match invoke_final_review_member_once(
+            agent_service,
+            project_root,
+            backend_working_dir,
+            run_id,
+            stage_id,
+            cursor,
+            target,
+            role,
+            member_key,
+            panel_role,
+            prompt,
+            context,
+            timeout,
+            cancellation_token.clone(),
+            invocation_attempt,
+        )
+        .await
+        {
+            Ok((payload, producer)) => {
+                return Ok(FinalReviewMemberInvocationSuccess {
+                    payload,
+                    producer,
+                    retry_count,
+                });
+            }
+            Err(error) => {
+                let retryable_transient =
+                    is_timeout_related(&error) || is_transient_codex_failure(&error);
+                if error
+                    .failure_class()
+                    .is_some_and(|fc| fc == FailureClass::DomainValidationFailure)
+                    || !retryable_transient
+                    || matches!(error.failure_class(), Some(FailureClass::Cancellation))
+                {
+                    return Err(FinalReviewMemberInvocationFailure { error, retry_count });
+                }
+
+                retry_count += 1;
+                if invocation_attempt >= max_attempts {
+                    return Err(FinalReviewMemberInvocationFailure {
+                        error: rewrite_transient_retry_exhaustion_error(
+                            error,
+                            reviewer_id,
+                            target,
+                            retry_count,
+                        ),
+                        retry_count,
+                    });
+                }
+
+                let backoff = retry_policy.backoff_for_attempt(invocation_attempt);
+                tracing::warn!(
+                    reviewer_id = reviewer_id,
+                    backend = %target.backend.family.as_str(),
+                    model = %target.model.model_id.as_str(),
+                    contract_id = contract_id,
+                    retry_count = retry_count,
+                    max_attempts = max_attempts,
+                    backoff_ms = backoff.as_millis().min(u128::from(u64::MAX)) as u64,
+                    error = %error,
+                    "final_review transient invocation failure; retrying"
+                );
+                if !backoff.is_zero() {
+                    tokio::select! {
+                        () = tokio::time::sleep(backoff) => {}
+                        () = cancellation_token.cancelled() => {
+                            return Err(FinalReviewMemberInvocationFailure {
+                                error: AppError::InvocationCancelled {
+                                    backend: target.backend.family.to_string(),
+                                    contract_id: contract_id.clone(),
+                                },
+                                retry_count,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(FinalReviewMemberInvocationFailure {
+        error: AppError::InvocationFailed {
+            backend: target.backend.family.to_string(),
+            contract_id,
+            failure_class: FailureClass::TransportFailure,
+            details: "final-review retry loop terminated without an invocation result".to_owned(),
+        },
+        retry_count,
+    })
+}
+
 fn final_review_invocation_id(
     run_id: &RunId,
     stage_id: StageId,
     cursor: &StageCursor,
     panel_role: &str,
     member_key: &str,
+    invocation_attempt: u32,
 ) -> String {
-    format!(
+    let base = format!(
         "{}-{}-{panel_role}-{member_key}-c{}-a{}-cr{}",
         run_id.as_str(),
         stage_id.as_str(),
         cursor.cycle,
         cursor.attempt,
         cursor.completion_round
-    )
+    );
+    if invocation_attempt <= 1 {
+        base
+    } else {
+        format!("{base}-r{invocation_attempt}")
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2304,7 +2609,7 @@ fn persist_supporting_record(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
@@ -2316,7 +2621,7 @@ mod tests {
         FsRawOutputStore, FsRuntimeLogStore, FsRuntimeLogWriteStore, FsSessionStore,
     };
     use crate::contexts::agent_execution::model::{
-        InvocationEnvelope, InvocationMetadata, RawOutputReference, TokenCounts,
+        InvocationEnvelope, InvocationMetadata, InvocationRequest, RawOutputReference, TokenCounts,
     };
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
     use crate::contexts::agent_execution::service::AgentExecutionPort;
@@ -2332,6 +2637,12 @@ mod tests {
     use super::*;
     use crate::contexts::workflow_composition::panel_contracts::FinalReviewProposal;
 
+    #[derive(Clone, Debug)]
+    enum PlannedInvocationFailure {
+        Transport(&'static str),
+        DomainValidation(&'static str),
+    }
+
     #[derive(Clone, Default)]
     struct RecordingFinalReviewAdapter {
         requests: Arc<Mutex<Vec<(String, String)>>>,
@@ -2339,6 +2650,8 @@ mod tests {
         vote_failures: Arc<HashSet<String>>,
         /// Members whose proposal invocations fail with BackendExhausted.
         proposal_exhausted: Arc<HashSet<String>>,
+        scripted_proposal_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
+        scripted_arbiter_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
         invocation_delays: Arc<HashMap<String, Duration>>,
         actual_targets: Arc<HashMap<String, ResolvedBackendTarget>>,
         deferred_template_override: Arc<Mutex<Option<DeferredTemplateOverride>>>,
@@ -2369,6 +2682,19 @@ mod tests {
         fn with_proposal_exhausted(keys: &[&str]) -> Self {
             Self {
                 proposal_exhausted: Arc::new(keys.iter().map(|k| (*k).to_owned()).collect()),
+                ..Default::default()
+            }
+        }
+
+        fn with_scripted_proposal_failures(
+            member_key: &str,
+            failures: Vec<PlannedInvocationFailure>,
+        ) -> Self {
+            Self {
+                scripted_proposal_failures: Arc::new(Mutex::new(HashMap::from([(
+                    member_key.to_owned(),
+                    failures.into(),
+                )]))),
                 ..Default::default()
             }
         }
@@ -2428,6 +2754,45 @@ mod tests {
                 .map(|(_, invocation_id)| invocation_id.clone())
                 .collect()
         }
+
+        fn pop_scripted_failure(
+            plans: &Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>,
+            request: &InvocationRequest,
+        ) -> Option<AppError> {
+            let mut plans = plans.lock().expect("recording adapter lock poisoned");
+            let member_key = plans
+                .keys()
+                .find(|member_key| request.invocation_id.contains(member_key.as_str()))
+                .cloned()?;
+            let (failure, should_remove) = {
+                let queue = plans
+                    .get_mut(&member_key)
+                    .expect("scripted failure queue should exist");
+                let failure = queue.pop_front()?;
+                let should_remove = queue.is_empty();
+                (failure, should_remove)
+            };
+            if should_remove {
+                plans.remove(&member_key);
+            }
+
+            let failure_class = match failure {
+                PlannedInvocationFailure::Transport(_) => FailureClass::TransportFailure,
+                PlannedInvocationFailure::DomainValidation(_) => {
+                    FailureClass::DomainValidationFailure
+                }
+            };
+            let details = match failure {
+                PlannedInvocationFailure::Transport(details)
+                | PlannedInvocationFailure::DomainValidation(details) => details.to_owned(),
+            };
+            Some(AppError::InvocationFailed {
+                backend: request.resolved_target.backend.family.to_string(),
+                contract_id: request.contract.label(),
+                failure_class,
+                details,
+            })
+        }
     }
 
     impl AgentExecutionPort for RecordingFinalReviewAdapter {
@@ -2449,6 +2814,21 @@ mod tests {
                 .lock()
                 .expect("recording adapter lock poisoned")
                 .push((contract_label.clone(), request.invocation_id.clone()));
+
+            if contract_label == "final_review:reviewer" {
+                if let Some(error) =
+                    Self::pop_scripted_failure(self.scripted_proposal_failures.as_ref(), &request)
+                {
+                    return Err(error);
+                }
+            }
+            if contract_label == "final_review:arbiter" {
+                if let Some(error) =
+                    Self::pop_scripted_failure(self.scripted_arbiter_failures.as_ref(), &request)
+                {
+                    return Err(error);
+                }
+            }
 
             if contract_label == "final_review:reviewer"
                 && self
@@ -3857,6 +4237,297 @@ mod tests {
                 && event.details["phase"] == "proposal"
                 && event.details["backend_family"] == "openrouter"
                 && event.details["model_id"] == "openai/gpt-4.1"
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_retries_transient_reviewer_failure_and_records_single_success() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-transient-reviewer-success");
+        let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
+            "reviewer-1",
+            vec![PlannedInvocationFailure::Transport(
+                "ERROR: stream disconnected before completion",
+            )],
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-transient-success").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            0,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("transient reviewer failure should succeed on retry");
+
+        assert!(
+            !result.aggregate_artifact.is_empty(),
+            "stage should complete with an aggregate result"
+        );
+        assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 2);
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        let proposal_started: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::ReviewerStarted
+                    && event.details["phase"] == "proposal"
+                    && event.details["reviewer_id"] == "reviewer-1"
+            })
+            .collect();
+        let proposal_completed: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::ReviewerCompleted
+                    && event.details["phase"] == "proposal"
+                    && event.details["reviewer_id"] == "reviewer-1"
+                    && event.details["outcome"] == "proposed_amendments"
+            })
+            .collect();
+        assert_eq!(
+            proposal_started.len(),
+            1,
+            "retry loop must not add started events"
+        );
+        assert_eq!(
+            proposal_completed.len(),
+            1,
+            "retry loop must emit one terminal completion event"
+        );
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("phase=proposal")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("outcome=proposed_amendments")
+                && entry.message.contains("retry_count=1")
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_fails_after_exhausting_transient_reviewer_retries() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-transient-reviewer-exhausted");
+        let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
+            "reviewer-1",
+            vec![
+                PlannedInvocationFailure::Transport("ERROR: stream disconnected before completion",);
+                5
+            ],
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-transient-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            0,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("persistent transient failures should bubble out");
+
+        let message = error.to_string();
+        assert!(message.contains("exhausted 5 transient retries"));
+        assert!(message.contains("stream disconnected before completion"));
+        assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 5);
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        let proposal_started: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::ReviewerStarted
+                    && event.details["phase"] == "proposal"
+                    && event.details["reviewer_id"] == "reviewer-1"
+            })
+            .collect();
+        let proposal_completed: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::ReviewerCompleted
+                    && event.details["phase"] == "proposal"
+                    && event.details["reviewer_id"] == "reviewer-1"
+                    && event.details["outcome"] == "failed"
+            })
+            .collect();
+        assert_eq!(proposal_started.len(), 1);
+        assert_eq!(proposal_completed.len(), 1);
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("phase=proposal")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("outcome=failed")
+                && entry.message.contains("retry_count=5")
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_does_not_retry_domain_validation_failures() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-domain-validation-no-retry");
+        let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
+            "reviewer-1",
+            vec![PlannedInvocationFailure::DomainValidation(
+                "proposal payload failed domain validation",
+            )],
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-domain-validation").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                    required: false,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-2-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            0,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("optional domain-validation failure should fall through to remaining reviewers");
+
+        assert!(
+            !result.aggregate_artifact.is_empty(),
+            "remaining reviewer should carry the stage to completion"
+        );
+        let reviewer_attempts: Vec<_> = adapter
+            .invocation_ids_for("final_review:reviewer")
+            .into_iter()
+            .filter(|invocation_id| invocation_id.contains("reviewer-1"))
+            .collect();
+        assert_eq!(
+            reviewer_attempts.len(),
+            1,
+            "domain validation failures must not be retried"
+        );
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type == JournalEventType::ReviewerCompleted
+                && event.details["phase"] == "proposal"
+                && event.details["reviewer_id"] == "reviewer-1"
+                && event.details["outcome"] == "failed_optional"
+        }));
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("phase=proposal")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("outcome=failed_optional")
+                && entry.message.contains("retry_count=0")
         }));
     }
 

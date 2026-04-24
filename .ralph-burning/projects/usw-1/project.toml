@@ -1,0 +1,7 @@
+id = "usw-1"
+name = "final-review-transient-retry"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "cdf2d760247fd89d2928b8163fac92576590e1393ca2f1a7a29d999de381bb1c"
+created_at = "2026-04-24T06:52:17.822093433Z"
+status_summary = "created"

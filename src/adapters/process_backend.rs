@@ -36,7 +36,7 @@ const TEARDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const BACKGROUND_REAP_TIMEOUT: Duration = Duration::from_secs(30);
 const CODEX_RAW_TRANSCRIPT_VERSION: &str = "rb_codex_process_v1";
 
-fn is_timeout_related(error: &AppError) -> bool {
+pub(crate) fn is_timeout_related(error: &AppError) -> bool {
     matches!(
         error,
         AppError::InvocationFailed {
@@ -47,6 +47,30 @@ fn is_timeout_related(error: &AppError) -> bool {
         error,
         AppError::InvocationFailed { details, .. } if details.contains("exceeded timeout")
     )
+}
+
+pub(crate) fn is_transient_codex_failure(error: &AppError) -> bool {
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::TransportFailure,
+            ..
+        } => true,
+        AppError::InvocationFailed { details, .. } => {
+            let details = details.to_ascii_lowercase();
+            [
+                "stream disconnected",
+                "you can retry your request",
+                "connection reset",
+                "timed out",
+                "503",
+                "502",
+                "500 internal server",
+            ]
+            .iter()
+            .any(|pattern| details.contains(pattern))
+        }
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2637,6 +2661,40 @@ mod tests {
         assert!(is_timeout_related(&timeout_details));
         assert!(!is_timeout_related(&unrelated_failure));
         assert!(!is_timeout_related(&AppError::NoActiveProject));
+    }
+
+    #[test]
+    fn transient_codex_failure_helper_matches_expected_patterns() {
+        let transport_failure = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::TransportFailure,
+            details: "exit code 1".to_owned(),
+        };
+        let disconnected_failure = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details: "ERROR: stream disconnected before completion".to_owned(),
+        };
+        let retryable_stderr = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details: "You can retry your request after a backend error".to_owned(),
+        };
+        let unrelated_failure = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details: "payload failed contract validation".to_owned(),
+        };
+
+        assert!(is_transient_codex_failure(&transport_failure));
+        assert!(is_transient_codex_failure(&disconnected_failure));
+        assert!(is_transient_codex_failure(&retryable_stderr));
+        assert!(!is_transient_codex_failure(&unrelated_failure));
+        assert!(!is_transient_codex_failure(&AppError::NoActiveProject));
     }
 
     #[test]

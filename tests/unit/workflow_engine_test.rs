@@ -1224,10 +1224,12 @@ async fn resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes() {
     let pid = create_project_with_flow(base_dir, "qd-skip-resume", FlowPreset::QuickDev);
     let config = EffectiveConfig::load(base_dir).unwrap();
 
-    // FinalReview fails once (simulates crash after ApplyFixes was skipped),
-    // then succeeds on resume.
+    // FinalReview now retries transient backend failures internally, so make
+    // the stage fail deterministically on every invocation. Resume uses a clean
+    // adapter and should still start from FinalReview without re-running
+    // ApplyFixes.
     let failing_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_transient_failure(StageId::FinalReview, 1),
+        StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
     );
     let first_result = engine::execute_run(
         &failing_agent_service,

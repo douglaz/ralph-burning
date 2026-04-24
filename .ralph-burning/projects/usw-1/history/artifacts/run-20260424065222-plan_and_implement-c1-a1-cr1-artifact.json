@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T07:54:21.148660349Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented final_review transient transport retries by adding a cheap `is_transient_codex_failure` helper in `process_backend`, routing reviewer and arbiter proposal/arbitration invocations through a shared retry loop in `final_review`, preserving single started/completed journal events while recording retry counts in runtime logs, and rewriting exhausted transient failures with clear operator-facing context. Added regression coverage for transient-success, transient-exhaustion, and domain-validation-no-retry behavior, and updated the workflow-engine resume test to use a deterministic failure now that FinalReview retries transient errors internally.\n\n## Steps\n\n1. [Completed] Inspect the existing final_review invocation path, retry policy plumbing, and current local diffs before editing the touched files.\n2. [Completed] Add transient Codex failure classification alongside `is_timeout_related` so final_review can distinguish retryable transport-style failures from contract/domain failures.\n3. [Completed] Wrap final_review reviewer and arbiter invocations in a shared retry loop using the existing retry policy defaults, preserve single outer journal telemetry, and include retry counts plus exhausted-retry error messaging in runtime/operator logs.\n4. [Completed] Add regression tests for transient retry success, transient retry exhaustion, and domain-validation no-retry behavior, and adjust the affected workflow-engine resume test to reflect the new internal retry semantics.\n5. [Completed] Run repository verification gates required by the task: formatting, clippy, full test suite with `test-stub`, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed (unit, CLI, conformance, doc tests).\n- Targeted regressions passed: `final_review_retries_transient_reviewer_failure_and_records_single_success`, `final_review_fails_after_exhausting_transient_reviewer_retries`, and `final_review_does_not_retry_domain_validation_failures`.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- Arbiter retry behavior now shares the same retry helper as reviewer proposal invocations, but there is not a dedicated arbiter-specific transient regression test yet.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}
