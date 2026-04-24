@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T09:06:24.523105108Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAddressed the pending final_review retry gaps by making `is_timeout_related` explicitly recognize `AppError::InvocationTimeout`, routing vote-phase reviewer invocations through the same shared transient-retry helper already used for proposal and arbiter calls, threading retry counts through vote runtime logs, and extending the final_review/process-backend regression coverage to cover timeout-classified transient vote retries and the updated retry accounting. The resulting behavior now retries reviewer, voter, and arbiter transport/timeouts with the existing role retry policy, still skips domain-validation failures, and preserves single outer started/completed journal events per panel member.\n\n## Steps\n\n1. [Completed] Inspect the pending amendments against the current final_review retry implementation and confirm which invocation paths still bypassed transient retry handling.\n2. [Completed] Patch transient classification so final_review retry logic treats `AppError::InvocationTimeout` as retryable alongside existing transport/disconnect heuristics.\n3. [Completed] Route final_review vote-phase member invocations through the shared retry wrapper, preserve single outer journal events, and record retry counts in runtime logs for terminal vote outcomes.\n4. [Completed] Extend regression coverage for the amended behavior, including transient vote timeout retry success and the updated retry accounting expectations.\n5. [Completed] Run the required verification gates on the current tree, including formatting, clippy, full `test-stub` coverage, targeted transient final_review regressions, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_retries_transient_vote_timeouts` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_retries_transient_reviewer_failure` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_fails_after_exhausting_transient_reviewer_retries` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_does_not_retry_domain_validation_failures` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- Arbiter transient retries now use the same shared retry helper as reviewer and voter paths, but there is still no arbiter-specific transient regression test.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 2
+}

@@ -39,13 +39,16 @@ const CODEX_RAW_TRANSCRIPT_VERSION: &str = "rb_codex_process_v1";
 pub(crate) fn is_timeout_related(error: &AppError) -> bool {
     matches!(
         error,
-        AppError::InvocationFailed {
-            failure_class: FailureClass::Timeout,
-            ..
-        }
+        AppError::InvocationTimeout { .. }
+            | AppError::InvocationFailed {
+                failure_class: FailureClass::Timeout,
+                ..
+            }
     ) || matches!(
         error,
-        AppError::InvocationFailed { details, .. } if details.contains("exceeded timeout")
+        AppError::InvocationFailed {
+            details, ..
+        } if details.contains("exceeded timeout")
     )
 }
 
@@ -2650,6 +2653,12 @@ mod tests {
             failure_class: FailureClass::TransportFailure,
             details: "process exceeded timeout during teardown".to_owned(),
         };
+        let invocation_timeout = AppError::InvocationTimeout {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            timeout_ms: 1_000,
+            details: "backend timed out".to_owned(),
+        };
         let unrelated_failure = AppError::InvocationFailed {
             backend: "codex".to_owned(),
             contract_id: "contract".to_owned(),
@@ -2659,6 +2668,7 @@ mod tests {
 
         assert!(is_timeout_related(&timeout_failure));
         assert!(is_timeout_related(&timeout_details));
+        assert!(is_timeout_related(&invocation_timeout));
         assert!(!is_timeout_related(&unrelated_failure));
         assert!(!is_timeout_related(&AppError::NoActiveProject));
     }

@@ -984,17 +984,19 @@ where
     }
 
     // --- Vote phase: invoke all voters concurrently ---
+    let reviewer_retry_policy = final_review_retry_policy(BackendPolicyRole::FinalReviewer);
     let mut vote_futures = FuturesUnordered::new();
     for (prep_idx, (reviewer, vote_prompt)) in vote_preps.iter().enumerate() {
         let cancellation_token = cancellation_token.clone();
         let target = reviewer.target.clone();
         let reviewer_id = reviewer.reviewer_id.clone();
         let vote_prompt = vote_prompt.clone();
+        let retry_policy = reviewer_retry_policy.clone();
         let amendments_context = amendments_context.clone();
         let timeout = reviewer_timeout_for_backend(reviewer.target.backend.family);
         vote_futures.push(async move {
             let started_at = Instant::now();
-            let result = invoke_final_review_member_once(
+            let result = invoke_final_review_member(
                 agent_service,
                 project_root,
                 backend_working_dir,
@@ -1005,11 +1007,12 @@ where
                 BackendRole::Reviewer,
                 &reviewer_id,
                 "voter",
+                &reviewer_id,
                 vote_prompt,
                 amendments_context,
                 timeout,
                 cancellation_token,
-                1,
+                &retry_policy,
             )
             .await;
             (prep_idx, started_at, result)
@@ -1025,11 +1028,11 @@ where
     let mut deferred_vote_processing_error: Option<AppError> = None;
     while let Some((prep_idx, started_at, vote_payload)) = vote_futures.next().await {
         let (reviewer, _) = &vote_preps[prep_idx];
-        let (vote_payload, producer) = match vote_payload {
-            Ok(payload) => payload,
+        let (vote_payload, producer, retry_count) = match vote_payload {
+            Ok(payload) => (payload.payload, payload.producer, payload.retry_count),
             // BackendExhausted is handled first regardless of required/optional
             // status — an exhausted backend is skipped gracefully.
-            Err(error)
+            Err(FinalReviewMemberInvocationFailure { error, retry_count })
                 if error
                     .failure_class()
                     .is_some_and(|fc| fc == FailureClass::BackendExhausted) =>
@@ -1054,7 +1057,7 @@ where
                     "failed_exhausted",
                     0,
                 )?;
-                append_panel_member_runtime_log(
+                append_panel_member_runtime_log_with_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -1066,11 +1069,14 @@ where
                     Some(started_at.elapsed()),
                     Some("failed_exhausted"),
                     Some(0),
+                    Some(retry_count),
                 );
                 last_vote_exhaustion_error = Some(error);
                 continue;
             }
-            Err(error) if !reviewer.required => {
+            Err(FinalReviewMemberInvocationFailure { error, retry_count })
+                if !reviewer.required =>
+            {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -1086,7 +1092,7 @@ where
                     "failed_optional",
                     0,
                 )?;
-                append_panel_member_runtime_log(
+                append_panel_member_runtime_log_with_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -1098,6 +1104,7 @@ where
                     Some(started_at.elapsed()),
                     Some("failed_optional"),
                     Some(0),
+                    Some(retry_count),
                 );
                 match &first_optional_vote_failure {
                     None => {
@@ -1110,7 +1117,7 @@ where
                 }
                 continue;
             }
-            Err(error) => {
+            Err(FinalReviewMemberInvocationFailure { error, retry_count }) => {
                 append_panel_member_completed_event(
                     journal_store,
                     base_dir,
@@ -1126,7 +1133,7 @@ where
                     "failed",
                     0,
                 )?;
-                append_panel_member_runtime_log(
+                append_panel_member_runtime_log_with_retry_count(
                     log_write,
                     base_dir,
                     project_id,
@@ -1138,6 +1145,7 @@ where
                     Some(started_at.elapsed()),
                     Some("failed"),
                     Some(0),
+                    Some(retry_count),
                 );
                 {
                     let is_cancellation = error
@@ -1209,7 +1217,7 @@ where
                     Some(duration),
                     Some("failed_schema_validation"),
                     Some(0),
-                    None,
+                    Some(retry_count),
                 );
                 if deferred_vote_processing_error.is_none() {
                     deferred_vote_processing_error = Some(AppError::InvocationFailed {
@@ -1253,7 +1261,7 @@ where
                 Some(duration),
                 Some("failed_domain_validation"),
                 Some(0),
-                None,
+                Some(retry_count),
             );
             if deferred_vote_processing_error.is_none() {
                 deferred_vote_processing_error = Some(error);
@@ -1282,7 +1290,7 @@ where
             }
             continue;
         }
-        append_panel_member_runtime_log_with_identity(
+        append_panel_member_runtime_log_with_identity_and_retry_count(
             log_write,
             base_dir,
             project_id,
@@ -1295,6 +1303,7 @@ where
             Some(duration),
             Some("reviewer_votes_recorded"),
             Some(votes.votes.len()),
+            Some(retry_count),
         );
 
         let artifact = renderers::render_final_review_vote(
@@ -1937,38 +1946,6 @@ fn append_panel_member_runtime_log(
         role,
         target.backend.family.as_str(),
         target.model.model_id.as_str(),
-        duration,
-        outcome,
-        amendment_count,
-        None,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_panel_member_runtime_log_with_identity(
-    log_write: &dyn RuntimeLogWritePort,
-    base_dir: &Path,
-    project_id: &ProjectId,
-    state: &str,
-    phase: &str,
-    reviewer_id: &str,
-    role: &str,
-    backend_family: &str,
-    model_id: &str,
-    duration: Option<Duration>,
-    outcome: Option<&str>,
-    amendment_count: Option<usize>,
-) {
-    append_panel_member_runtime_log_with_identity_and_retry_count(
-        log_write,
-        base_dir,
-        project_id,
-        state,
-        phase,
-        reviewer_id,
-        role,
-        backend_family,
-        model_id,
         duration,
         outcome,
         amendment_count,
@@ -2640,6 +2617,7 @@ mod tests {
     #[derive(Clone, Debug)]
     enum PlannedInvocationFailure {
         Transport(&'static str),
+        Timeout(&'static str),
         DomainValidation(&'static str),
     }
 
@@ -2651,6 +2629,7 @@ mod tests {
         /// Members whose proposal invocations fail with BackendExhausted.
         proposal_exhausted: Arc<HashSet<String>>,
         scripted_proposal_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
+        scripted_vote_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
         scripted_arbiter_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
         invocation_delays: Arc<HashMap<String, Duration>>,
         actual_targets: Arc<HashMap<String, ResolvedBackendTarget>>,
@@ -2692,6 +2671,19 @@ mod tests {
         ) -> Self {
             Self {
                 scripted_proposal_failures: Arc::new(Mutex::new(HashMap::from([(
+                    member_key.to_owned(),
+                    failures.into(),
+                )]))),
+                ..Default::default()
+            }
+        }
+
+        fn with_scripted_vote_failures(
+            member_key: &str,
+            failures: Vec<PlannedInvocationFailure>,
+        ) -> Self {
+            Self {
+                scripted_vote_failures: Arc::new(Mutex::new(HashMap::from([(
                     member_key.to_owned(),
                     failures.into(),
                 )]))),
@@ -2778,20 +2770,30 @@ mod tests {
 
             let failure_class = match failure {
                 PlannedInvocationFailure::Transport(_) => FailureClass::TransportFailure,
+                PlannedInvocationFailure::Timeout(_) => FailureClass::Timeout,
                 PlannedInvocationFailure::DomainValidation(_) => {
                     FailureClass::DomainValidationFailure
                 }
             };
             let details = match failure {
                 PlannedInvocationFailure::Transport(details)
+                | PlannedInvocationFailure::Timeout(details)
                 | PlannedInvocationFailure::DomainValidation(details) => details.to_owned(),
             };
-            Some(AppError::InvocationFailed {
-                backend: request.resolved_target.backend.family.to_string(),
-                contract_id: request.contract.label(),
-                failure_class,
-                details,
-            })
+            match failure_class {
+                FailureClass::Timeout => Some(AppError::InvocationTimeout {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: request.contract.label(),
+                    timeout_ms: 1_000,
+                    details,
+                }),
+                _ => Some(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: request.contract.label(),
+                    failure_class,
+                    details,
+                }),
+            }
         }
     }
 
@@ -2825,6 +2827,13 @@ mod tests {
             if contract_label == "final_review:arbiter" {
                 if let Some(error) =
                     Self::pop_scripted_failure(self.scripted_arbiter_failures.as_ref(), &request)
+                {
+                    return Err(error);
+                }
+            }
+            if contract_label == "final_review:voter" {
+                if let Some(error) =
+                    Self::pop_scripted_failure(self.scripted_vote_failures.as_ref(), &request)
                 {
                     return Err(error);
                 }
@@ -4532,6 +4541,108 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_review_retries_transient_vote_timeouts_and_records_single_success() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-transient-vote-timeout");
+        let adapter = RecordingFinalReviewAdapter::with_scripted_vote_failures(
+            "reviewer-1",
+            vec![PlannedInvocationFailure::Timeout(
+                "reviewer vote timed out before completion",
+            )],
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-vote-timeout").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            0,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("transient vote timeout should succeed on retry");
+
+        assert!(
+            !result.final_accepted_amendments.is_empty(),
+            "stage should complete after a retried vote timeout"
+        );
+        assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 1);
+        assert_eq!(adapter.invocation_ids_for("final_review:voter").len(), 2);
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        let vote_started: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::ReviewerStarted
+                    && event.details["phase"] == "vote"
+                    && event.details["reviewer_id"] == "reviewer-1"
+            })
+            .collect();
+        let vote_completed: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::ReviewerCompleted
+                    && event.details["phase"] == "vote"
+                    && event.details["reviewer_id"] == "reviewer-1"
+                    && event.details["outcome"] == "reviewer_votes_recorded"
+            })
+            .collect();
+        assert_eq!(
+            vote_started.len(),
+            1,
+            "retry loop must not add vote started events"
+        );
+        assert_eq!(
+            vote_completed.len(),
+            1,
+            "retry loop must emit one terminal vote completion event"
+        );
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("phase=vote")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("outcome=reviewer_votes_recorded")
+                && entry.message.contains("retry_count=1")
+        }));
+    }
+
+    #[tokio::test]
     async fn final_review_skips_optional_vote_failures_when_min_reviewers_still_hold() {
         let tmp = tempdir().expect("tempdir");
         let base_dir = tmp.path();
@@ -4598,10 +4709,19 @@ mod tests {
 
         assert!(result.restart_required);
         assert_eq!(result.aggregate_payload["total_reviewers"], json!(2));
+        let vote_ids = adapter.invocation_ids_for("final_review:voter");
         assert_eq!(
-            adapter.invocation_ids_for("final_review:voter").len(),
-            3,
-            "three reviewer vote attempts should be recorded"
+            vote_ids.len(),
+            7,
+            "two successful voters plus five retries for the optional transient failure should be recorded"
+        );
+        assert_eq!(
+            vote_ids
+                .iter()
+                .filter(|invocation_id| invocation_id.contains("reviewer-3"))
+                .count(),
+            5,
+            "optional vote failures should exhaust the transient retry budget before degrading"
         );
     }
 
