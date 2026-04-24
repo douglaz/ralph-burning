@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T09:23:22.126888996Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-a37393af`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-a37393af`\n\n`src/contexts/workflow_composition/final_review.rs:154-163` hardcodes a fresh `RetryPolicy::default_policy()` for the new inner final-review retry loop instead of going through the existing test-stub backoff override path in `src/cli/run.rs:12549-12555`. That means any run started with `RALPH_BURNING_TEST_FAIL_INVOKE_STAGE=final_review` now pays the real 5/10/20/40s retry sleeps inside each reviewer/arbiter invocation before the stage fails. Existing failure-path scenarios such as `src/contexts/conformance_spec/scenarios.rs:4887-4891`, `12411-12415`, and `13474-13478` rely on that env seam to fail fast; with this branch they become minute-long retries instead of immediate deterministic failures.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

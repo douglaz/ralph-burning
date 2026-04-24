@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T09:21:24.702047602Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne medium finding: the new final-review retry loop bypasses existing test-stub backoff suppression and makes forced final-review failure scenarios sleep production backoffs. `nix build` completed successfully.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/final_review.rs:154-163` hardcodes a fresh `RetryPolicy::default_policy()` for the new inner final-review retry loop instead of going through the existing test-stub backoff override path in `src/cli/run.rs:12549-12555`. That means any run started with `RALPH_BURNING_TEST_FAIL_INVOKE_STAGE=final_review` now pays the real 5/10/20/40s retry sleeps inside each reviewer/arbiter invocation before the stage fails. Existing failure-path scenarios such as `src/contexts/conformance_spec/scenarios.rs:4887-4891`, `12411-12415`, and `13474-13478` rely on that env seam to fail fast; with this branch they become minute-long retries instead of immediate deterministic failures.\n   Rationale: The repository already has a shared contract that `test-stub` failure injection disables retry backoff. The new final-review retry path bypasses it, so conformance/CLI failure scenarios no longer behave like the rest of the system. Route final-review retry policy construction through the same override helper, or move that override logic into a shared retry-policy builder used by both CLI stage retries and final-review member retries.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
