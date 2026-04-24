@@ -169,9 +169,14 @@ fn final_review_contract_id(panel_role: &str) -> String {
     format!("final_review:{panel_role}")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalReviewRetryExhaustionKind {
+    AvailabilityProbe,
+    Invocation,
+}
+
 fn rewrite_transient_retry_exhaustion_error(
     error: AppError,
-    contract_id: &str,
     reviewer_id: &str,
     target: &ResolvedBackendTarget,
     retry_count: u32,
@@ -208,14 +213,53 @@ fn rewrite_transient_retry_exhaustion_error(
             backend,
             details,
             failure_class,
-        } => AppError::InvocationFailed {
+        } => AppError::BackendUnavailable {
             backend,
-            contract_id: contract_id.to_owned(),
-            failure_class: failure_class.unwrap_or(FailureClass::TransportFailure),
             details: format!("{prefix}{details}"),
+            failure_class: Some(failure_class.unwrap_or(FailureClass::TransportFailure)),
         },
         other => other,
     }
+}
+
+fn final_review_retry_exhaustion_kind(error: &AppError) -> Option<FinalReviewRetryExhaustionKind> {
+    match error {
+        AppError::InvocationFailed {
+            contract_id,
+            details,
+            ..
+        }
+        | AppError::InvocationTimeout {
+            contract_id,
+            details,
+            ..
+        } if contract_id.starts_with("final_review:")
+            && details.contains(" exhausted ")
+            && details.contains(" transient retries:") =>
+        {
+            Some(FinalReviewRetryExhaustionKind::Invocation)
+        }
+        AppError::BackendUnavailable { details, .. }
+            if details.contains(" exhausted ") && details.contains(" transient retries:") =>
+        {
+            Some(FinalReviewRetryExhaustionKind::AvailabilityProbe)
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn is_final_review_invocation_retry_exhaustion_error(error: &AppError) -> bool {
+    matches!(
+        final_review_retry_exhaustion_kind(error),
+        Some(FinalReviewRetryExhaustionKind::Invocation)
+    )
+}
+
+pub(crate) fn is_final_review_availability_retry_exhaustion_error(error: &AppError) -> bool {
+    matches!(
+        final_review_retry_exhaustion_kind(error),
+        Some(FinalReviewRetryExhaustionKind::AvailabilityProbe)
+    )
 }
 
 pub(crate) fn final_review_retry_failure_class(error: &AppError) -> Option<FailureClass> {
@@ -290,7 +334,6 @@ where
                 if probe_attempt >= max_attempts {
                     return Err(rewrite_transient_retry_exhaustion_error(
                         error,
-                        &contract_id,
                         reviewer_id,
                         target,
                         retry_count,
@@ -332,29 +375,6 @@ where
         details: "final-review availability retry loop terminated without a probe result"
             .to_owned(),
     })
-}
-
-pub(crate) fn is_final_review_retry_exhaustion_error(error: &AppError) -> bool {
-    match error {
-        AppError::InvocationFailed {
-            contract_id,
-            details,
-            ..
-        }
-        | AppError::InvocationTimeout {
-            contract_id,
-            details,
-            ..
-        } => {
-            contract_id.starts_with("final_review:")
-                && details.contains(" exhausted ")
-                && details.contains(" transient retries:")
-        }
-        AppError::BackendUnavailable { details, .. } => {
-            details.contains(" exhausted ") && details.contains(" transient retries:")
-        }
-        _ => false,
-    }
 }
 
 pub(crate) fn is_terminal_final_review_contract_failure(error: &AppError) -> bool {
@@ -2614,7 +2634,6 @@ where
                     return Err(FinalReviewMemberInvocationFailure {
                         error: rewrite_transient_retry_exhaustion_error(
                             error,
-                            &contract_id,
                             reviewer_id,
                             target,
                             retry_count,
@@ -2879,6 +2898,34 @@ mod tests {
             final_review_retry_failure_class(&disconnected_transport_failure),
             Some(FailureClass::TransportFailure)
         );
+    }
+
+    #[test]
+    fn final_review_retry_exhaustion_helpers_distinguish_invocation_from_availability() {
+        let invocation_exhaustion = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "final_review:reviewer".to_owned(),
+            failure_class: FailureClass::TransportFailure,
+            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: ERROR: stream disconnected before completion".to_owned(),
+        };
+        let availability_exhaustion = AppError::BackendUnavailable {
+            backend: "codex".to_owned(),
+            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: stream disconnected before completion".to_owned(),
+            failure_class: Some(FailureClass::TransportFailure),
+        };
+
+        assert!(is_final_review_invocation_retry_exhaustion_error(
+            &invocation_exhaustion
+        ));
+        assert!(!is_final_review_invocation_retry_exhaustion_error(
+            &availability_exhaustion
+        ));
+        assert!(!is_final_review_availability_retry_exhaustion_error(
+            &invocation_exhaustion
+        ));
+        assert!(is_final_review_availability_retry_exhaustion_error(
+            &availability_exhaustion
+        ));
     }
 
     #[derive(Clone, Default)]

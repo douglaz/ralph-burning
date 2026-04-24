@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr13-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T18:51:38.084471240Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAddressed the pending final_review availability-probe amendment already present in the working tree by splitting final-review retry exhaustion into distinct invocation vs. availability cases in `src/contexts/workflow_composition/final_review.rs` and updating `src/contexts/workflow_composition/engine.rs` to suppress only invocation exhaustion at the stage-retry gate. Required reviewer/arbiter availability probe exhaustion now remains retryable at the outer final_review stage level, while optional-reviewer probe exhaustion still preserves panel degradation behavior and invocation retry exhaustion remains terminal. Added/kept focused regressions that distinguish the two exhaustion kinds and assert `should_retry_stage_failure(...)` stays true for final-review availability exhaustion.\n\n## Steps\n\n1. [Completed] Inspect the current `final_review` and `engine` diffs against the pending amendment to verify whether required availability retry exhaustion was still being treated as terminal.\n2. [Completed] Confirm and retain the fix that distinguishes invocation retry exhaustion from availability-probe retry exhaustion, updating stage-retry gating and probe call sites to use the narrower availability/invocation helpers.\n3. [Completed] Run focused final-review regressions plus the required repository verification gates on the amended tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub stage_retry_budget_allows_final_review_availability_retry_exhaustion` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_retry_exhaustion_helpers_distinguish_invocation_from_availability` passed.\n- `nix develop -c cargo test --locked --features test-stub preflight_check_retries_transient_final_review_arbiter_probe_failures` passed.\n- `nix develop -c cargo test --locked --features test-stub preflight_check_keeps_optional_final_review_reviewers_after_transient_probe_exhaustion` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- There is still no full end-to-end workflow-engine scenario that drives a required final-review reviewer or arbiter through repeated transient availability-probe exhaustion and then observes the successful outer stage retry path; current coverage is helper/unit plus preflight/probe regressions.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 13
+}

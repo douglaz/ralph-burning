@@ -92,7 +92,7 @@ fn should_retry_stage_failure(
     cancellation_token: &CancellationToken,
 ) -> bool {
     retry_policy.is_retryable(failure_class)
-        && !final_review::is_final_review_retry_exhaustion_error(error)
+        && !final_review::is_final_review_invocation_retry_exhaustion_error(error)
         && !final_review::is_terminal_final_review_contract_failure(error)
         && cursor.attempt < retry_policy.max_attempts(failure_class)
         && !matches!(failure_class, FailureClass::Cancellation)
@@ -717,7 +717,7 @@ async fn preflight_final_review_panel_members<A: AgentExecutionPort>(
                 exhausted_count += 1;
             }
             Err(error)
-                if final_review::is_final_review_retry_exhaustion_error(&error)
+                if final_review::is_final_review_availability_retry_exhaustion_error(&error)
                     && !member.required =>
             {
                 tracing::warn!(
@@ -2422,7 +2422,11 @@ where
                             &runtime_panel.panel.arbiter,
                         )
                     }
-                    Err(error) if final_review::is_final_review_retry_exhaustion_error(&error) => {
+                    Err(error)
+                        if final_review::is_final_review_availability_retry_exhaustion_error(
+                            &error,
+                        ) =>
+                    {
                         return Err(error);
                     }
                     Err(error) => {
@@ -9069,7 +9073,7 @@ where
                 last_probe_exhaustion_error = Some(error);
             }
             Err(error)
-                if final_review::is_final_review_retry_exhaustion_error(&error)
+                if final_review::is_final_review_availability_retry_exhaustion_error(&error)
                     && !member.required =>
             {
                 tracing::warn!(
@@ -9143,7 +9147,7 @@ where
     )
     .await
     .map_err(|error| {
-        if final_review::is_final_review_retry_exhaustion_error(&error) {
+        if final_review::is_final_review_availability_retry_exhaustion_error(&error) {
             error
         } else {
             let failure_class = match &error {
@@ -10708,6 +10712,25 @@ mod tests {
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
 
         assert!(!should_retry_stage_failure(
+            &retry_policy,
+            FailureClass::TransportFailure,
+            &error,
+            &cursor,
+            &crate::contexts::agent_execution::model::CancellationToken::new(),
+        ));
+    }
+
+    #[test]
+    fn stage_retry_budget_allows_final_review_availability_retry_exhaustion() {
+        let retry_policy = RetryPolicy::default_policy().with_no_backoff();
+        let error = AppError::BackendUnavailable {
+            backend: "codex".to_owned(),
+            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: stream disconnected before completion".to_owned(),
+            failure_class: Some(FailureClass::TransportFailure),
+        };
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+
+        assert!(should_retry_stage_failure(
             &retry_policy,
             FailureClass::TransportFailure,
             &error,

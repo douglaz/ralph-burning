@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 13
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-12-b28a07ec",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "`src/contexts/workflow_composition/engine.rs:87-99`, `src/contexts/workflow_composition/engine.rs:9047-9085`, and `src/contexts/workflow_composition/engine.rs:9136-9159` now route required final-review reviewer/arbiter availability probes through the new retry helper, but any probe that exhausts its transient budget is then treated as terminal because `should_retry_stage_failure` suppresses all errors recognized by `is_final_review_retry_exhaustion_error` (`src/contexts/workflow_composition/final_review.rs:337-357`). A required reviewer or arbiter that hits repeated transient `check_availability` failures will therefore fail the run before any panel member is invoked, with no outer stage retry. That regresses the prior recovery path for pre-invocation probe flaps and still lets a transient backend blip take down the whole `final_review` stage.",
-        "created_at": "2026-04-24T18:09:54.751716529Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "ee6dd099bea7a8fa8e45cae62abfdf48bd50adec5c5dce7e867d09cc87ba26b3"
-      }
-    ],
-    "processed_count": 13
+    "pending": [],
+    "processed_count": 14
   },
-  "status_summary": "running: final review restart round 13 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T18:00:23.716639119Z",
