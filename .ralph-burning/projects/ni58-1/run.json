@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424200824",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-505cdc61",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "`resolve_bead_plan` still breaks valid membership checks when the live bead ID and the stored plan ID use different milestone aliases. In [src/cli/project.rs:1914-1918](/home/user/ralph-burning/src/cli/project.rs:1914) and [src/cli/project.rs:2013-2025](/home/user/ralph-burning/src/cli/project.rs:2013), any entry with `bead_id` goes through raw string comparison only, and the `Some(_)` branch no longer reaches the title-fallback path. A live bead returned as `bead-2` / `8.5.3` will therefore fail against a plan entry stored as `ms-alpha.bead-2` / `9ni.8.5.3`, even though the codebase already treats those forms as equivalent elsewhere ([src/contexts/milestone_record/bead_refs.rs:3-17](/home/user/ralph-burning/src/contexts/milestone_record/bead_refs.rs:3), [src/contexts/milestone_record/service.rs:3654-3670](/home/user/ralph-burning/src/contexts/milestone_record/service.rs:3654)). `project create-from-bead` can now reject a valid milestone/bead pair solely because `br show` returned the short form. Normalize both sides or reuse `milestone_bead_refs_match`, and add a regression test for short live IDs against qualified plan IDs.",
-        "created_at": "2026-04-24T21:13:52.606261875Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "621ec430e8521b910500a1ac4e07ecf7aaa740da7d438a6d9824ede202bd922a"
-      },
-      {
-        "amendment_id": "fr-1-5709abda",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "The legacy-plan warning is only deduplicated per process, not per milestone across CLI invocations. [src/cli/project.rs:1880-1893](/home/user/ralph-burning/src/cli/project.rs:1880) stores warned milestones in a process-local `OnceLock<Mutex<BTreeSet<String>>>`, and [src/cli/project.rs:1967-1980](/home/user/ralph-burning/src/cli/project.rs:1967) calls it from `project create-from-bead`. Because each CLI invocation starts a fresh process, operators will see the same warning every time they run the command for the same legacy milestone. The bead explicitly requires a one-time warning per milestone, not per invocation, so this needs a persisted marker or another cross-invocation mechanism.",
-        "created_at": "2026-04-24T21:13:52.606272205Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "c772b9af84857c9f704968b8e8172eddd889b62d7f7749ff3aff8cacd3cff46f"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 2
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T21:04:21.748526052Z",

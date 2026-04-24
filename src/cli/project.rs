@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 
 use chrono::Utc;
 use clap::{ArgGroup, Args, Subcommand};
@@ -24,7 +24,7 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
 use crate::contexts::milestone_record::bead_refs::{
-    br_show_output_indicates_missing, milestone_bead_refs_match,
+    br_show_output_indicates_missing, canonicalize_milestone_bead_ref, milestone_bead_refs_match,
 };
 use crate::contexts::milestone_record::bundle::{bead_matches_implicit_slot, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
@@ -367,6 +367,9 @@ pub(crate) async fn execute_create_from_bead_in_dir(
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
     let bead_plan = resolve_bead_plan(&milestone_bundle.bundle, &milestone_id, &bead)?;
+    if bead_plan.used_legacy_title_fallback {
+        warn_once_for_legacy_plan_lookup(current_dir, &milestone_id, &bead.id);
+    }
     let confirmed_plan_version = if bead_plan.membership_confirmed {
         validate_milestone_plan_snapshot(
             &milestone_id,
@@ -1840,6 +1843,7 @@ fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
 struct ResolvedBeadPlan {
     flow_override: Option<FlowPreset>,
     membership_confirmed: bool,
+    used_legacy_title_fallback: bool,
     matched_workstream_index: Option<usize>,
     matched_bead_index: Option<usize>,
 }
@@ -1863,7 +1867,8 @@ fn ensure_bead_belongs_to_milestone(
     bead: &BeadDetail,
 ) -> AppResult<()> {
     let expected_prefix = format!("{}.", milestone_id.as_str());
-    if bead.id.starts_with(&expected_prefix) || !bead.id.contains('.') {
+    let canonical_bead_id = canonicalize_milestone_bead_ref(milestone_id, &bead.id);
+    if canonical_bead_id.starts_with(&expected_prefix) || !bead.id.contains('.') {
         return Ok(());
     }
 
@@ -1877,13 +1882,30 @@ fn ensure_bead_belongs_to_milestone(
     })
 }
 
-static LEGACY_PLAN_WARNING_MILESTONES: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+const LEGACY_PLAN_WARNING_MARKER_FILE: &str = ".legacy-title-only-plan-warning-emitted";
 
-fn warn_once_for_legacy_plan_lookup(milestone_id: &MilestoneId, bead_id: &str) {
-    let warned = LEGACY_PLAN_WARNING_MILESTONES.get_or_init(|| Mutex::new(BTreeSet::new()));
-    let mut warned = warned.lock().expect("legacy plan warning lock poisoned");
-    if !warned.insert(milestone_id.to_string()) {
-        return;
+fn legacy_plan_warning_marker_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+    FileSystem::milestone_root(base_dir, milestone_id).join(LEGACY_PLAN_WARNING_MARKER_FILE)
+}
+
+fn warn_once_for_legacy_plan_lookup(base_dir: &Path, milestone_id: &MilestoneId, bead_id: &str) {
+    let marker_path = legacy_plan_warning_marker_path(base_dir, milestone_id);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker_path)
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return,
+        Err(error) => {
+            tracing::warn!(
+                milestone_id = %milestone_id,
+                bead_id,
+                marker_path = %marker_path.display(),
+                error = %error,
+                "failed to persist legacy milestone-plan warning marker; the legacy fallback warning may repeat on future invocations"
+            );
+        }
     }
 
     tracing::warn!(
@@ -1948,6 +1970,7 @@ fn resolve_bead_plan(
             return Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: true,
+                used_legacy_title_fallback: false,
                 matched_workstream_index: Some(*workstream_index),
                 matched_bead_index: Some(*bead_index),
             });
@@ -1965,10 +1988,10 @@ fn resolve_bead_plan(
     }
 
     if let Some((workstream_index, bead_index, proposal)) = authoritative_implicit_match {
-        warn_once_for_legacy_plan_lookup(milestone_id, &bead.id);
         return Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
             membership_confirmed: false,
+            used_legacy_title_fallback: true,
             matched_workstream_index: Some(workstream_index),
             matched_bead_index: Some(bead_index),
         });
@@ -1976,10 +1999,10 @@ fn resolve_bead_plan(
 
     match matching_by_title.as_slice() {
         [(workstream_index, bead_index, proposal)] => {
-            warn_once_for_legacy_plan_lookup(milestone_id, &bead.id);
             Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: false,
+                used_legacy_title_fallback: true,
                 matched_workstream_index: Some(*workstream_index),
                 matched_bead_index: Some(*bead_index),
             })
@@ -2018,11 +2041,7 @@ fn proposal_matches_bead_id(
     let Some(candidate) = proposal.bead_id.as_deref() else {
         return false;
     };
-    let expected_suffix = bead
-        .id
-        .strip_prefix(&format!("{}.", milestone_id.as_str()))
-        .unwrap_or(bead.id.as_str());
-    candidate == bead.id || candidate == expected_suffix
+    milestone_bead_refs_match(milestone_id, candidate, &bead.id)
 }
 
 fn proposal_is_title_fallback_candidate(
@@ -3291,10 +3310,12 @@ mod tests {
         build_dependency_prompt_context, build_dependent_prompt_context,
         build_planned_elsewhere_context, compact_planned_elsewhere_summary,
         ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
-        infer_parent_epic_id, load_milestone_bundle, map_br_list_error,
-        planned_elsewhere_serialized_bytes, planned_elsewhere_serialized_bytes_without_summary,
-        resolve_bead_plan, validate_milestone_plan_snapshot, PlannedElsewhereCandidate,
-        PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
+        infer_parent_epic_id, legacy_plan_warning_marker_path, load_milestone_bundle,
+        map_br_list_error, planned_elsewhere_serialized_bytes,
+        planned_elsewhere_serialized_bytes_without_summary, resolve_bead_plan,
+        validate_milestone_plan_snapshot, warn_once_for_legacy_plan_lookup,
+        PlannedElsewhereCandidate, PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES,
+        PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -4098,6 +4119,69 @@ status_summary = "{status_summary}"
     }
 
     #[test]
+    fn resolve_bead_plan_matches_short_live_bead_id_against_qualified_plan_bead_id() {
+        let milestone_id = MilestoneId::new("9ni").expect("milestone id");
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "9ni".to_owned(),
+                name: "Alias Match".to_owned(),
+            },
+            executive_summary: "Verify alias matching".to_owned(),
+            goals: vec!["Keep stable bead lookup tolerant of milestone aliases.".to_owned()],
+            non_goals: Vec::new(),
+            constraints: Vec::new(),
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Alias lookup works.".to_owned(),
+                covered_by: vec!["9ni.8.5.3".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Execution".to_owned(),
+                description: Some("Alias-sensitive bead metadata.".to_owned()),
+                beads: vec![BeadProposal {
+                    bead_id: Some("9ni.8.5.3".to_owned()),
+                    explicit_id: Some(true),
+                    title: "Stabilize alias-based lookup".to_owned(),
+                    description: Some(
+                        "Match short live bead ids to qualified plan ids.".to_owned(),
+                    ),
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["backend".to_owned()],
+                    depends_on: Vec::new(),
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: Some(FlowPreset::Minimal),
+                }],
+            }],
+            default_flow: FlowPreset::Standard,
+            agents_guidance: None,
+        };
+        let bead = BeadDetail {
+            id: "8.5.3".to_owned(),
+            title: "Stabilize alias-based lookup".to_owned(),
+            status: BeadStatus::Open,
+            priority: BeadPriority::new(1),
+            bead_type: BeadType::Task,
+            labels: Vec::new(),
+            description: Some("Match short live bead ids to qualified plan ids.".to_owned()),
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            comments: Vec::new(),
+            owner: None,
+            created_at: None,
+            updated_at: None,
+        };
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, Some(FlowPreset::Minimal));
+        assert!(resolved.membership_confirmed);
+        assert!(!resolved.used_legacy_title_fallback);
+    }
+
+    #[test]
     fn resolve_bead_plan_does_not_confirm_reordered_implicit_proposal_by_title_alone() {
         let mut bundle = sample_two_bead_bundle();
         bundle.workstreams[0].beads.swap(0, 1);
@@ -4111,17 +4195,23 @@ status_summary = "{status_summary}"
     }
 
     #[test]
-    fn resolve_bead_plan_warns_once_for_legacy_title_fallback() {
+    fn legacy_plan_warning_marker_suppresses_repeat_logs_across_calls() {
         let milestone_id = MilestoneId::new("ms-legacy-warn-once").expect("milestone id");
-        let mut bundle = sample_two_bead_bundle();
-        bundle.identity.id = milestone_id.to_string();
-        let mut bead = sample_bead();
-        bead.id = "ms-legacy-warn-once.bead-2".to_owned();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
         let capture = log_capture();
 
         capture.in_scope(|| {
-            resolve_bead_plan(&bundle, &milestone_id, &bead).expect("first legacy resolve");
-            resolve_bead_plan(&bundle, &milestone_id, &bead).expect("second legacy resolve");
+            warn_once_for_legacy_plan_lookup(
+                tmp.path(),
+                &milestone_id,
+                "ms-legacy-warn-once.bead-2",
+            );
+            warn_once_for_legacy_plan_lookup(
+                tmp.path(),
+                &milestone_id,
+                "ms-legacy-warn-once.bead-2",
+            );
         });
 
         let warnings = capture
@@ -4139,6 +4229,7 @@ status_summary = "{status_summary}"
             warnings, 1,
             "legacy fallback should warn once per milestone"
         );
+        assert!(legacy_plan_warning_marker_path(tmp.path(), &milestone_id).exists());
     }
 
     #[test]
@@ -4957,6 +5048,16 @@ status_summary = "{status_summary}"
 
         ensure_bead_belongs_to_milestone(&milestone_id, &bead)
             .expect("unqualified explicit bead id should pass");
+    }
+
+    #[test]
+    fn ensure_bead_belongs_to_milestone_accepts_short_dotted_aliases() {
+        let milestone_id = MilestoneId::new("9ni").expect("milestone id");
+        let mut bead = sample_bead();
+        bead.id = "8.5.3".to_owned();
+
+        ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect("short dotted alias should pass");
     }
 
     #[test]
