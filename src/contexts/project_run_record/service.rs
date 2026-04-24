@@ -1393,12 +1393,33 @@ pub fn list_projects(
     active_port: &dyn ActiveProjectPort,
     base_dir: &Path,
 ) -> AppResult<Vec<ProjectListEntry>> {
+    list_project_entries(store, active_port, base_dir, false)
+}
+
+/// List only bead-backed task projects with summary data.
+pub fn list_task_projects(
+    store: &dyn ProjectStorePort,
+    active_port: &dyn ActiveProjectPort,
+    base_dir: &Path,
+) -> AppResult<Vec<ProjectListEntry>> {
+    list_project_entries(store, active_port, base_dir, true)
+}
+
+fn list_project_entries(
+    store: &dyn ProjectStorePort,
+    active_port: &dyn ActiveProjectPort,
+    base_dir: &Path,
+    tasks_only: bool,
+) -> AppResult<Vec<ProjectListEntry>> {
     let active_id = active_port.read_active_project_id(base_dir)?;
     let project_ids = store.list_project_ids(base_dir)?;
 
     let mut entries = Vec::new();
     for pid in project_ids {
         let record = store.read_project_record(base_dir, &pid)?;
+        if tasks_only && !record.is_milestone_task() {
+            continue;
+        }
         let is_active = active_id.as_deref() == Some(pid.as_str());
         entries.push(ProjectListEntry {
             id: record.id,

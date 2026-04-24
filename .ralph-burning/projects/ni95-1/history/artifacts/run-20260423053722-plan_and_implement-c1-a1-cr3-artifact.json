@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260423053722-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T03:10:10.687643200Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAligned the `task` command implementation with the new help text by enforcing task-only behavior in `src/cli/task.rs` and `src/contexts/project_run_record/service.rs`: `task show` and `task select` now reject non-bead-backed projects, `task list` now filters to bead-backed tasks via `list_task_projects`, and the CLI surfaces a dedicated `ProjectNotTask` error. The milestone/task help text remains concise and task/bead/milestone terminology stays consistent, with CLI coverage updated in `tests/cli.rs`.\n\n## Steps\n\n0. [Completed] Inspect the current milestone/task clap help text, task command behavior, and dirty working-tree state to verify the pending amendment scope.\n1. [Completed] Confirm and retain the concise milestone/task help descriptions while checking that visible task help text does not overpromise behavior relative to implementation.\n2. [Completed] Implement the task-only remediation so `task show`, `task select`, and `task list` operate only on bead-backed tasks, including the filtered service helper and task-specific error path.\n3. [Completed] Update CLI integration coverage to reflect task-only behavior and rejection of standalone projects, without changing command names or command structure.\n4. [Skipped] Skip README and unrelated help refactors because the required remediation was confined to task-command semantics and existing CLI help text.\n5. [Completed] Run the requested help checks and full validation gates on the current tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo run --locked --quiet -- milestone --help` passed and listed concise descriptions for all milestone subcommands.\n- `nix develop -c cargo run --locked --quiet -- task --help` passed and listed task-focused descriptions for create/show/select/list.\n- `nix develop -c cargo run --locked --quiet -- task show --help` and `task list --help` passed and showed task-oriented long help text without project-only wording.\n- `git diff --check -- src/cli/task.rs src/contexts/project_run_record/service.rs src/shared/error.rs tests/cli.rs` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed, including CLI integration tests that cover task filtering/rejection behavior, unit tests, conformance tests, tmux attach tests, and doctests.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- The working tree still contains live orchestration state changes under `.ralph-burning/projects/ni95-1/`; per repo instructions, those files were left untouched and excluded from review scope.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

@@ -103,7 +103,7 @@ async fn handle_show(as_json: bool, id: Option<String>) -> AppResult<()> {
         None => workspace_governance::resolve_active_project(&current_dir)?,
     };
 
-    let detail = project::load_project_detail(&current_dir, &project_id)?;
+    let detail = require_task_detail(&current_dir, &project_id)?;
     if as_json {
         println!("{}", serde_json::to_string_pretty(&detail)?);
     } else {
@@ -115,6 +115,7 @@ async fn handle_show(as_json: bool, id: Option<String>) -> AppResult<()> {
 async fn handle_select(id: String) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let project_id = ProjectId::new(id)?;
+    require_task_detail(&current_dir, &project_id)?;
     project::select_active_project(&current_dir, &project_id)?;
     println!("Selected task '{}' (project '{}')", project_id, project_id);
     Ok(())
@@ -127,7 +128,7 @@ async fn handle_list() -> AppResult<()> {
 
     let store = FsProjectStore;
     let active_store = FsActiveProjectStore;
-    let entries = service::list_projects(&store, &active_store, &current_dir)?;
+    let entries = service::list_task_projects(&store, &active_store, &current_dir)?;
 
     if entries.is_empty() {
         println!("No tasks found.");
@@ -149,6 +150,20 @@ async fn handle_list() -> AppResult<()> {
     }
 
     Ok(())
+}
+
+fn require_task_detail(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+) -> AppResult<ProjectDetail> {
+    let detail = project::load_project_detail(base_dir, project_id)?;
+    if detail.record.is_milestone_task() {
+        Ok(detail)
+    } else {
+        Err(crate::shared::error::AppError::ProjectNotTask {
+            project_id: project_id.to_string(),
+        })
+    }
 }
 
 fn print_task_detail(detail: &ProjectDetail) {
