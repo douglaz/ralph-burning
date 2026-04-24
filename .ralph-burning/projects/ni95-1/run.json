@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260423053722",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-24T02:24:25.693774513Z",
     "prompt_hash_at_cycle_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "prompt_hash_at_stage_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-7c2e7fc3",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "Finding: `task show`/`task select` now reject any project without `[task_source]` (`src/cli/task.rs:106-119`, `src/cli/task.rs:155-166`) and `task list` now filters those projects out entirely (`src/contexts/project_run_record/service.rs:1399-1422`). That changes the `task` namespace from the alias/wrapper behavior the product still advertises in `src/cli/project.rs:78-85` into a task-source-only view. The regression is user-visible today: a standalone project disappears from `task list`, and `task show <id>` / `task select <id>` fail with `ProjectNotTask` even though `project --help` tells operators to use those commands instead. It also misclassifies legacy bead-backed projects that are still recovered elsewhere via lineage fallback (`src/cli/project.rs:803-829`, `src/cli/project.rs:3881-3946`), because `is_milestone_task()` only checks explicit `task_source`. The rewritten assertions in `tests/cli.rs:19443-19457` and `tests/cli.rs:19628-19684` lock this regression in. Remediation: keep this bead to help-text updates only and revert the new filtering/gating, or preserve the original wrapper semantics plus legacy-lineage detection before tightening task-only behavior.",
+        "created_at": "2026-04-24T03:19:43.301108507Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "dadd447fd0b621a416100a62c7d899dd731d2bf6a7b3b2b187975c29d963f6e0"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-24T02:24:25.730919317Z",
+    "resolved_at": "2026-04-24T03:10:10.967544253Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

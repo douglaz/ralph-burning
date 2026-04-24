@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260423053722-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260423053722-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T03:19:43.301119958Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-7c2e7fc3`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-7c2e7fc3`\n\nFinding: `task show`/`task select` now reject any project without `[task_source]` (`src/cli/task.rs:106-119`, `src/cli/task.rs:155-166`) and `task list` now filters those projects out entirely (`src/contexts/project_run_record/service.rs:1399-1422`). That changes the `task` namespace from the alias/wrapper behavior the product still advertises in `src/cli/project.rs:78-85` into a task-source-only view. The regression is user-visible today: a standalone project disappears from `task list`, and `task show <id>` / `task select <id>` fail with `ProjectNotTask` even though `project --help` tells operators to use those commands instead. It also misclassifies legacy bead-backed projects that are still recovered elsewhere via lineage fallback (`src/cli/project.rs:803-829`, `src/cli/project.rs:3881-3946`), because `is_milestone_task()` only checks explicit `task_source`. The rewritten assertions in `tests/cli.rs:19443-19457` and `tests/cli.rs:19628-19684` lock this regression in. Remediation: keep this bead to help-text updates only and revert the new filtering/gating, or preserve the original wrapper semantics plus legacy-lineage detection before tightening task-only behavior.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

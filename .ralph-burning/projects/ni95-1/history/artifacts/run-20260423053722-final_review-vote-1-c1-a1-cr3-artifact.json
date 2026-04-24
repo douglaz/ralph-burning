@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260423053722-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T03:19:43.264678339Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted: the amendment identifies a real user-visible CLI regression and compatibility gap. The current task commands are no longer safe aliases for the deprecated project commands, and legacy lineage-backed tasks are incorrectly excluded by the new explicit-`task_source` gating.\n\n## Votes\n\n- `fr-3-7c2e7fc3`: Accept\n  `src/cli/task.rs` now hard-rejects any project whose record lacks `task_source`, and `list_task_projects` filters those records out entirely. That behavior is inconsistent with the still-shipped deprecation/alias text in `src/cli/project.rs`, which tells operators to use `task show`, `task select`, and `task list` in place of the deprecated `project` commands. As a result, a standalone project that remains valid under `project show/list/select` disappears or errors under the advertised replacement commands. The legacy-compatibility concern is also technically sound: `is_milestone_task()` is only `task_source.is_some()`, while other code paths already preserve older bead-backed projects via lineage fallback, so these task commands misclassify recoverable legacy task projects. That is a real correctness and maintainability defect, and the amended tests appear to codify the regression rather than prove intended behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
