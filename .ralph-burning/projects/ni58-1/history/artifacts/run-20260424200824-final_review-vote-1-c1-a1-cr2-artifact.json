@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260424200824-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T22:25:00.371625476Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe proposed amendment identifies a real end-to-end bug in `project create-from-bead` alias handling and should be accepted.\n\n## Votes\n\n- `fr-2-2de40109`: Accept\n  `project create-from-bead` still rejects valid milestone-aware bead aliases in the exact places cited. `load_bead_detail` only retries `br show --no-db` for refs without dots (`src/cli/project.rs:1674-1684`), and `select_matching_bead_from_show_response` uses raw `bead.id == bead_id` for any dotted query (`src/cli/project.rs:1714-1725`). That means a valid alias like `8.5.3` will not match a returned canonical id like `9ni.8.5.3`, even though `milestone_bead_refs_match` explicitly treats those as equivalent. Separately, `ensure_bead_belongs_to_milestone` still enforces `canonical_bead_id.starts_with(\"<milestone>.\")` (`src/cli/project.rs:1869-1872`), which rejects numeric-milestone alias forms that `canonicalize_milestone_bead_ref` intentionally preserves and `milestone_bead_refs_match` accepts (`src/contexts/milestone_record/bead_refs.rs:3-18,31-42`). The amendment correctly identifies an internally inconsistent lookup/membership path that prevents the new alias support from working end to end.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

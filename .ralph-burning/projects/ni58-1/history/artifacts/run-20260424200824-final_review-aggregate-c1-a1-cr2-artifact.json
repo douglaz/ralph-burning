@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424200824-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260424200824-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T22:25:00.407960649Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-2de40109`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-2de40109`\n\nAffected: `src/cli/project.rs:1664-1725,1869-1872`. The branch adds alias-aware stable-ID matching (`milestone_bead_refs_match` / `canonicalize_milestone_bead_ref`), but the actual `project create-from-bead` entry path still treats any dotted bead ref as an exact string. `load_bead_detail` only retries `br show --no-db` for refs without dots, and `select_matching_bead_from_show_response` requires `bead.id == bead_id` whenever the query contains a dot. That means a valid short dotted alias like `8.5.3` will still be rejected if `br show` returns `9ni.8.5.3` (or vice versa), so the new alias support is not reachable end-to-end from the CLI. On top of that, `ensure_bead_belongs_to_milestone` still hard-checks `canonical_bead_id.starts_with(\"<milestone>.\")`, which rejects the numeric-milestone alias case that `milestone_bead_refs_match` explicitly accepts. The lookup and membership checks need to use the same milestone-aware alias matcher for dotted refs, not the old exact-string gate.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}
