@@ -93,6 +93,7 @@ fn should_retry_stage_failure(
 ) -> bool {
     retry_policy.is_retryable(failure_class)
         && !final_review::is_final_review_retry_exhaustion_error(error)
+        && !final_review::is_terminal_final_review_contract_failure(error)
         && cursor.attempt < retry_policy.max_attempts(failure_class)
         && !matches!(failure_class, FailureClass::Cancellation)
         && !cancellation_token.is_cancelled()
@@ -10713,6 +10714,59 @@ mod tests {
             &cursor,
             &crate::contexts::agent_execution::model::CancellationToken::new(),
         ));
+    }
+
+    #[test]
+    fn stage_retry_budget_stops_after_final_review_contract_failure() {
+        let retry_policy = RetryPolicy::default_policy().with_no_backoff();
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let run_id = RunId::new("run-final-review-contract-failure").expect("run_id");
+
+        for error in [
+            AppError::InvocationFailed {
+                backend: "codex".to_owned(),
+                contract_id: "final_review:reviewer".to_owned(),
+                failure_class: FailureClass::SchemaValidationFailure,
+                details: "final-review proposal schema validation failed: missing field".to_owned(),
+            },
+            AppError::InvocationFailed {
+                backend: "codex".to_owned(),
+                contract_id: "final_review:arbiter".to_owned(),
+                failure_class: FailureClass::DomainValidationFailure,
+                details: "arbiter selected amendment id not present in disputed set".to_owned(),
+            },
+        ] {
+            let failure_class = error.failure_class().expect("failure_class");
+            let will_retry = should_retry_stage_failure(
+                &retry_policy,
+                failure_class,
+                &error,
+                &cursor,
+                &crate::contexts::agent_execution::model::CancellationToken::new(),
+            );
+            assert!(
+                !will_retry,
+                "final_review contract failures must be terminal at the stage level: {error:?}"
+            );
+
+            let event = crate::contexts::project_run_record::journal::stage_failed_event(
+                1,
+                Utc::now(),
+                &run_id,
+                StageId::FinalReview,
+                cursor.cycle,
+                cursor.attempt,
+                failure_class,
+                &error.to_string(),
+                will_retry,
+                "final_review-1",
+            );
+            assert_eq!(
+                event.details["will_retry"],
+                serde_json::Value::Bool(false),
+                "final_review contract failures must emit StageFailed.will_retry=false"
+            );
+        }
     }
 
     #[tokio::test]

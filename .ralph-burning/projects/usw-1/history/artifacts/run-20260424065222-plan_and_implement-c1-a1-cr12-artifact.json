@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr12-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr12",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T18:00:23.438672917Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nPatched final-review stage retry gating so schema/domain contract failures are now terminal at the stage level instead of being retried by `should_retry_stage_failure`. Added `final_review::is_terminal_final_review_contract_failure(...)` to classify `final_review:*` schema/domain validation failures and capability mismatches, wired that into `src/contexts/workflow_composition/engine.rs`, and added an engine regression asserting both `should_retry_stage_failure(...)` and the emitted `StageFailed.will_retry` flag stay `false` for required final-review contract failures.\n\n## Steps\n\n1. [Completed] Inspect the pending amendment against the current final-review retry implementation and confirm stage-level retry gating was still reattempting terminal contract failures.\n2. [Completed] Add a shared final-review helper that identifies terminal final-review contract failures and use it from `should_retry_stage_failure(...)` so final-review schema/domain failures do not trigger whole-stage retries.\n3. [Completed] Add an engine regression that covers required final-review reviewer/arbiter contract failures and asserts `StageFailed.will_retry == false` for those terminal cases.\n4. [Completed] Run the required verification gates on the amended tree, including formatting, clippy, targeted retry-gate tests, full `test-stub` coverage, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub stage_retry_budget_stops_after_final_review_contract_failure -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub stage_retry_budget_stops_after_final_review_member_retry_exhaustion -- --nocapture` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- There is still no full end-to-end workflow-engine scenario that drives a required final-review contract failure through live stage execution and observes the resulting non-retrying run failure; coverage is currently at the engine retry-gate/unit-event level.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 12
+}

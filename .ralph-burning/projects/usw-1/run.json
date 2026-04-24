@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 12
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-11-1c635877",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 11,
-        "body": "finding_summary: Final-review contract failures still trigger whole-stage retries. `execute_final_review_panel` now surfaces reviewer/voter/arbiter schema/domain validation errors immediately (`src/contexts/workflow_composition/final_review.rs:915-921`, `src/contexts/workflow_composition/final_review.rs:1375-1379`, `src/contexts/workflow_composition/final_review.rs:1700-1740`), but `should_retry_stage_failure` still retries any retryable failure class except transient-exhaustion (`src/contexts/workflow_composition/engine.rs:87-98`). A required final-review reviewer or arbiter that returns malformed/invalid output will therefore rerun the entire `final_review` stage on the next attempt, which contradicts the bead's \"Do NOT retry domain validation failures\" requirement and can hide deterministic model-output bugs behind a later lucky pass.\naffected_files: src/contexts/workflow_composition/engine.rs, src/contexts/workflow_composition/final_review.rs\nremediation_hint: Treat `final_review:*` schema/domain validation failures as terminal in the stage retry gate (for example in `should_retry_stage_failure`) and add an engine-level regression test that asserts `StageFailed.will_retry == false` for a required final-review contract failure.",
-        "created_at": "2026-04-24T17:21:20.551674660Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "4f0bbbe5d7d4e1c3a01ebf4f7096de25fb7ddcc48082eb8954b148c4385d4522"
-      }
-    ],
-    "processed_count": 12
+    "pending": [],
+    "processed_count": 13
   },
-  "status_summary": "running: final review restart round 12 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T17:06:48.851708122Z",
