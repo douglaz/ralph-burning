@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T14:41:33.618538067Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept: the amendment identifies a real remaining path where transient final-review availability errors still abort `run start` and `run resume` during shared preflight.\n\n## Votes\n\n- `fr-8-81a36416`: Accept\n  `execute_run_with_retry_internal` still runs `preflight_check` before any stage execution (`src/contexts/workflow_composition/engine.rs:1555-1559`), and `resume_run_with_retry_internal` still does the same for the remaining plan (`src/contexts/workflow_composition/engine.rs:2345-2359`). In that preflight, the `FinalReview` branch still goes through `preflight_required_panel_target` and `preflight_panel_members` (`src/contexts/workflow_composition/engine.rs:377-401`), and those helpers call `adapter.check_availability(...)` exactly once (`src/contexts/workflow_composition/engine.rs:495-503`, `555-582`) instead of the new retrying final-review probe path. So a transient arbiter failure, or a reviewer failure that hits a required reviewer or drops the panel below quorum, still aborts start/resume before normal final-review stage dispatch can recover. The defect is real.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}
