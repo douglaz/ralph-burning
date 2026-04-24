@@ -12,7 +12,10 @@ use crate::shared::error::AppResult;
 use super::project::{self, CreateFromBeadArgs};
 
 #[derive(Debug, Args)]
-#[command(about = "Manage tasks created from milestone beads.")]
+#[command(
+    about = "Manage tasks and legacy standalone projects.",
+    long_about = "Manage bead-backed tasks through the preferred task interface.\nLegacy standalone projects remain available here for compatibility."
+)]
 pub struct TaskCommand {
     #[command(subcommand)]
     pub command: TaskSubcommand,

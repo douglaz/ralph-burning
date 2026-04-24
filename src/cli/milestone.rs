@@ -127,7 +127,7 @@ pub enum MilestoneSubcommand {
     },
     #[command(
         about = "List tasks for a milestone.",
-        long_about = "List task runs created from the milestone's beads.\n\nExample: ralph-burning milestone tasks ms-dogfood"
+        long_about = "List tasks linked to a milestone's beads.\n\nExample: ralph-burning milestone tasks ms-dogfood"
     )]
     Tasks {
         milestone_id: String,
