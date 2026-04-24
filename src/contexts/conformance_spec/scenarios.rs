@@ -2467,8 +2467,7 @@ fn register_run_start_docs_change(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err(format!(
                 "docs_change flow still references legacy docs_* stages: {}",
                 out.stdout
-            )
-            .into());
+            ));
         }
         Ok(())
     });
@@ -2493,8 +2492,7 @@ fn register_run_start_docs_change(m: &mut HashMap<String, ScenarioExecutor>) {
         if docs_stages != minimal_stages {
             return Err(format!(
                 "docs_change stages {docs_stages:?} do not match minimal stages {minimal_stages:?}"
-            )
-            .into());
+            ));
         }
         Ok(())
     });
@@ -5064,14 +5062,12 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         if !stages_entered.iter().any(|s| s == "plan_and_implement") {
             return Err(format!(
                 "docs_change run did not enter plan_and_implement; stages were {stages_entered:?}"
-            )
-            .into());
+            ));
         }
         if !stages_entered.iter().any(|s| s == "final_review") {
             return Err(format!(
                 "docs_change run did not enter final_review; stages were {stages_entered:?}"
-            )
-            .into());
+            ));
         }
         if stages_entered
             .iter()
@@ -5079,8 +5075,7 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         {
             return Err(format!(
                 "docs_change run should not enter legacy docs_* stages; stages were {stages_entered:?}"
-            )
-            .into());
+            ));
         }
 
         let final_snap = read_run_snapshot(&ws, "ns-docs-amend")?;

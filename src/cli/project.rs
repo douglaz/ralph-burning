@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use chrono::Utc;
 use clap::{ArgGroup, Args, Subcommand};
@@ -1877,6 +1877,22 @@ fn ensure_bead_belongs_to_milestone(
     })
 }
 
+static LEGACY_PLAN_WARNING_MILESTONES: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
+
+fn warn_once_for_legacy_plan_lookup(milestone_id: &MilestoneId, bead_id: &str) {
+    let warned = LEGACY_PLAN_WARNING_MILESTONES.get_or_init(|| Mutex::new(BTreeSet::new()));
+    let mut warned = warned.lock().expect("legacy plan warning lock poisoned");
+    if !warned.insert(milestone_id.to_string()) {
+        return;
+    }
+
+    tracing::warn!(
+        milestone_id = %milestone_id,
+        bead_id,
+        "milestone plan uses legacy title-only bead entries; regenerate the milestone plan to persist stable bead_id bindings before live bead titles drift"
+    );
+}
+
 fn resolve_bead_plan(
     bundle: &MilestoneBundle,
     milestone_id: &MilestoneId,
@@ -1884,32 +1900,51 @@ fn resolve_bead_plan(
 ) -> AppResult<ResolvedBeadPlan> {
     ensure_bead_belongs_to_milestone(milestone_id, bead)?;
 
-    let mut next_implicit_bead = 1usize;
     let mut matching_by_id = Vec::new();
     let mut matching_by_title = Vec::new();
     let mut authoritative_implicit_match = None;
+    let mut next_implicit_bead = 1usize;
+    let mut saw_legacy_title_only_entry = false;
 
     for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
         for (bead_index, proposal) in workstream.beads.iter().enumerate() {
             let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
             next_implicit_bead += 1;
 
-            if proposal_matches_bead_id(proposal, milestone_id, bead) {
-                matching_by_id.push((workstream_index, bead_index, proposal));
-            }
-            if proposal_is_title_fallback_candidate(proposal, milestone_id, &implicit_bead_id)
-                && proposal.title == bead.title
-            {
-                if bead_matches_implicit_slot(&bead.id, milestone_id.as_str(), &implicit_bead_id) {
-                    authoritative_implicit_match = Some((workstream_index, bead_index, proposal));
+            match proposal.bead_id.as_deref() {
+                Some(_) if proposal_matches_bead_id(proposal, milestone_id, bead) => {
+                    matching_by_id.push((workstream_index, bead_index, proposal));
                 }
-                matching_by_title.push((workstream_index, bead_index, proposal));
+                Some(_) => {}
+                None => {
+                    saw_legacy_title_only_entry = true;
+                    if proposal.title == bead.title {
+                        if bead_matches_implicit_slot(
+                            &bead.id,
+                            milestone_id.as_str(),
+                            &implicit_bead_id,
+                        ) {
+                            authoritative_implicit_match =
+                                Some((workstream_index, bead_index, proposal));
+                        }
+                        matching_by_title.push((workstream_index, bead_index, proposal));
+                    }
+                }
             }
         }
     }
 
     match matching_by_id.as_slice() {
         [(workstream_index, bead_index, proposal)] => {
+            if proposal.title != bead.title {
+                tracing::debug!(
+                    milestone_id = %milestone_id,
+                    bead_id = %bead.id,
+                    planned_title = %proposal.title,
+                    current_title = %bead.title,
+                    "milestone plan title drift detected; resolved bead metadata via stable bead_id"
+                );
+            }
             return Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: true,
@@ -1930,31 +1965,45 @@ fn resolve_bead_plan(
     }
 
     if let Some((workstream_index, bead_index, proposal)) = authoritative_implicit_match {
+        warn_once_for_legacy_plan_lookup(milestone_id, &bead.id);
         return Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
-            membership_confirmed: true,
+            membership_confirmed: false,
             matched_workstream_index: Some(workstream_index),
             matched_bead_index: Some(bead_index),
         });
     }
 
     match matching_by_title.as_slice() {
-        [(workstream_index, bead_index, proposal)] => Ok(ResolvedBeadPlan {
-            flow_override: proposal.flow_override,
-            membership_confirmed: false,
-            matched_workstream_index: Some(*workstream_index),
-            matched_bead_index: Some(*bead_index),
+        [(workstream_index, bead_index, proposal)] => {
+            warn_once_for_legacy_plan_lookup(milestone_id, &bead.id);
+            Ok(ResolvedBeadPlan {
+                flow_override: proposal.flow_override,
+                membership_confirmed: false,
+                matched_workstream_index: Some(*workstream_index),
+                matched_bead_index: Some(*bead_index),
+            })
+        }
+        [] if saw_legacy_title_only_entry => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "create-from-bead".to_owned(),
+            details: format!(
+                "bead '{}' is not present in the current milestone plan. This milestone still uses legacy title-only plan entries, and the live bead title '{}' no longer matches the stored plan title. Regenerate the milestone plan with `ralph-burning milestone plan {}` and retry.",
+                bead.id, bead.title, milestone_id
+            ),
         }),
-        [] => Ok(ResolvedBeadPlan {
-            flow_override: None,
-            membership_confirmed: false,
-            matched_workstream_index: None,
-            matched_bead_index: None,
+        [] => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "create-from-bead".to_owned(),
+            details: format!(
+                "bead '{}' is not present in the current milestone plan; verify the bead belongs to milestone '{}' and regenerate the plan if the milestone was replanned",
+                bead.id, milestone_id
+            ),
         }),
         _ => Err(AppError::CorruptRecord {
             file: format!("milestones/{}/plan.json", milestone_id),
             details: format!(
-                "multiple bead proposals named '{}' match bead '{}'; cannot resolve bead metadata",
+                "multiple legacy bead proposals named '{}' match bead '{}'; regenerate the milestone plan to assign stable bead_ids",
                 bead.title, bead.id
             ),
         }),
@@ -1966,9 +2015,6 @@ fn proposal_matches_bead_id(
     milestone_id: &MilestoneId,
     bead: &BeadDetail,
 ) -> bool {
-    if proposal.explicit_id != Some(true) {
-        return false;
-    }
     let Some(candidate) = proposal.bead_id.as_deref() else {
         return false;
     };
@@ -1981,22 +2027,10 @@ fn proposal_matches_bead_id(
 
 fn proposal_is_title_fallback_candidate(
     proposal: &crate::contexts::milestone_record::bundle::BeadProposal,
-    milestone_id: &MilestoneId,
-    implicit_bead_id: &str,
+    _milestone_id: &MilestoneId,
+    _implicit_bead_id: &str,
 ) -> bool {
-    if proposal.explicit_id.is_none() {
-        return match proposal.bead_id.as_deref() {
-            None => true,
-            Some(candidate) => {
-                bead_matches_implicit_slot(candidate, milestone_id.as_str(), implicit_bead_id)
-            }
-        };
-    }
-
-    proposal.explicit_id == Some(false)
-        && proposal.bead_id.as_deref().is_some_and(|candidate| {
-            bead_matches_implicit_slot(candidate, milestone_id.as_str(), implicit_bead_id)
-        })
+    proposal.bead_id.is_none()
 }
 
 fn canonical_proposal_id(
@@ -3279,6 +3313,7 @@ mod tests {
     use crate::contexts::project_run_record::service::PlannedElsewherePromptContext;
     use crate::shared::domain::FlowPreset;
     use crate::shared::error::AppError;
+    use crate::test_support::logging::log_capture;
     use sha2::{Digest, Sha256};
 
     fn setup_milestone_workspace(dir: &Path, milestone_id: &str) {
@@ -3411,6 +3446,11 @@ mod tests {
             flow_override: None,
         });
         bundle
+    }
+
+    fn canonical_bundle(bundle: &MilestoneBundle) -> MilestoneBundle {
+        serde_json::from_str(&render_plan_json(bundle).expect("render plan json"))
+            .expect("parse canonical plan json")
     }
 
     #[test]
@@ -3962,7 +4002,7 @@ status_summary = "{status_summary}"
 
     #[test]
     fn resolve_bead_plan_returns_per_bead_flow_override() {
-        let bundle = sample_two_bead_bundle();
+        let bundle = canonical_bundle(&sample_two_bead_bundle());
         let bead = sample_bead();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
 
@@ -3973,17 +4013,20 @@ status_summary = "{status_summary}"
     }
 
     #[test]
-    fn resolve_bead_plan_does_not_confirm_title_fallback_against_mismatched_explicit_bead_id() {
-        let mut bundle = sample_bundle();
-        bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-200".to_owned());
-        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+    fn resolve_bead_plan_rejects_mismatched_stable_bead_id_even_when_titles_match() {
+        let mut bundle = canonical_bundle(&sample_two_bead_bundle());
+        bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
+        bundle.workstreams[0].beads[1].explicit_id = Some(true);
         let bead = sample_bead();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
 
-        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("mismatched stable bead id should fail membership validation");
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert!(matches!(error, AppError::MilestoneOperationFailed { .. }));
+        assert!(error
+            .to_string()
+            .contains("bead 'ms-alpha.bead-2' is not present in the current milestone plan"));
     }
 
     #[test]
@@ -4012,8 +4055,8 @@ status_summary = "{status_summary}"
 
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
     }
 
     #[test]
@@ -4028,21 +4071,30 @@ status_summary = "{status_summary}"
 
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
     }
 
     #[test]
-    fn resolve_bead_plan_falls_back_when_live_title_drifted() {
-        let bundle = sample_bundle();
+    fn resolve_bead_plan_matches_stable_bead_id_when_title_drifted_and_logs_debug() {
+        let bundle = canonical_bundle(&sample_two_bead_bundle());
         let mut bead = sample_bead();
         bead.title = "Renamed live bead".to_owned();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let capture = log_capture();
 
-        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let resolved = capture
+            .in_scope(|| resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead"));
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
+        capture.assert_event_has_fields(&[
+            ("level", "DEBUG"),
+            ("milestone_id", "ms-alpha"),
+            ("bead_id", "ms-alpha.bead-2"),
+            ("planned_title", "Bootstrap bead-backed task creation"),
+            ("current_title", "Renamed live bead"),
+        ]);
     }
 
     #[test]
@@ -4059,6 +4111,53 @@ status_summary = "{status_summary}"
     }
 
     #[test]
+    fn resolve_bead_plan_warns_once_for_legacy_title_fallback() {
+        let milestone_id = MilestoneId::new("ms-legacy-warn-once").expect("milestone id");
+        let mut bundle = sample_two_bead_bundle();
+        bundle.identity.id = milestone_id.to_string();
+        let mut bead = sample_bead();
+        bead.id = "ms-legacy-warn-once.bead-2".to_owned();
+        let capture = log_capture();
+
+        capture.in_scope(|| {
+            resolve_bead_plan(&bundle, &milestone_id, &bead).expect("first legacy resolve");
+            resolve_bead_plan(&bundle, &milestone_id, &bead).expect("second legacy resolve");
+        });
+
+        let warnings = capture
+            .snapshot()
+            .into_iter()
+            .filter(|event| {
+                event.level == "WARN"
+                    && event.field("milestone_id") == Some("ms-legacy-warn-once")
+                    && event
+                        .field("message")
+                        .is_some_and(|message| message.contains("legacy title-only bead entries"))
+            })
+            .count();
+        assert_eq!(
+            warnings, 1,
+            "legacy fallback should warn once per milestone"
+        );
+    }
+
+    #[test]
+    fn resolve_bead_plan_rejects_legacy_plan_when_title_drifted() {
+        let bundle = sample_bundle();
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("legacy title drift should require plan regeneration");
+
+        assert!(matches!(error, AppError::MilestoneOperationFailed { .. }));
+        let message = error.to_string();
+        assert!(message.contains("legacy title-only plan entries"));
+        assert!(message.contains("ralph-burning milestone plan ms-alpha"));
+    }
+
+    #[test]
     fn resolve_bead_plan_uses_current_implicit_slot_to_break_duplicate_title_ties() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let mut bundle = sample_two_bead_bundle();
@@ -4070,7 +4169,7 @@ status_summary = "{status_summary}"
             resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
 
         assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
-        assert!(resolved.membership_confirmed);
+        assert!(!resolved.membership_confirmed);
     }
 
     #[test]
@@ -4092,8 +4191,7 @@ status_summary = "{status_summary}"
         let mut bundle = sample_two_bead_bundle();
         bundle.workstreams[0].beads[0].description =
             Some("Define metadata before project creation.".to_owned());
-        let mut bead = sample_bead();
-        bead.title = "Renamed live bead".to_owned();
+        let bead = sample_bead();
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
 
         let planned_elsewhere = build_planned_elsewhere_context(
@@ -4132,8 +4230,7 @@ status_summary = "{status_summary}"
                 flow_override: None,
             }],
         });
-        let mut bead = sample_bead();
-        bead.title = "Renamed live bead".to_owned();
+        let bead = sample_bead();
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
         let bead_summaries = BTreeMap::from([(
             "ms-alpha.bead-4".to_owned(),
@@ -4184,21 +4281,14 @@ status_summary = "{status_summary}"
     #[test]
     fn build_planned_elsewhere_context_drops_implicit_slot_hint_when_slot_was_reassigned() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
-        let mut bundle = sample_three_bead_bundle();
+        let mut bundle = canonical_bundle(&sample_three_bead_bundle());
         bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
         bundle.workstreams[0].beads[1].explicit_id = Some(true);
         let bead = sample_bead();
-        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("reassigned stable bead id should reject membership validation");
 
-        let planned_elsewhere = build_planned_elsewhere_context(
-            &bundle,
-            &milestone_id,
-            &bead,
-            &resolved,
-            &BTreeMap::new(),
-        );
-
-        assert!(planned_elsewhere.is_empty());
+        assert!(matches!(error, AppError::MilestoneOperationFailed { .. }));
     }
 
     #[test]
@@ -4311,7 +4401,7 @@ status_summary = "{status_summary}"
     #[test]
     fn build_planned_elsewhere_context_sorts_explicit_and_neighbor_items_by_id() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
-        let bundle = sample_three_bead_bundle();
+        let bundle = canonical_bundle(&sample_three_bead_bundle());
         let mut bead = sample_bead();
         bead.dependencies = vec![
             DependencyRef {
@@ -4368,7 +4458,7 @@ status_summary = "{status_summary}"
     #[test]
     fn build_planned_elsewhere_context_includes_shared_acceptance_owners_from_other_workstreams() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
-        let mut bundle = sample_two_bead_bundle();
+        let mut bundle = canonical_bundle(&sample_two_bead_bundle());
         bundle.acceptance_map[0].covered_by = vec![
             "bead-2".to_owned(),
             "bead-4".to_owned(),

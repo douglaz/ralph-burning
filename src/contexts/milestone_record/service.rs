@@ -3652,6 +3652,9 @@ fn find_bead_plan_details(
     bead_id: &str,
 ) -> Option<(String, Vec<String>)> {
     let milestone_prefix = format!("{}.", bundle.identity.id);
+    let requested_short_id = bead_id
+        .strip_prefix(milestone_prefix.as_str())
+        .unwrap_or(bead_id);
 
     for workstream in &bundle.workstreams {
         for bead in &workstream.beads {
@@ -3661,7 +3664,11 @@ fn find_bead_plan_details(
             let short_id = planned_bead_id
                 .strip_prefix(milestone_prefix.as_str())
                 .unwrap_or(planned_bead_id);
-            if planned_bead_id != bead_id && short_id != bead_id {
+            if planned_bead_id != bead_id
+                && short_id != bead_id
+                && planned_bead_id != requested_short_id
+                && short_id != requested_short_id
+            {
                 continue;
             }
 
