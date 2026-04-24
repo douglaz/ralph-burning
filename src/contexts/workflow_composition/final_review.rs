@@ -171,6 +171,7 @@ fn final_review_contract_id(panel_role: &str) -> String {
 
 fn rewrite_transient_retry_exhaustion_error(
     error: AppError,
+    contract_id: &str,
     reviewer_id: &str,
     target: &ResolvedBackendTarget,
     retry_count: u32,
@@ -203,6 +204,16 @@ fn rewrite_transient_retry_exhaustion_error(
             timeout_ms,
             details: format!("{prefix}{details}"),
         },
+        AppError::BackendUnavailable {
+            backend,
+            details,
+            failure_class,
+        } => AppError::InvocationFailed {
+            backend,
+            contract_id: contract_id.to_owned(),
+            failure_class: failure_class.unwrap_or(FailureClass::TransportFailure),
+            details: format!("{prefix}{details}"),
+        },
         other => other,
     }
 }
@@ -222,6 +233,9 @@ pub(crate) fn is_final_review_retry_exhaustion_error(error: &AppError) -> bool {
             contract_id.starts_with("final_review:")
                 && details.contains(" exhausted ")
                 && details.contains(" transient retries:")
+        }
+        AppError::BackendUnavailable { details, .. } => {
+            details.contains(" exhausted ") && details.contains(" transient retries:")
         }
         _ => false,
     }
@@ -2468,6 +2482,7 @@ where
                     return Err(FinalReviewMemberInvocationFailure {
                         error: rewrite_transient_retry_exhaustion_error(
                             error,
+                            &contract_id,
                             reviewer_id,
                             target,
                             retry_count,
@@ -2688,11 +2703,13 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct RecordingFinalReviewAdapter {
+        availability_checks: Arc<Mutex<Vec<String>>>,
         requests: Arc<Mutex<Vec<(String, String)>>>,
         proposal_failures: Arc<HashSet<String>>,
         vote_failures: Arc<HashSet<String>>,
         /// Members whose proposal invocations fail with BackendExhausted.
         proposal_exhausted: Arc<HashSet<String>>,
+        scripted_availability_failures: Arc<Mutex<HashMap<String, VecDeque<&'static str>>>>,
         scripted_proposal_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
         scripted_vote_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
         scripted_arbiter_failures: Arc<Mutex<HashMap<String, VecDeque<PlannedInvocationFailure>>>>,
@@ -2737,6 +2754,19 @@ mod tests {
             Self {
                 scripted_proposal_failures: Arc::new(Mutex::new(HashMap::from([(
                     member_key.to_owned(),
+                    failures.into(),
+                )]))),
+                ..Default::default()
+            }
+        }
+
+        fn with_scripted_availability_failures(
+            target_model_id: &str,
+            failures: Vec<&'static str>,
+        ) -> Self {
+            Self {
+                scripted_availability_failures: Arc::new(Mutex::new(HashMap::from([(
+                    target_model_id.to_owned(),
                     failures.into(),
                 )]))),
                 ..Default::default()
@@ -2803,6 +2833,15 @@ mod tests {
                 .collect()
         }
 
+        fn availability_checks_for(&self, model_id: &str) -> usize {
+            self.availability_checks
+                .lock()
+                .expect("recording adapter lock poisoned")
+                .iter()
+                .filter(|recorded_model_id| recorded_model_id.as_str() == model_id)
+                .count()
+        }
+
         fn all_invocation_ids(&self) -> Vec<String> {
             self.requests
                 .lock()
@@ -2810,6 +2849,28 @@ mod tests {
                 .iter()
                 .map(|(_, invocation_id)| invocation_id.clone())
                 .collect()
+        }
+
+        fn pop_scripted_availability_failure(
+            plans: &Mutex<HashMap<String, VecDeque<&'static str>>>,
+            backend: &ResolvedBackendTarget,
+        ) -> Option<AppError> {
+            let mut plans = plans.lock().expect("recording adapter lock poisoned");
+            let key = backend.model.model_id.as_str();
+            let (details, should_remove) = {
+                let queue = plans.get_mut(key)?;
+                let details = queue.pop_front()?;
+                let should_remove = queue.is_empty();
+                (details, should_remove)
+            };
+            if should_remove {
+                plans.remove(key);
+            }
+            Some(AppError::BackendUnavailable {
+                backend: backend.backend.family.to_string(),
+                details: details.to_owned(),
+                failure_class: None,
+            })
         }
 
         fn pop_scripted_failure(
@@ -2871,7 +2932,17 @@ mod tests {
             Ok(())
         }
 
-        async fn check_availability(&self, _backend: &ResolvedBackendTarget) -> AppResult<()> {
+        async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
+            self.availability_checks
+                .lock()
+                .expect("recording adapter lock poisoned")
+                .push(backend.model.model_id.to_owned());
+            if let Some(error) = Self::pop_scripted_availability_failure(
+                self.scripted_availability_failures.as_ref(),
+                backend,
+            ) {
+                return Err(error);
+            }
             Ok(())
         }
 
@@ -4602,6 +4673,80 @@ mod tests {
                 && entry.message.contains("reviewer_id=reviewer-1")
                 && entry.message.contains("outcome=failed_optional")
                 && entry.message.contains("retry_count=0")
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_retries_transient_reviewer_availability_probe_failures() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-reviewer-availability-retry");
+        let adapter = RecordingFinalReviewAdapter::with_scripted_availability_failures(
+            "gpt-5.4-xhigh",
+            vec!["availability probe failed: connection reset by peer"],
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-reviewer-availability").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            0,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("transient availability probe failures should retry and succeed");
+
+        assert!(
+            !result.aggregate_artifact.is_empty(),
+            "stage should complete after the availability retry"
+        );
+        assert!(
+            adapter.availability_checks_for("gpt-5.4-xhigh") >= 2,
+            "proposal availability should be rechecked after the transient failure"
+        );
+        assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 1);
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("phase=proposal")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("outcome=proposed_amendments")
+                && entry.message.contains("retry_count=1")
         }));
     }
 

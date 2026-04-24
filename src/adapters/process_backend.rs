@@ -58,7 +58,12 @@ pub(crate) fn is_transient_codex_failure(error: &AppError) -> bool {
             failure_class: FailureClass::TransportFailure,
             ..
         } => true,
-        AppError::InvocationFailed { details, .. } => {
+        AppError::BackendUnavailable {
+            failure_class: Some(FailureClass::TransportFailure),
+            ..
+        } => true,
+        AppError::InvocationFailed { details, .. }
+        | AppError::BackendUnavailable { details, .. } => {
             let details = details.to_ascii_lowercase();
             [
                 "stream disconnected",
@@ -2693,6 +2698,11 @@ mod tests {
             failure_class: FailureClass::DomainValidationFailure,
             details: "You can retry your request after a backend error".to_owned(),
         };
+        let transient_backend_unavailable = AppError::BackendUnavailable {
+            backend: "openrouter".to_owned(),
+            details: "availability probe failed: connection reset by peer".to_owned(),
+            failure_class: None,
+        };
         let unrelated_failure = AppError::InvocationFailed {
             backend: "codex".to_owned(),
             contract_id: "contract".to_owned(),
@@ -2703,6 +2713,7 @@ mod tests {
         assert!(is_transient_codex_failure(&transport_failure));
         assert!(is_transient_codex_failure(&disconnected_failure));
         assert!(is_transient_codex_failure(&retryable_stderr));
+        assert!(is_transient_codex_failure(&transient_backend_unavailable));
         assert!(!is_transient_codex_failure(&unrelated_failure));
         assert!(!is_transient_codex_failure(&AppError::NoActiveProject));
     }
