@@ -2814,6 +2814,53 @@ mod tests {
         assert_eq!(policy.max_attempts(FailureClass::Timeout), 3);
     }
 
+    #[test]
+    fn final_review_retry_failure_class_ignores_terminal_invocation_failures() {
+        let misleading_domain_validation = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "final_review:reviewer".to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details:
+                "proposal payload omitted amendment ids; validator note referenced HTTP 503 from a previous run"
+                    .to_owned(),
+        };
+        let exhausted_invocation = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "final_review:reviewer".to_owned(),
+            failure_class: FailureClass::BackendExhausted,
+            details: "Rate limit reached, try again at 3:03 PM".to_owned(),
+        };
+        let timeout_domain_validation = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "final_review:reviewer".to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details: "validator note: process exceeded timeout during a prior run".to_owned(),
+        };
+        let disconnected_transport_failure = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "final_review:reviewer".to_owned(),
+            failure_class: FailureClass::TransportFailure,
+            details: "ERROR: stream disconnected before completion".to_owned(),
+        };
+
+        assert_eq!(
+            final_review_retry_failure_class(&misleading_domain_validation),
+            None
+        );
+        assert_eq!(
+            final_review_retry_failure_class(&exhausted_invocation),
+            None
+        );
+        assert_eq!(
+            final_review_retry_failure_class(&timeout_domain_validation),
+            None
+        );
+        assert_eq!(
+            final_review_retry_failure_class(&disconnected_transport_failure),
+            Some(FailureClass::TransportFailure)
+        );
+    }
+
     #[derive(Clone, Default)]
     struct RecordingFinalReviewAdapter {
         availability_checks: Arc<Mutex<Vec<String>>>,
@@ -4505,7 +4552,7 @@ mod tests {
         let project_id = setup_project(base_dir, "fr-transient-reviewer-success");
         let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
             "reviewer-1",
-            vec![PlannedInvocationFailure::DomainValidation(
+            vec![PlannedInvocationFailure::Transport(
                 "ERROR: stream disconnected before completion",
             )],
         );
@@ -4551,7 +4598,7 @@ mod tests {
             CancellationToken::new(),
         )
         .await
-        .expect("transient codex domain-validation failure should succeed on retry");
+        .expect("transient codex transport failure should succeed on retry");
 
         assert!(
             !result.aggregate_artifact.is_empty(),
@@ -4774,7 +4821,7 @@ mod tests {
         let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
             "reviewer-1",
             vec![PlannedInvocationFailure::DomainValidation(
-                "proposal payload omitted required amendment ids",
+                "proposal payload omitted required amendment ids; validator note referenced HTTP 503 in earlier logs",
             )],
         );
         let agent_service =

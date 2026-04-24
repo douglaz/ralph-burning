@@ -47,13 +47,37 @@ pub(crate) fn is_timeout_related(error: &AppError) -> bool {
     ) || matches!(
         error,
         AppError::InvocationFailed {
+            failure_class: FailureClass::TransportFailure,
             details, ..
         } if details.contains("exceeded timeout")
     )
 }
 
 pub(crate) fn is_transient_codex_failure(error: &AppError) -> bool {
+    fn details_match_any(details: &str, patterns: &[&str]) -> bool {
+        let details = details.to_ascii_lowercase();
+        patterns.iter().any(|pattern| details.contains(pattern))
+    }
+
+    const AVAILABILITY_TRANSIENT_PATTERNS: &[&str] = &[
+        "stream disconnected",
+        "you can retry your request",
+        "connection reset",
+        "timed out",
+        "http 429",
+        "too many requests",
+        "rate limit",
+        "rate-limited",
+        "503",
+        "502",
+        "500 internal server",
+    ];
+
     match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::BackendExhausted,
+            ..
+        } => false,
         AppError::BackendUnavailable {
             failure_class: Some(FailureClass::BackendExhausted),
             ..
@@ -66,24 +90,13 @@ pub(crate) fn is_transient_codex_failure(error: &AppError) -> bool {
             failure_class: Some(FailureClass::TransportFailure),
             ..
         } => true,
-        AppError::InvocationFailed { details, .. }
-        | AppError::BackendUnavailable { details, .. } => {
-            let details = details.to_ascii_lowercase();
-            [
-                "stream disconnected",
-                "you can retry your request",
-                "connection reset",
-                "timed out",
-                "http 429",
-                "too many requests",
-                "rate limit",
-                "rate-limited",
-                "503",
-                "502",
-                "500 internal server",
-            ]
-            .iter()
-            .any(|pattern| details.contains(pattern))
+        AppError::InvocationFailed {
+            failure_class: FailureClass::DomainValidationFailure,
+            ..
+        } => false,
+        AppError::InvocationFailed { .. } => false,
+        AppError::BackendUnavailable { details, .. } => {
+            details_match_any(details, AVAILABILITY_TRANSIENT_PATTERNS)
         }
         _ => false,
     }
@@ -2678,11 +2691,25 @@ mod tests {
             failure_class: FailureClass::TransportFailure,
             details: "child exited".to_owned(),
         };
+        let domain_validation_timeout_note = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details: "validator note: process exceeded timeout during prior run".to_owned(),
+        };
+        let exhausted_timeout_note = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::BackendExhausted,
+            details: "process exceeded timeout while credits were exhausted".to_owned(),
+        };
 
         assert!(is_timeout_related(&timeout_failure));
         assert!(is_timeout_related(&timeout_details));
         assert!(is_timeout_related(&invocation_timeout));
         assert!(!is_timeout_related(&unrelated_failure));
+        assert!(!is_timeout_related(&domain_validation_timeout_note));
+        assert!(!is_timeout_related(&exhausted_timeout_note));
         assert!(!is_timeout_related(&AppError::NoActiveProject));
     }
 
@@ -2697,14 +2724,26 @@ mod tests {
         let disconnected_failure = AppError::InvocationFailed {
             backend: "codex".to_owned(),
             contract_id: "contract".to_owned(),
-            failure_class: FailureClass::DomainValidationFailure,
+            failure_class: FailureClass::TransportFailure,
             details: "ERROR: stream disconnected before completion".to_owned(),
         };
         let retryable_stderr = AppError::InvocationFailed {
             backend: "codex".to_owned(),
             contract_id: "contract".to_owned(),
-            failure_class: FailureClass::DomainValidationFailure,
+            failure_class: FailureClass::TransportFailure,
             details: "You can retry your request after a backend error".to_owned(),
+        };
+        let misleading_domain_validation = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details: "contract validation referenced HTTP 503 in prior logs".to_owned(),
+        };
+        let exhausted_invocation = AppError::InvocationFailed {
+            backend: "codex".to_owned(),
+            contract_id: "contract".to_owned(),
+            failure_class: FailureClass::BackendExhausted,
+            details: "Rate limit reached, try again at 3:03 PM".to_owned(),
         };
         let transient_backend_unavailable = AppError::BackendUnavailable {
             backend: "openrouter".to_owned(),
@@ -2731,6 +2770,8 @@ mod tests {
         assert!(is_transient_codex_failure(&transport_failure));
         assert!(is_transient_codex_failure(&disconnected_failure));
         assert!(is_transient_codex_failure(&retryable_stderr));
+        assert!(!is_transient_codex_failure(&misleading_domain_validation));
+        assert!(!is_transient_codex_failure(&exhausted_invocation));
         assert!(is_transient_codex_failure(&transient_backend_unavailable));
         assert!(is_transient_codex_failure(&transient_rate_limited_probe));
         assert!(!is_transient_codex_failure(&exhausted_rate_limit));
