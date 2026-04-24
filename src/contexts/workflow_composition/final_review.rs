@@ -218,6 +218,16 @@ fn rewrite_transient_retry_exhaustion_error(
     }
 }
 
+fn final_review_retry_failure_class(error: &AppError) -> Option<FailureClass> {
+    if is_timeout_related(error) {
+        Some(FailureClass::Timeout)
+    } else if is_transient_codex_failure(error) {
+        Some(FailureClass::TransportFailure)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn is_final_review_retry_exhaustion_error(error: &AppError) -> bool {
     match error {
         AppError::InvocationFailed {
@@ -2421,13 +2431,10 @@ where
     R: crate::contexts::agent_execution::service::RawOutputPort,
     S: SessionStorePort,
 {
-    let max_attempts = retry_policy
-        .max_attempts(FailureClass::TransportFailure)
-        .max(1);
     let contract_id = final_review_contract_id(panel_role);
     let mut retry_count = 0;
 
-    for invocation_attempt in 1..=max_attempts {
+    for invocation_attempt in 1.. {
         if cancellation_token.is_cancelled() {
             return Err(FinalReviewMemberInvocationFailure {
                 error: AppError::InvocationCancelled {
@@ -2468,16 +2475,15 @@ where
                 });
             }
             Err(error) => {
-                let retryable_transient =
-                    is_timeout_related(&error) || is_transient_codex_failure(&error);
                 if matches!(error.failure_class(), Some(FailureClass::Cancellation)) {
                     return Err(FinalReviewMemberInvocationFailure { error, retry_count });
                 }
-                if !retryable_transient {
+                let Some(retry_failure_class) = final_review_retry_failure_class(&error) else {
                     return Err(FinalReviewMemberInvocationFailure { error, retry_count });
-                }
+                };
 
                 retry_count += 1;
+                let max_attempts = retry_policy.max_attempts(retry_failure_class).max(1);
                 if invocation_attempt >= max_attempts {
                     return Err(FinalReviewMemberInvocationFailure {
                         error: rewrite_transient_retry_exhaustion_error(
@@ -2699,6 +2705,7 @@ mod tests {
 
         assert_eq!(policy.backoff_for_attempt(1), Duration::ZERO);
         assert_eq!(policy.max_attempts(FailureClass::TransportFailure), 5);
+        assert_eq!(policy.max_attempts(FailureClass::Timeout), 3);
     }
 
     #[derive(Clone, Default)]
@@ -4577,6 +4584,79 @@ mod tests {
                 && entry.message.contains("reviewer_id=reviewer-1")
                 && entry.message.contains("outcome=failed")
                 && entry.message.contains("retry_count=5")
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_timeout_retries_stop_at_timeout_policy_limit() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-timeout-reviewer-exhausted");
+        let adapter = RecordingFinalReviewAdapter::with_scripted_proposal_failures(
+            "reviewer-1",
+            vec![
+                PlannedInvocationFailure::Timeout("reviewer proposal timed out before completion",);
+                3
+            ],
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-timeout-exhausted").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            0,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("persistent timeout failures should stop at the timeout retry limit");
+
+        let message = error.to_string();
+        assert!(message.contains("exhausted 3 transient retries"));
+        assert!(message.contains("timed out before completion"));
+        assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 3);
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("phase=proposal")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("outcome=failed")
+                && entry.message.contains("retry_count=3")
         }));
     }
 

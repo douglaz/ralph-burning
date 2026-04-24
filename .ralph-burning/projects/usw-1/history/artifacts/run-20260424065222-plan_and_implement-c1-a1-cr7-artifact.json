@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T12:59:19.999312182Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdjusted `src/contexts/workflow_composition/final_review.rs` so final-review member retries no longer hard-code the transport retry budget. The retry loop now resolves a per-error retry class via `final_review_retry_failure_class`, mapping timeout-shaped failures to `FailureClass::Timeout` and transient codex/backend transport failures to `FailureClass::TransportFailure`, then uses `retry_policy.max_attempts(retry_failure_class)` for exhaustion checks. This restores the configured policy behavior: persistent final-review timeouts now stop after 3 attempts instead of incorrectly consuming the 5-attempt transport budget. Added a focused regression proving timeout exhaustion stops at the timeout limit and kept the existing transient-success coverage passing on the amended path.\n\n## Steps\n\n1. [Completed] Inspect the final-review retry loop and confirm the pending amendment: timeout failures were still sharing the transport retry budget instead of the timeout-specific policy limit.\n2. [Completed] Update the final-review retry classification so timeout-related errors use `FailureClass::Timeout` for retry-budget decisions while other transient codex/backend failures continue to use the transport retry path.\n3. [Completed] Add and run regression coverage for timeout-budget exhaustion, then rerun the required repository verification gates on the amended tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub final_review_timeout_retries_stop_at_timeout_policy_limit` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_retries_transient_reviewer_failure_and_records_single_success` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- Arbiter timeout/transient retries still rely on the same shared final-review member retry helper without a dedicated arbiter-specific exhaustion regression.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}

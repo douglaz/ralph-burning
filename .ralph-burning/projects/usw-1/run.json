@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 7
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-6-1b1088d1",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 6,
-        "body": "Timeout retries in final review do not honor the existing retry policy. `invoke_final_review_member` hard-codes `retry_policy.max_attempts(FailureClass::TransportFailure)` at `src/contexts/workflow_composition/final_review.rs:2424-2426`, but the configured policy gives `FailureClass::Timeout` only 3 attempts at `src/contexts/workflow_composition/retry_policy.rs:54-64`. As written, persistent reviewer/arbiter timeouts will consume 5 full timeout windows before failing instead of the intended 3.",
-        "created_at": "2026-04-24T12:27:37.010266074Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "38665da77bc674f41d0f8d2c02f421b7f37692344eaf8a84bc0b72548a351c93"
-      }
-    ],
-    "processed_count": 6
+    "pending": [],
+    "processed_count": 7
   },
-  "status_summary": "running: final review restart round 7 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T12:16:41.512413167Z",
