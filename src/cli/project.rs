@@ -1662,28 +1662,97 @@ async fn load_bead_detail(
     bead_id: &str,
 ) -> AppResult<BeadDetail> {
     let br = BrAdapter::new().with_working_dir(base_dir.to_path_buf());
-    let response: BrShowResponse = br
-        .exec_json(&BrCommand::show(bead_id))
-        .await
-        .map_err(|error| map_br_show_error(bead_id, error))?;
-
-    if let Some(bead) = select_matching_bead_from_show_response(milestone_id, bead_id, response)? {
-        return Ok(bead);
-    }
-
-    if !bead_id.contains('.') {
-        let response: BrShowResponse = br
-            .exec_json(&BrCommand::show_no_db(bead_id))
+    for query in bead_show_query_candidates(milestone_id, bead_id) {
+        let show_response = match br
+            .exec_json::<BrShowResponse>(&BrCommand::show(query.clone()))
             .await
-            .map_err(|error| map_br_show_error(bead_id, error))?;
-        if let Some(bead) =
-            select_matching_bead_from_show_response(milestone_id, bead_id, response)?
         {
-            return Ok(bead);
+            Ok(response) => Some(response),
+            Err(BrError::BrExitError { stderr, stdout, .. })
+                if br_show_output_indicates_missing(&stderr, &stdout) =>
+            {
+                None
+            }
+            Err(error) => return Err(map_br_show_error(bead_id, error)),
+        };
+
+        if let Some(response) = show_response {
+            if let Some(bead) =
+                select_matching_bead_from_show_response(milestone_id, bead_id, response)?
+            {
+                return Ok(bead);
+            }
+
+            if query.contains('.') {
+                return Err(unmatched_br_show_error(milestone_id, bead_id));
+            }
+        }
+
+        if query.contains('.') {
+            continue;
+        }
+
+        let show_no_db_response = match br
+            .exec_json::<BrShowResponse>(&BrCommand::show_no_db(query.clone()))
+            .await
+        {
+            Ok(response) => Some(response),
+            Err(BrError::BrExitError { stderr, stdout, .. })
+                if br_show_output_indicates_missing(&stderr, &stdout) =>
+            {
+                None
+            }
+            Err(error) => return Err(map_br_show_error(bead_id, error)),
+        };
+
+        if let Some(response) = show_no_db_response {
+            if let Some(bead) =
+                select_matching_bead_from_show_response(milestone_id, bead_id, response)?
+            {
+                return Ok(bead);
+            }
+
+            return Err(unmatched_br_show_error(milestone_id, bead_id));
         }
     }
 
     Err(unmatched_br_show_error(milestone_id, bead_id))
+}
+
+fn bead_show_query_candidates(milestone_id: &MilestoneId, bead_id: &str) -> Vec<String> {
+    let qualified_prefix = format!("{}.", milestone_id.as_str());
+    let mut queries = vec![bead_id.to_owned()];
+
+    if let Some(short_ref) = bead_id.strip_prefix(&qualified_prefix) {
+        if !short_ref.is_empty() {
+            queries.push(short_ref.to_owned());
+        }
+    } else if dotted_bead_ref_belongs_to_milestone(milestone_id, bead_id) {
+        queries.push(format!("{qualified_prefix}{bead_id}"));
+    }
+
+    queries.dedup();
+    queries
+}
+
+fn dotted_bead_ref_belongs_to_milestone(milestone_id: &MilestoneId, bead_id: &str) -> bool {
+    let trimmed = bead_id.trim();
+    if !trimmed.contains('.') || trimmed.starts_with(&format!("{}.", milestone_id.as_str())) {
+        return false;
+    }
+
+    let is_short_numeric_alias = trimmed
+        .split('.')
+        .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()));
+    if !is_short_numeric_alias {
+        return false;
+    }
+
+    milestone_bead_refs_match(
+        milestone_id,
+        trimmed,
+        &format!("{}.{}", milestone_id.as_str(), trimmed),
+    )
 }
 
 fn map_br_show_error(bead_id: &str, error: BrError) -> AppError {
@@ -1711,19 +1780,12 @@ fn select_matching_bead_from_show_response(
 ) -> AppResult<Option<BeadDetail>> {
     match response {
         BrShowResponse::Single(bead) => {
-            if bead_id.contains('.') {
-                return Ok((bead.id == bead_id).then_some(bead));
-            }
             Ok(milestone_bead_refs_match(milestone_id, &bead.id, bead_id).then_some(bead))
         }
         BrShowResponse::Many(beads) => {
-            let mut matches = beads.into_iter().filter(|bead| {
-                if bead_id.contains('.') {
-                    bead.id == bead_id
-                } else {
-                    milestone_bead_refs_match(milestone_id, &bead.id, bead_id)
-                }
-            });
+            let mut matches = beads
+                .into_iter()
+                .filter(|bead| milestone_bead_refs_match(milestone_id, &bead.id, bead_id));
             let bead = matches.next();
             if matches.next().is_some() {
                 return Err(AppError::Io(std::io::Error::other(format!(
@@ -1868,7 +1930,10 @@ fn ensure_bead_belongs_to_milestone(
 ) -> AppResult<()> {
     let expected_prefix = format!("{}.", milestone_id.as_str());
     let canonical_bead_id = canonicalize_milestone_bead_ref(milestone_id, &bead.id);
-    if canonical_bead_id.starts_with(&expected_prefix) || !bead.id.contains('.') {
+    if !bead.id.contains('.')
+        || canonical_bead_id.starts_with(&expected_prefix)
+        || dotted_bead_ref_belongs_to_milestone(milestone_id, &bead.id)
+    {
         return Ok(());
     }
 
@@ -5061,6 +5126,16 @@ status_summary = "{status_summary}"
     }
 
     #[test]
+    fn ensure_bead_belongs_to_milestone_accepts_numeric_short_dotted_aliases() {
+        let milestone_id = MilestoneId::new("10").expect("milestone id");
+        let mut bead = sample_bead();
+        bead.id = "8.5.3".to_owned();
+
+        ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect("numeric short dotted alias should pass");
+    }
+
+    #[test]
     fn ensure_bead_belongs_to_milestone_rejects_foreign_qualified_id() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let mut bead = sample_bead();
@@ -5195,6 +5270,47 @@ esac
                 .expect("chmod fake br");
         }
 
+        fn install_fake_br_show_short_alias_retry(
+            base_dir: &std::path::Path,
+            short_bead_id: &str,
+            canonical_bead_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    if [ "$2" = "{short_bead_id}" ] && [ "$3" = "--json" ]; then
+      echo "issue not found: {short_bead_id}" >&2
+      exit 1
+    fi
+    if [ "$2" = "{canonical_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{canonical_bead_id}","title":"Expected explicit bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         #[tokio::test]
         async fn load_bead_detail_retries_no_db_for_unqualified_explicit_ids(
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -5210,6 +5326,24 @@ esac
                 .await?;
 
             assert_eq!(bead.id, "ralph-burning-evi");
+            assert_eq!(bead.status, BeadStatus::InProgress);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_retries_canonical_show_for_short_dotted_aliases(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_short_alias_retry(base_dir, "8.5.3", "9ni.8.5.3");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("9ni")?;
+            let bead = super::super::load_bead_detail(base_dir, &milestone_id, "8.5.3").await?;
+
+            assert_eq!(bead.id, "9ni.8.5.3");
             assert_eq!(bead.status, BeadStatus::InProgress);
             Ok(())
         }

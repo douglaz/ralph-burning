@@ -9,12 +9,18 @@ pub fn milestone_bead_refs_match(milestone_id: &MilestoneId, left: &str, right: 
 
     let qualified_prefix = format!("{}.", milestone_id.as_str());
     left.strip_prefix(&qualified_prefix)
+        .filter(|short_ref| is_local_milestone_alias(short_ref))
         .is_some_and(|short_ref| short_ref == right)
         || right
             .strip_prefix(&qualified_prefix)
+            .filter(|short_ref| is_local_milestone_alias(short_ref))
             .is_some_and(|short_ref| short_ref == left)
         || canonicalize_milestone_bead_ref(milestone_id, left)
             == canonicalize_milestone_bead_ref(milestone_id, right)
+}
+
+fn is_local_milestone_alias(bead_id: &str) -> bool {
+    !bead_id.contains('.') || looks_like_short_dotted_bead_ref(bead_id)
 }
 
 fn looks_like_short_dotted_bead_ref(bead_id: &str) -> bool {
@@ -107,6 +113,17 @@ mod tests {
             &milestone_id,
             "8.5.3",
             "11.8.5.3"
+        ));
+    }
+
+    #[test]
+    fn does_not_treat_foreign_qualified_ids_as_local_aliases() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        assert!(!milestone_bead_refs_match(
+            &milestone_id,
+            "other-ms.bead-2",
+            "ms-alpha.other-ms.bead-2"
         ));
     }
 

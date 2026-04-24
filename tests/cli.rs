@@ -721,6 +721,89 @@ created_at = "2026-04-01T10:00:00Z"
     fs::write(milestone_root.join("plan.json"), plan_json).expect("write plan json");
 }
 
+fn write_alias_milestone_fixture(base_dir: &std::path::Path, milestone_id: &str) {
+    let milestone_root = base_dir
+        .join(".ralph-burning/milestones")
+        .join(milestone_id);
+    let qualified_bead_id = format!("{milestone_id}.8.5.3");
+    fs::create_dir_all(&milestone_root).expect("create milestone root");
+    fs::write(
+        milestone_root.join("milestone.toml"),
+        format!(
+            r#"schema_version = 1
+id = "{milestone_id}"
+name = "Alias Milestone"
+description = "Exercise short dotted bead aliases."
+created_at = "2026-04-01T10:00:00Z"
+"#
+        ),
+    )
+    .expect("write milestone record");
+    let bundle = MilestoneBundle {
+        schema_version: 1,
+        identity: MilestoneIdentity {
+            id: milestone_id.to_owned(),
+            name: "Alias Milestone".to_owned(),
+        },
+        executive_summary: "Keep create-from-bead tolerant of dotted aliases.".to_owned(),
+        goals: vec!["Resolve a stable bead plan entry from a short dotted bead id.".to_owned()],
+        non_goals: vec![],
+        constraints: vec!["Preserve stable bead identity semantics.".to_owned()],
+        acceptance_map: vec![AcceptanceCriterion {
+            id: "AC-1".to_owned(),
+            description: "Short dotted alias resolves the planned bead.".to_owned(),
+            covered_by: vec![qualified_bead_id.clone()],
+        }],
+        workstreams: vec![Workstream {
+            name: "Alias Lookup".to_owned(),
+            description: Some("Resolve a qualified planned bead from a short alias.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some(qualified_bead_id),
+                explicit_id: Some(true),
+                title: "Alias-backed create-from-bead".to_owned(),
+                description: Some(
+                    "Resolve create-from-bead against a stable qualified bead id.".to_owned(),
+                ),
+                bead_type: Some("task".to_owned()),
+                priority: Some(1),
+                labels: vec!["creation".to_owned()],
+                depends_on: vec![],
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: Some(FlowPreset::DocsChange),
+            }],
+        }],
+        default_flow: FlowPreset::Minimal,
+        agents_guidance: Some(
+            "Accept short dotted aliases when the stable bead id matches.".to_owned(),
+        ),
+    };
+    let plan_json = render_plan_json(&bundle).expect("render plan json");
+    let mut hasher = Sha256::new();
+    hasher.update(plan_json.as_bytes());
+    let plan_hash = format!("{:x}", hasher.finalize());
+    fs::write(
+        milestone_root.join("status.json"),
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 1,
+    "completed_beads": 0,
+    "in_progress_beads": 1,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("write milestone status");
+    fs::write(milestone_root.join("plan.json"), plan_json).expect("write plan json");
+}
+
 fn write_single_bead_milestone_fixture(base_dir: &std::path::Path, milestone_id: &str) {
     let milestone_root = base_dir
         .join(".ralph-burning/milestones")
@@ -6806,6 +6889,192 @@ exit 1
     assert!(!output.status.success(), "command unexpectedly succeeded");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("br show returned no matching bead"));
+}
+
+#[test]
+fn project_create_from_bead_accepts_short_dotted_alias_and_retries_canonical_show() {
+    let temp_dir = initialize_workspace_fixture();
+    write_alias_milestone_fixture(temp_dir.path(), "9ni");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
+if [ "$1" = "show" ] && [ "$2" = "8.5.3" ] && [ "$3" = "--json" ]; then
+echo "issue not found: 8.5.3" >&2
+exit 1
+fi
+if [ "$1" = "show" ] && [ "$2" = "9ni.8.5.3" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "9ni.8.5.3",
+    "title": "Alias-backed create-from-bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Resolve create-from-bead against a stable qualified bead id.",
+    "acceptance_criteria": "- short dotted alias resolves\n- stable plan membership is preserved",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "ready" ] && [ "$2" = "--json" ]; then
+echo '[]'
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
+cat <<'EOF'
+{
+  "issues": [
+    {
+      "id": "9ni.8.5.3",
+      "title": "Alias-backed create-from-bead",
+      "status": "open",
+      "priority": "P1",
+      "issue_type": "task",
+      "labels": ["creation"]
+    }
+  ]
+}
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "9ni",
+            "--bead-id",
+            "8.5.3",
+            "--project-id",
+            "short-dotted-alias-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "short-dotted-alias-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"docs_change\""));
+    assert!(project_toml.contains("milestone_id = \"9ni\""));
+    assert!(project_toml.contains("bead_id = \"9ni.8.5.3\""));
+}
+
+#[test]
+fn project_create_from_bead_accepts_numeric_short_dotted_alias() {
+    let temp_dir = initialize_workspace_fixture();
+    write_alias_milestone_fixture(temp_dir.path(), "10");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
+if [ "$1" = "show" ] && [ "$2" = "8.5.3" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "10.8.5.3",
+    "title": "Alias-backed create-from-bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Resolve create-from-bead against a stable qualified bead id.",
+    "acceptance_criteria": "- numeric short dotted alias resolves\n- stable plan membership is preserved",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "ready" ] && [ "$2" = "--json" ]; then
+echo '[]'
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
+cat <<'EOF'
+{
+  "issues": [
+    {
+      "id": "10.8.5.3",
+      "title": "Alias-backed create-from-bead",
+      "status": "open",
+      "priority": "P1",
+      "issue_type": "task",
+      "labels": ["creation"]
+    }
+  ]
+}
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "10",
+            "--bead-id",
+            "8.5.3",
+            "--project-id",
+            "numeric-short-dotted-alias-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "numeric-short-dotted-alias-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"docs_change\""));
+    assert!(project_toml.contains("milestone_id = \"10\""));
+    assert!(project_toml.contains("bead_id = \"10.8.5.3\""));
 }
 
 #[test]
