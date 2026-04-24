@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260423053722-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T04:03:13.363751929Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real CLI help-text mismatches that can mislead operators and automation. They are valid, low-risk corrections that improve correctness and maintainability of the command interface.\n\n## Votes\n\n- `fr-4-5ef9aa1c`: Accept\n  `handle_status` clearly takes the no-argument path into `list_milestones(...)` and prints all milestones, while the help text says omission falls back to the active milestone. That is a concrete user-facing contract mismatch in `src/cli/milestone.rs`, so the amendment is technically correct and should be accepted.\n- `fr-4-1dc53f17`: Accept\n  The implementation does not always create a new task: `ensure_project_for_controller` can adopt an existing bead-backed project, and `load_run_action` can choose `Resume` or `SyncMilestone` instead of `Start`. The current help text therefore overpromises behavior and is misleading enough to warrant correction.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
