@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T10:55:05.877312994Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real retry-classification bug in final_review. After a reviewer or arbiter exhausts its own transient retry loop, the code still returns an AppError whose failure class remains retryable, so the workflow engine retries the entire stage and multiplies calls/backoff beyond the intended per-member budget.\n\n## Votes\n\n- `fr-4-973dcfd9`: Accept\n  `invoke_final_review_member` retries transient failures internally, but on exhaustion it calls `rewrite_transient_retry_exhaustion_error`, which only prefixes the message and preserves the original retryable class (`TransportFailure` or `Timeout`). That exhausted error then bubbles out of `execute_final_review_panel`, and the engine's generic retry path in `engine.rs` treats it as stage-retryable because `error.failure_class()` is still retryable. This creates compounded retries: member-level retries inside each stage attempt plus stage-level retries of the whole `final_review` stage. The repository’s own scope guard says this feature is per-invocation retry, not per-stage restart, so the current behavior violates intended semantics, increases backend load and latency, and makes an exhausted member failure non-terminal when it should be terminal for that stage attempt outcome.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

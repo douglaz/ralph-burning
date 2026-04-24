@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T10:55:05.912821505Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-973dcfd9`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-973dcfd9`\n\n`fix-now` High: exhausted per-member retries still bubble up as retryable stage failures. In [src/contexts/workflow_composition/final_review.rs](/home/user/ralph-burning/src/contexts/workflow_composition/final_review.rs:172) and [src/contexts/workflow_composition/final_review.rs](/home/user/ralph-burning/src/contexts/workflow_composition/final_review.rs:2390), `rewrite_transient_retry_exhaustion_error` preserves the original `FailureClass`, and `invoke_final_review_member` returns that retryable `TransportFailure`/`Timeout` after the member has already exhausted its own retry budget. The engine then sees that class in [src/contexts/workflow_composition/engine.rs](/home/user/ralph-burning/src/contexts/workflow_composition/engine.rs:5844) and retries the entire `final_review` stage again. That turns a supposed per-invocation retry into compounded stage-level retries, multiplying backend calls and backoff delays. The changed resume test at [tests/unit/workflow_engine_test.rs](/home/user/ralph-burning/tests/unit/workflow_engine_test.rs:1227) now takes about 72s for exactly this reason. This violates the bead’s scope guard (`per-invocation transient retry, not per-stage restart`) and means an exhausted reviewer/arbiter failure is not actually terminal for the stage.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T10:53:04.740475231Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne high-impact issue found: final-review member retry exhaustion still propagates a retryable failure class, so the engine retries the whole `final_review` stage and compounds the new per-member retry loop.\n\n## Amendments\n\n1. `fix-now` High: exhausted per-member retries still bubble up as retryable stage failures. In [src/contexts/workflow_composition/final_review.rs](/home/user/ralph-burning/src/contexts/workflow_composition/final_review.rs:172) and [src/contexts/workflow_composition/final_review.rs](/home/user/ralph-burning/src/contexts/workflow_composition/final_review.rs:2390), `rewrite_transient_retry_exhaustion_error` preserves the original `FailureClass`, and `invoke_final_review_member` returns that retryable `TransportFailure`/`Timeout` after the member has already exhausted its own retry budget. The engine then sees that class in [src/contexts/workflow_composition/engine.rs](/home/user/ralph-burning/src/contexts/workflow_composition/engine.rs:5844) and retries the entire `final_review` stage again. That turns a supposed per-invocation retry into compounded stage-level retries, multiplying backend calls and backoff delays. The changed resume test at [tests/unit/workflow_engine_test.rs](/home/user/ralph-burning/tests/unit/workflow_engine_test.rs:1227) now takes about 72s for exactly this reason. This violates the bead’s scope guard (`per-invocation transient retry, not per-stage restart`) and means an exhausted reviewer/arbiter failure is not actually terminal for the stage.\n   Rationale: As implemented, a persistent transient failure can fan out into repeated whole-stage reruns after the member-level retry loop has already finished, wasting time/credits and changing final-review failure semantics. The exhausted condition needs to be surfaced as non-stage-retryable, or otherwise marked so the engine does not re-enter `final_review` once the member retry budget is spent.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
