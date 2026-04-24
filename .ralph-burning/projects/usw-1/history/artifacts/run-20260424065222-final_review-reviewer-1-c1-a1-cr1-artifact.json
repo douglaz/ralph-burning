@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T07:59:21.221098912Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReview found 2 fix-now issues: timeout errors still bypass the new retry path, and vote-phase reviewer invocations still do not retry transient failures.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/final_review.rs:2458-2466` only retries when `is_timeout_related` or `is_transient_codex_failure` returns true, but `src/adapters/process_backend.rs:39-50` does not recognize `AppError::InvocationTimeout`. `AgentExecutionService` emits `InvocationTimeout` for both adapter-promoted timeouts and the service safety-net timeout (`src/contexts/agent_execution/service.rs:259-264`, `395-410`), so reviewer and arbiter timeouts still fail immediately instead of using the transient retry loop.\n   Rationale: Affected files: src/contexts/workflow_composition/final_review.rs, src/adapters/process_backend.rs, src/contexts/agent_execution/service.rs. Remediation: classify `InvocationTimeout` as retryable here (or key off `error.failure_class() == Some(FailureClass::Timeout)`) and add a timeout retry test.\n2. The vote phase is still single-shot. `src/contexts/workflow_composition/final_review.rs:986-1013` calls `invoke_final_review_member_once(...)` directly for `final_review:voter`, so a transient transport failure while collecting votes is still recorded as an immediate failure. On a minimum-quorum panel, one network blip during voting can still fail the whole final_review stage, which leaves the bead's reviewer-retry goal incomplete.\n   Rationale: Affected files: src/contexts/workflow_composition/final_review.rs. Remediation: route vote invocations through the same retry wrapper used for proposal reviewers/arbiter and add transient-success/exhaustion tests for `final_review:voter`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}
