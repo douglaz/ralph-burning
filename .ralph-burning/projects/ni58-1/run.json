@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260424200824",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 3
+      "completion_round": 4
     },
     "started_at": "2026-04-24T20:08:24.156825965Z",
     "prompt_hash_at_cycle_start": "9a82948aa2e5afa45d304f8fd06f2e3552bcc18b52e7ba3d93c0a4e788968a53",
     "prompt_hash_at_stage_start": "9a82948aa2e5afa45d304f8fd06f2e3552bcc18b52e7ba3d93c0a4e788968a53",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 2
+    "final_review_restart_count": 3
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 3,
+  "completion_rounds": 4,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-3-91373a14",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 3,
+        "body": "finding_summary: `resolve_bead_plan` now marks every legacy title-only match as `membership_confirmed = false`, and `execute_create_from_bead_in_dir` uses that flag to skip `validate_milestone_plan_snapshot` and to drop `plan_hash`/`plan_version` from the created project. That means a supported pre-change plan with no `bead_id` can silently bypass stale `status.json` detection and lose plan lineage metadata even when the title fallback resolved a unique bead successfully.\naffected_files:\n- src/cli/project.rs:373-392\n- src/cli/project.rs:2055-2072\nremediation_hint: keep the legacy warning path, but decouple it from snapshot/lineage validation. A unique successful legacy fallback should still validate the current plan snapshot and persist `plan_hash`/`plan_version`, or the code should introduce a separate flag for \"used legacy fallback\" instead of reusing `membership_confirmed` to disable those checks.",
+        "created_at": "2026-04-24T23:38:06.442476435Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "15212b577f22657d0c056020d3428a68b86c1c817763eaa143c06c37ab1eb980"
+      }
+    ],
     "processed_count": 3
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 4 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-24T22:16:48.379117278Z",
+    "resolved_at": "2026-04-24T23:29:10.376680298Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

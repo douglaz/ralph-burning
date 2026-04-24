@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T23:36:17.692298007Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against 88f4f42a39bdb4b0e468b17277f4415f176e31f3. I found 1 high-severity regression in the legacy title-only fallback path: successful fallback matches are treated as unconfirmed, which disables stale-plan validation and strips plan lineage metadata. Targeted `nix develop -c cargo test --locked --features test-stub resolve_bead_plan` and `... project_create_from_bead_` filters passed.\n\n## Amendments\n\n1. finding_summary: `resolve_bead_plan` now marks every legacy title-only match as `membership_confirmed = false`, and `execute_create_from_bead_in_dir` uses that flag to skip `validate_milestone_plan_snapshot` and to drop `plan_hash`/`plan_version` from the created project. That means a supported pre-change plan with no `bead_id` can silently bypass stale `status.json` detection and lose plan lineage metadata even when the title fallback resolved a unique bead successfully.\naffected_files:\n- src/cli/project.rs:373-392\n- src/cli/project.rs:2055-2072\nremediation_hint: keep the legacy warning path, but decouple it from snapshot/lineage validation. A unique successful legacy fallback should still validate the current plan snapshot and persist `plan_hash`/`plan_version`, or the code should introduce a separate flag for \"used legacy fallback\" instead of reusing `membership_confirmed` to disable those checks.\n   Rationale: This regresses the explicitly supported legacy-plan migration path. On those plans, `create-from-bead` can now accept stale milestone metadata and create projects without the plan binding needed for downstream lineage reconstruction.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}
