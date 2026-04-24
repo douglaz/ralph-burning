@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 10
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-9-9b28eac7",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 9,
-        "body": "Transient rate limits during availability probes are still not retried. `AgentExecutionService::invoke` always calls `check_availability` before invoke (`src/contexts/agent_execution/service.rs:197-208`). OpenRouter's probe path returns non-exhaustion 429s as `AppError::BackendUnavailable { failure_class: None, details: \"HTTP 429: ...\" }` (`src/adapters/openrouter_backend.rs:214-231`), but `final_review_retry_failure_class` only retries `is_timeout_related` or `is_transient_codex_failure` (`src/contexts/workflow_composition/final_review.rs:221-227`), and that classifier's string list omits `429` / rate-limit terms (`src/adapters/process_backend.rs:55-79`). So one of the motivating transient classes from the bead description, a transient rate limit, still fails a final-review reviewer/arbiter immediately if it happens in the probe rather than the invoke call.",
-        "created_at": "2026-04-24T15:29:08.087428109Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "a8d49e2d140efc3aacfa160dd5d2e7702351a2bcfb72946ebd6ac3676a96f4a7"
-      }
-    ],
-    "processed_count": 10
+    "pending": [],
+    "processed_count": 11
   },
-  "status_summary": "running: final review restart round 10 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T15:14:28.277415980Z",

@@ -54,6 +54,10 @@ pub(crate) fn is_timeout_related(error: &AppError) -> bool {
 
 pub(crate) fn is_transient_codex_failure(error: &AppError) -> bool {
     match error {
+        AppError::BackendUnavailable {
+            failure_class: Some(FailureClass::BackendExhausted),
+            ..
+        } => false,
         AppError::InvocationFailed {
             failure_class: FailureClass::TransportFailure,
             ..
@@ -70,6 +74,10 @@ pub(crate) fn is_transient_codex_failure(error: &AppError) -> bool {
                 "you can retry your request",
                 "connection reset",
                 "timed out",
+                "http 429",
+                "too many requests",
+                "rate limit",
+                "rate-limited",
                 "503",
                 "502",
                 "500 internal server",
@@ -2703,6 +2711,16 @@ mod tests {
             details: "availability probe failed: connection reset by peer".to_owned(),
             failure_class: None,
         };
+        let transient_rate_limited_probe = AppError::BackendUnavailable {
+            backend: "openrouter".to_owned(),
+            details: "HTTP 429: Too Many Requests".to_owned(),
+            failure_class: None,
+        };
+        let exhausted_rate_limit = AppError::BackendUnavailable {
+            backend: "openrouter".to_owned(),
+            details: "HTTP 429: Rate limit reached, try again at 3:03 PM".to_owned(),
+            failure_class: Some(FailureClass::BackendExhausted),
+        };
         let unrelated_failure = AppError::InvocationFailed {
             backend: "codex".to_owned(),
             contract_id: "contract".to_owned(),
@@ -2714,6 +2732,8 @@ mod tests {
         assert!(is_transient_codex_failure(&disconnected_failure));
         assert!(is_transient_codex_failure(&retryable_stderr));
         assert!(is_transient_codex_failure(&transient_backend_unavailable));
+        assert!(is_transient_codex_failure(&transient_rate_limited_probe));
+        assert!(!is_transient_codex_failure(&exhausted_rate_limit));
         assert!(!is_transient_codex_failure(&unrelated_failure));
         assert!(!is_transient_codex_failure(&AppError::NoActiveProject));
     }

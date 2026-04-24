@@ -10845,6 +10845,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preflight_check_retries_transient_final_review_arbiter_rate_limit_probe_failures() {
+        let config = final_review_effective_config();
+        let resolver = crate::contexts::agent_execution::service::BackendResolver::new();
+        let plan = resolve_stage_plan(&[StageId::FinalReview], &resolver, None)
+            .expect("resolve final-review stage plan");
+        let policy = crate::contexts::agent_execution::policy::BackendPolicyService::new(&config);
+        let resolved_panel = policy
+            .resolve_final_review_panel(1)
+            .expect("resolve final-review panel");
+        let arbiter_model = resolved_panel.arbiter.model.model_id.clone();
+
+        let adapter = ScriptedAvailabilityAdapter::with_failures(&[(
+            arbiter_model.as_str(),
+            vec![ScriptedAvailabilityFailure::BackendUnavailable {
+                backend: resolved_panel.arbiter.backend.family.as_str(),
+                details: "HTTP 429: Too Many Requests",
+                failure_class: None,
+            }],
+        )]);
+
+        preflight_check(&adapter, &config, 1, &plan)
+            .await
+            .expect("preflight should retry a transient final-review arbiter 429 probe failure");
+        assert!(
+            adapter.availability_checks_for(arbiter_model.as_str()) >= 2,
+            "preflight should recheck the arbiter after a transient 429 availability failure"
+        );
+    }
+
+    #[tokio::test]
     async fn preflight_check_keeps_optional_final_review_reviewers_after_transient_probe_exhaustion(
     ) {
         let config = final_review_effective_config();

@@ -4937,6 +4937,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_review_retries_transient_reviewer_rate_limit_probe_failures() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-reviewer-availability-rate-limit-retry");
+        let adapter = RecordingFinalReviewAdapter::with_scripted_availability_failures(
+            "gpt-5.4-xhigh",
+            vec!["HTTP 429: Too Many Requests"],
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id =
+            RunId::new("run-final-review-reviewer-availability-rate-limit").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::OpenRouter, "gpt-5.4-xhigh"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            0,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("transient 429 availability probe failures should retry and succeed");
+
+        assert!(
+            !result.aggregate_artifact.is_empty(),
+            "stage should complete after the transient 429 availability retry"
+        );
+        assert!(
+            adapter.availability_checks_for("gpt-5.4-xhigh") >= 2,
+            "proposal availability should be rechecked after the transient 429 failure"
+        );
+        assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 1);
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("phase=proposal")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("outcome=proposed_amendments")
+                && entry.message.contains("retry_count=1")
+        }));
+    }
+
+    #[tokio::test]
     async fn final_review_retries_transient_vote_timeouts_and_records_single_success() {
         let tmp = tempdir().expect("tempdir");
         let base_dir = tmp.path();
