@@ -69,7 +69,9 @@ use crate::contexts::project_run_record::service::{
     RunSnapshotWritePort, RuntimeLogStorePort, RuntimeLogWritePort,
 };
 use crate::contexts::workflow_composition::engine;
-use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
+use crate::contexts::workflow_composition::retry_policy::{
+    apply_test_retry_policy_overrides, RetryPolicy,
+};
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use crate::shared::domain::{BackendSelection, ExecutionMode, ProjectId, StageId};
@@ -4471,8 +4473,7 @@ pub(crate) async fn execute_sync_milestone(emit_output: bool) -> AppResult<()> {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::{
-        apply_test_retry_policy_overrides, persist_next_step_recommendation,
-        prepare_milestone_controller_for_execution,
+        persist_next_step_recommendation, prepare_milestone_controller_for_execution,
         repair_missing_interrupted_handoff_run_failed_event,
         repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot,
         resume_attempt_has_exact_lineage, run_with_termination_signal_waiter,
@@ -4523,7 +4524,9 @@ mod tests {
         self as project_service, CreateProjectInput, JournalStorePort, RunSnapshotPort,
         RunSnapshotWritePort,
     };
-    use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
+    use crate::contexts::workflow_composition::retry_policy::{
+        apply_test_retry_policy_overrides, RetryPolicy,
+    };
     use crate::shared::domain::{FailureClass, FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
     use crate::test_support::br::{MockBrAdapter, MockBrResponse};
@@ -12544,19 +12547,6 @@ fn parse_cli_backend_overrides(args: &RunBackendOverrideArgs) -> AppResult<CliBa
             .transpose()?,
         stream_output: args.stream_output,
     })
-}
-
-fn apply_test_retry_policy_overrides(retry_policy: RetryPolicy) -> RetryPolicy {
-    #[cfg(feature = "test-stub")]
-    {
-        if std::env::var_os("RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF").is_some()
-            || std::env::var_os("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE").is_some()
-        {
-            return retry_policy.with_no_backoff();
-        }
-    }
-
-    retry_policy
 }
 
 fn parse_backend_selection_arg(

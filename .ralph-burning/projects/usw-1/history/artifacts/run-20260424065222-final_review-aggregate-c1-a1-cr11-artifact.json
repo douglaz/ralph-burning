@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr11-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T17:21:20.551683867Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 11/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-11-1c635877`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-11-1c635877`\n\nfinding_summary: Final-review contract failures still trigger whole-stage retries. `execute_final_review_panel` now surfaces reviewer/voter/arbiter schema/domain validation errors immediately (`src/contexts/workflow_composition/final_review.rs:915-921`, `src/contexts/workflow_composition/final_review.rs:1375-1379`, `src/contexts/workflow_composition/final_review.rs:1700-1740`), but `should_retry_stage_failure` still retries any retryable failure class except transient-exhaustion (`src/contexts/workflow_composition/engine.rs:87-98`). A required final-review reviewer or arbiter that returns malformed/invalid output will therefore rerun the entire `final_review` stage on the next attempt, which contradicts the bead's \"Do NOT retry domain validation failures\" requirement and can hide deterministic model-output bugs behind a later lucky pass.\naffected_files: src/contexts/workflow_composition/engine.rs, src/contexts/workflow_composition/final_review.rs\nremediation_hint: Treat `final_review:*` schema/domain validation failures as terminal in the stage retry gate (for example in `should_retry_stage_failure`) and add an engine-level regression test that asserts `StageFailed.will_retry == false` for a required final-review contract failure.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 11
+}

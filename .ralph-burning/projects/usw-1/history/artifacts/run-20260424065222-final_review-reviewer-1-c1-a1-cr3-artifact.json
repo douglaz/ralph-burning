@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T10:03:00.970736885Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against b171754e8a490bb73f29419fb47f323217b502a4 and found 1 fix-now correctness issue in the new final-review retry path. I also ran targeted `nix develop -c cargo test --locked --features test-stub` checks for the new helper/tests; they pass, but they currently miss the transient-domain-validation case above.\n\n## Amendments\n\n1. src/contexts/workflow_composition/final_review.rs:2437-2445 makes every `FailureClass::DomainValidationFailure` terminal before the new transient classifier is consulted. That breaks the exact codex path this bead was meant to fix: `src/adapters/process_backend.rs:2679-2705` explicitly treats `ERROR: stream disconnected before completion` / `You can retry your request...` carried as `DomainValidationFailure` as transient, but the final-review loop will still fail them immediately instead of retrying. The new no-retry test at src/contexts/workflow_composition/final_review.rs:4494-4587 also hard-codes the wrong rule by asserting that all domain-validation failures are non-retryable, so a 1-reviewer panel can still fail on the reproduced codex disconnect path.\n   Rationale: Only bypass retries when the failure is domain-validation and both `is_timeout_related(error)` and `is_transient_codex_failure(error)` are false. Add a regression that scripts `PlannedInvocationFailure::DomainValidation(\"ERROR: stream disconnected before completion\")` and expects a successful retry.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

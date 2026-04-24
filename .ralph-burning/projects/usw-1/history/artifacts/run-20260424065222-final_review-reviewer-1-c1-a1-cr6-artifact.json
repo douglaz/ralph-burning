@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T12:26:44.630586342Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `b171754e8a490bb73f29419fb47f323217b502a4` and found 1 fix-now correctness issue in the new final-review retry loop.\n\n## Amendments\n\n1. Timeout retries in final review do not honor the existing retry policy. `invoke_final_review_member` hard-codes `retry_policy.max_attempts(FailureClass::TransportFailure)` at `src/contexts/workflow_composition/final_review.rs:2424-2426`, but the configured policy gives `FailureClass::Timeout` only 3 attempts at `src/contexts/workflow_composition/retry_policy.rs:54-64`. As written, persistent reviewer/arbiter timeouts will consume 5 full timeout windows before failing instead of the intended 3.\n   Rationale: Use the observed failure class when consulting `RetryPolicy` for retryability and `max_attempts` (or at minimum special-case `FailureClass::Timeout`). Otherwise final-review timeouts diverge from the shared retry semantics the rest of the workflow uses and can stall runs for two extra timeout periods.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

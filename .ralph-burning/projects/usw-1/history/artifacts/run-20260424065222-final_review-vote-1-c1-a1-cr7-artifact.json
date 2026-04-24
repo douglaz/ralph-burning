@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T13:09:54.849973651Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in how final_review handles transient availability probes outside the member-invocation retry path. Current code can still turn temporary backend/probe errors into durable panel shrinkage or non-retryable resume/stage failures.\n\n## Votes\n\n- `fr-7-4ea9e91b`: Accept\n  The amendment is correct. In the engine-side final_review probe, any optional reviewer with a non-BackendExhausted `check_availability` error is omitted from `available_reviewers` and never reaches `execute_final_review_panel`/`invoke_final_review_member`, so the new per-member retry loop is bypassed. If that drop causes quorum loss, the code returns `InsufficientPanelMembers`, and that variant has no `failure_class`, so the stage failure is not retried. If quorum still holds, the stage proceeds with a smaller reviewer set than configured based only on a transient probe blip, which can change vote outcomes.\n- `fr-7-91032cc9`: Accept\n  The amendment is correct. On resume, final_review drift detection re-probes the arbiter and reviewers and converts required-member probe failures into `ResumeDriftFailure`, while optional non-exhaustion failures are simply removed from the resumed panel. That treats transient transport/probe instability as configuration drift and can either block resume outright or alter panel membership before the retry-capable final_review invocation path runs. This is inconsistent with the runtime execution path, which retries transient reviewer failures, so the resume behavior is not robust.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

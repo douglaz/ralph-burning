@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T14:39:04.956405149Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 medium fix-now issue. I could not execute Rust tests locally in this environment because `cargo` is not installed.\n\n## Amendments\n\n1. Transient final-review availability failures still hard-fail `run start` and `run resume` before the new retry wrapper is ever reached. `execute_run` and `resume_run_with_retry_internal` still call `preflight_check` (`src/contexts/workflow_composition/engine.rs:1559`, `src/contexts/workflow_composition/engine.rs:2346-2356`), and the final-review branch there performs single-shot `check_availability` probes through `preflight_required_panel_target` / `preflight_panel_members` (`src/contexts/workflow_composition/engine.rs:377-401`, `src/contexts/workflow_composition/engine.rs:473-503`, `src/contexts/workflow_composition/engine.rs:509-603`). A one-off arbiter/reviewer network blip in those preflights still aborts the whole run, so the original “single transient final_review backend error kills the run” failure mode remains reachable outside the stage-dispatch path.\n   Rationale: The branch adds retry handling once final_review runtime panel resolution/invocation starts, but start/resume preflight still bypasses that logic entirely. Route final-review preflight through `check_final_review_availability_with_retry` / `resolve_runtime_final_review_panel`, or add equivalent retry handling there, so transient final-review backend outages do not still fail the run before the stage begins.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

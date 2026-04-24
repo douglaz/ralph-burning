@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T19:05:00.243958840Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 fix-now correctness issue in the final_review retry wiring.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/final_review.rs:265-269` and `src/contexts/workflow_composition/final_review.rs:2627-2633` still route timeout-related reviewer/arbiter failures through `FailureClass::Timeout`, so the retry loop stops at the timeout budget after 3 attempts instead of using the transient transport budget for final-review retries. A one-reviewer panel that repeatedly hits `InvocationTimeout` or `exceeded timeout` failures will still fail two attempts earlier than the new transient-retry path is supposed to allow.\n   Rationale: The new loop now retries transport disconnects to 5 attempts, but timeout-shaped transient failures still exhaust on the smaller timeout rule. That leaves the single-reviewer failure mode partially unfixed for another common transient backend error class.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

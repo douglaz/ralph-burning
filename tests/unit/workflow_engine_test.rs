@@ -201,6 +201,7 @@ impl Drop for ScopedJournalAppendFailpoint {
 }
 
 const MAX_COMPLETION_ROUNDS_ENV: &str = "RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS";
+const DISABLE_RETRY_BACKOFF_ENV: &str = "RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF";
 
 struct ScopedMaxCompletionRounds {
     _lock: std::sync::MutexGuard<'static, ()>,
@@ -219,6 +220,26 @@ impl ScopedMaxCompletionRounds {
 impl Drop for ScopedMaxCompletionRounds {
     fn drop(&mut self) {
         std::env::remove_var(MAX_COMPLETION_ROUNDS_ENV);
+    }
+}
+
+struct ScopedRetryBackoffDisabled {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl ScopedRetryBackoffDisabled {
+    fn set() -> Self {
+        let lock = FAILPOINT_ENV_MUTEX
+            .lock()
+            .expect("failpoint env mutex poisoned");
+        std::env::set_var(DISABLE_RETRY_BACKOFF_ENV, "1");
+        Self { _lock: lock }
+    }
+}
+
+impl Drop for ScopedRetryBackoffDisabled {
+    fn drop(&mut self) {
+        std::env::remove_var(DISABLE_RETRY_BACKOFF_ENV);
     }
 }
 
@@ -1224,25 +1245,30 @@ async fn resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes() {
     let pid = create_project_with_flow(base_dir, "qd-skip-resume", FlowPreset::QuickDev);
     let config = EffectiveConfig::load(base_dir).unwrap();
 
-    // FinalReview fails once (simulates crash after ApplyFixes was skipped),
-    // then succeeds on resume.
-    let failing_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_transient_failure(StageId::FinalReview, 1),
-    );
-    let first_result = engine::execute_run(
-        &failing_agent_service,
-        &FsRunSnapshotStore,
-        &FsRunSnapshotWriteStore,
-        &FsJournalStore,
-        &FsPayloadArtifactWriteStore,
-        &FsRuntimeLogWriteStore,
-        &FsAmendmentQueueStore,
-        base_dir,
-        &pid,
-        FlowPreset::QuickDev,
-        &config,
-    )
-    .await;
+    // FinalReview now retries transient backend failures internally, so make
+    // the stage fail deterministically on every invocation. Resume uses a clean
+    // adapter and should still start from FinalReview without re-running
+    // ApplyFixes.
+    let first_result = {
+        let _disable_retry_backoff = ScopedRetryBackoffDisabled::set();
+        let failing_agent_service = build_agent_service_with_adapter(
+            StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
+        );
+        engine::execute_run(
+            &failing_agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            FlowPreset::QuickDev,
+            &config,
+        )
+        .await
+    };
     assert!(first_result.is_err());
 
     // Verify that the StageSkipped event was committed before the failure.
@@ -1253,6 +1279,29 @@ async fn resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes() {
         .collect();
     assert_eq!(skipped.len(), 1, "apply_fixes skip event must be committed");
     assert_eq!(skipped[0].details["stage_id"], "apply_fixes");
+    let final_review_entered = stage_events(
+        &events_before,
+        JournalEventType::StageEntered,
+        "final_review",
+    );
+    assert_eq!(
+        final_review_entered.len(),
+        1,
+        "final_review should fail terminally after inner retry exhaustion, not restart the stage"
+    );
+    let final_review_failed: Vec<_> = events_before
+        .iter()
+        .filter(|event| {
+            event.event_type == JournalEventType::StageFailed
+                && event.details["stage_id"] == "final_review"
+        })
+        .collect();
+    assert!(
+        final_review_failed
+            .iter()
+            .all(|event| event.details["will_retry"] == false),
+        "final_review transport exhaustion must not schedule a stage-level retry"
+    );
 
     // Resume — should pick up at FinalReview, not re-run ApplyFixes.
     let resume_agent_service = build_agent_service();
@@ -4803,6 +4852,74 @@ impl AgentExecutionPort for UnavailableModelOnResumeAdapter {
 }
 
 #[derive(Clone)]
+struct TransientAvailabilityOnResumeAdapter {
+    inner: StubBackendAdapter,
+    remaining_failures: Arc<AtomicU32>,
+    injected_failures: Arc<AtomicU32>,
+    availability_checks: Arc<AtomicU32>,
+}
+
+impl TransientAvailabilityOnResumeAdapter {
+    fn new(failures: u32) -> Self {
+        Self {
+            inner: StubBackendAdapter::default(),
+            remaining_failures: Arc::new(AtomicU32::new(failures)),
+            injected_failures: Arc::new(AtomicU32::new(0)),
+            availability_checks: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn availability_checks(&self) -> u32 {
+        self.availability_checks.load(Ordering::SeqCst)
+    }
+
+    fn injected_failures(&self) -> u32 {
+        self.injected_failures.load(Ordering::SeqCst)
+    }
+}
+
+impl AgentExecutionPort for TransientAvailabilityOnResumeAdapter {
+    async fn check_capability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
+    ) -> AppResult<()> {
+        self.inner.check_capability(backend, contract).await
+    }
+
+    async fn check_availability(
+        &self,
+        backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
+    ) -> AppResult<()> {
+        self.availability_checks.fetch_add(1, Ordering::SeqCst);
+        let should_fail = self
+            .remaining_failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
+        if should_fail {
+            self.injected_failures.fetch_add(1, Ordering::SeqCst);
+            return Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.to_string(),
+                details: "stream disconnected before completion".to_owned(),
+                failure_class: None,
+            });
+        }
+
+        self.inner.check_availability(backend).await
+    }
+
+    async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        self.inner.invoke(request).await
+    }
+
+    async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
+        self.inner.cancel(invocation_id).await
+    }
+}
+
+#[derive(Clone)]
 struct IterativeRetryCarryAdapter {
     inner: StubBackendAdapter,
     plan_calls: Arc<AtomicU32>,
@@ -7393,6 +7510,92 @@ async fn resume_warns_when_final_review_arbiter_drifts() {
     assert_ne!(
         old_arbiter, new_arbiter,
         "resume should compare against the persisted arbiter baseline"
+    );
+}
+
+#[tokio::test]
+async fn resume_retries_transient_final_review_probe_failures_without_drift() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "fr-transient-probe-resume");
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let first_result = {
+        let _disable_retry_backoff = ScopedRetryBackoffDisabled::set();
+        engine::execute_standard_run(
+            &build_agent_service_with_adapter(
+                StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
+            ),
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            &config,
+        )
+        .await
+    };
+    assert!(
+        first_result.is_err(),
+        "initial run should fail in final_review so resume can exercise probe retries"
+    );
+
+    let baseline_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    let baseline_resolution = baseline_snapshot
+        .last_stage_resolution_snapshot
+        .as_ref()
+        .expect("failed final_review run should preserve a resolution snapshot");
+    assert_eq!(baseline_resolution.stage_id, StageId::FinalReview);
+
+    let resume_adapter = TransientAvailabilityOnResumeAdapter::new(2);
+    let resume_result = {
+        let _disable_retry_backoff = ScopedRetryBackoffDisabled::set();
+        engine::resume_standard_run(
+            &build_agent_service_with_adapter(resume_adapter.clone()),
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            &config,
+        )
+        .await
+    };
+    assert!(
+        resume_result.is_ok(),
+        "resume should retry transient final_review probe failures: {resume_result:?}"
+    );
+    assert_eq!(resume_adapter.injected_failures(), 2);
+    assert!(
+        resume_adapter.availability_checks() >= 4,
+        "resume should re-check final_review backends after transient probe failures"
+    );
+
+    let completed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(completed_snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert!(
+        events.iter().all(|event| {
+            event.event_type != JournalEventType::DurableWarning
+                || event.details.get("warning_kind").and_then(Value::as_str) != Some("resume_drift")
+                || event.details.get("stage_id").and_then(Value::as_str)
+                    != Some(StageId::FinalReview.as_str())
+        }),
+        "transient final_review probe retries should not surface as resume drift"
     );
 }
 

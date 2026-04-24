@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr10-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr10",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T16:10:25.386924204Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining final_review transient-availability gap for rate-limited probes by extending `is_transient_codex_failure` in `src/adapters/process_backend.rs` to treat conservative 429/rate-limit probe errors as retryable while still excluding `BackendExhausted`. Added regression coverage in `src/contexts/workflow_composition/final_review.rs` for reviewer availability probes that return `HTTP 429: Too Many Requests`, and in `src/contexts/workflow_composition/engine.rs` for final-review arbiter preflight probes with the same transient 429 shape. Final-review availability retries now cover the motivating rate-limit probe case instead of failing immediately on `BackendUnavailable { failure_class: None, details: \"HTTP 429: ...\" }`.\n\n## Steps\n\n1. [Completed] Inspect the remaining amendment path to confirm that transient 429/rate-limit availability probe failures were still bypassing final_review retry classification.\n2. [Completed] Extend the transient codex/backend failure classifier so conservative 429 and rate-limit probe errors are retried while explicit backend exhaustion remains terminal.\n3. [Completed] Add focused regressions for reviewer final_review availability retries and final_review arbiter preflight retries on transient 429 probe failures.\n4. [Completed] Run the required validation gates on the amended tree, including formatting, clippy, full `test-stub` coverage, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub transient_codex_failure_helper_matches_expected_patterns -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_retries_transient_reviewer_rate_limit_probe_failures -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub preflight_check_retries_transient_final_review_arbiter_rate_limit_probe_failures -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- There is still no dedicated end-to-end `run resume` regression that injects a transient 429 arbiter availability probe specifically during resume; current coverage is split between the new arbiter preflight 429 test and the broader transient final-review probe resume regression.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 10
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T09:56:41.490260994Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nFixed the pending final_review retry-policy amendment by centralizing `apply_test_retry_policy_overrides` in `src/contexts/workflow_composition/retry_policy.rs`, reusing that helper from both `src/cli/run.rs` and `src/contexts/workflow_composition/final_review.rs`, and keeping the final-review transient retry loop on the existing fast-fail `RALPH_BURNING_TEST_FAIL_INVOKE_STAGE=final_review` seam instead of sleeping through real 5/10/20/40s backoffs. Added a focused final_review regression that proves the env override disables inner retry backoff while preserving the transport retry attempt budget.\n\n## Steps\n\n1. [Completed] Inspect the pending amendment against the current final_review retry implementation and confirm the inner retry loop was bypassing the existing test-stub backoff override seam.\n2. [Completed] Move `apply_test_retry_policy_overrides` into the shared workflow retry-policy module, update `final_review.rs` to use it for reviewer/voter/arbiter invocation retries, and remove the duplicated local helper from `run.rs`.\n3. [Completed] Add regression coverage proving `RALPH_BURNING_TEST_FAIL_INVOKE_STAGE=final_review` disables final-review retry backoff, then rerun the required validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub final_review_retry_policy_honours_fail_invoke_stage_override` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_retries_transient_reviewer_failure` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_fails_after_exhausting_transient_reviewer_retries` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_does_not_retry_domain_validation_failures` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- Arbiter transient retries still rely on the shared final_review retry helper without a dedicated arbiter-specific transient regression test.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 3
+}

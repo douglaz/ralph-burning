@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T11:40:03.298656320Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nStatic review found one fix-now correctness gap in the final_review retry coverage. I could not run cargo/nix in this environment because the Rust toolchain is unavailable, so this pass is based on branch-delta inspection.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/final_review.rs:2457-2463` only treats `InvocationTimeout` and `InvocationFailed` as transient. `AgentExecutionService::invoke` always runs `check_availability` before the actual invocation (`src/contexts/agent_execution/service.rs:197-208`), and OpenRouter turns transient probe/network failures into `BackendUnavailable` (`src/adapters/openrouter_backend.rs:187-206`). Because `BackendUnavailable` is never considered retryable here, a temporary availability-probe blip on a final-review reviewer or arbiter still fails or degrades the panel immediately instead of consuming the new per-member retry budget.\n   Rationale: This leaves a real transient-backend path outside the new retry wrapper, so the branch does not fully satisfy the bead for backends that can fail during pre-invocation availability checks.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

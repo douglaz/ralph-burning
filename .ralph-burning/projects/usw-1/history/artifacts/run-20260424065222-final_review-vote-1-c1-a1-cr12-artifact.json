@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T18:09:54.718656337Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted: the amendment identifies a real regression where required final-review availability probes that exhaust their internal transient retry budget now bypass outer stage retries and fail the stage terminally.\n\n## Votes\n\n- `fr-12-b28a07ec`: Accept\n  `resolve_runtime_final_review_panel` and `probe_final_review_reviewers` now route arbiter/required-reviewer `check_availability` calls through `check_final_review_availability_with_retry`, which rewrites repeated transient probe failures into the same `final_review:* ... exhausted ... transient retries` shape used for invocation-time failures. `should_retry_stage_failure` explicitly treats every `is_final_review_retry_exhaustion_error` as non-retryable, so once a required probe exhausts its inner budget the stage stops immediately instead of consuming its normal outer retry budget. Before this change, the same pre-invocation probe path returned retryable `BackendUnavailable`/transport-style failures, so the stage could recover on a later attempt. Because this happens before any reviewer or arbiter work is invoked, making it terminal is an incorrect regression in fault tolerance rather than an intentional safety boundary.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}

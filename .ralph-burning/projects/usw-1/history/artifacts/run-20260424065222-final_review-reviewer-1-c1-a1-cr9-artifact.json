@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T15:25:52.798899252Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now correctness gaps in the retry implementation: outer stage retries still re-run `final_review` on domain-validation failures, and availability-side 429/rate-limit failures are still outside the new transient classifier. `nix build` completed successfully in this environment.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/engine.rs:87-98` and `src/contexts/workflow_composition/engine.rs:5982-5988` still allow stage-level retries for `FailureClass::DomainValidationFailure`; the only final-review special-case is the synthetic \"exhausted transient retries\" marker. That means non-transient contract failures raised by final-review itself, such as `validate_vote_payload` / `validate_arbiter_payload` in `src/contexts/workflow_composition/final_review.rs:2428-2454`, will re-run the entire `final_review` stage even though the bead explicitly says domain-validation failures must fail immediately and never be retried. In practice a bad voter/arbiter payload can still burn another full panel pass.\n   Rationale: The new inner retry loop correctly stops retrying bad model output, but the outer stage loop still retries the whole stage because `RetryPolicy::default_policy()` marks domain-validation failures retryable. That violates the stated scope guard and acceptance criteria.\n2. Transient rate limits during availability probes are still not retried. `AgentExecutionService::invoke` always calls `check_availability` before invoke (`src/contexts/agent_execution/service.rs:197-208`). OpenRouter's probe path returns non-exhaustion 429s as `AppError::BackendUnavailable { failure_class: None, details: \"HTTP 429: ...\" }` (`src/adapters/openrouter_backend.rs:214-231`), but `final_review_retry_failure_class` only retries `is_timeout_related` or `is_transient_codex_failure` (`src/contexts/workflow_composition/final_review.rs:221-227`), and that classifier's string list omits `429` / rate-limit terms (`src/adapters/process_backend.rs:55-79`). So one of the motivating transient classes from the bead description, a transient rate limit, still fails a final-review reviewer/arbiter immediately if it happens in the probe rather than the invoke call.\n   Rationale: This leaves a real transient backend mode unhandled on the most common code path, because every final-review attempt goes through availability first. Operators will still see avoidable final-review failures from short-lived 429s.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T11:41:06.407279720Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept. The amendment identifies a real retry gap: final-review member retries do not cover transient `BackendUnavailable` errors raised during backend availability probes, so the configured per-member retry budget is applied inconsistently.\n\n## Votes\n\n- `fr-5-64319207`: Accept\n  `invoke_final_review_member` only treats `is_timeout_related(error)` and `is_transient_codex_failure(error)` as retryable. But `AgentExecutionService::invoke` always runs `check_availability` before the actual invocation, and OpenRouter maps transient probe/network failures there to `AppError::BackendUnavailable`. Since `BackendUnavailable` is not included in the final-review transient gate, those preflight transport blips fail or degrade the reviewer/arbiter immediately instead of consuming the transport retry attempts, which is a correctness and robustness defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

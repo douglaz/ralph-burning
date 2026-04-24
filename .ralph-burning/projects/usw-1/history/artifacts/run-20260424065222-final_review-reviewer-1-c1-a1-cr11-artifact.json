@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T17:19:20.200878542Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\n1 fix-now finding: engine-level stage retries still apply to terminal final-review contract failures. I also ran targeted `nix develop -c cargo test --locked --features test-stub final_review_` plus `resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes`, and those passed; `nix build` did not finish during the review window.\n\n## Amendments\n\n1. finding_summary: Final-review contract failures still trigger whole-stage retries. `execute_final_review_panel` now surfaces reviewer/voter/arbiter schema/domain validation errors immediately (`src/contexts/workflow_composition/final_review.rs:915-921`, `src/contexts/workflow_composition/final_review.rs:1375-1379`, `src/contexts/workflow_composition/final_review.rs:1700-1740`), but `should_retry_stage_failure` still retries any retryable failure class except transient-exhaustion (`src/contexts/workflow_composition/engine.rs:87-98`). A required final-review reviewer or arbiter that returns malformed/invalid output will therefore rerun the entire `final_review` stage on the next attempt, which contradicts the bead's \"Do NOT retry domain validation failures\" requirement and can hide deterministic model-output bugs behind a later lucky pass.\naffected_files: src/contexts/workflow_composition/engine.rs, src/contexts/workflow_composition/final_review.rs\nremediation_hint: Treat `final_review:*` schema/domain validation failures as terminal in the stage retry gate (for example in `should_retry_stage_failure`) and add an engine-level regression test that asserts `StageFailed.will_retry == false` for a required final-review contract failure.\n   Rationale: The inner invocation loop correctly avoids retrying model-output contract failures, but the outer engine retry path still retries the whole stage for the same errors, so the branch does not yet satisfy the bead's no-domain-retry requirement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

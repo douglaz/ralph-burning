@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T17:21:20.533552451Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real retry-policy bug: final-review contract validation failures are surfaced with the right failure classes inside the panel logic, but the engine still treats them as ordinary retryable stage failures.\n\n## Votes\n\n- `fr-11-1c635877`: Accept\n  `execute_final_review_panel` returns `AppError::InvocationFailed` with `SchemaValidationFailure` or `DomainValidationFailure` for malformed reviewer/voter/arbiter outputs, and `AppError::failure_class()` preserves those classes. But `should_retry_stage_failure` in `engine.rs` only excludes cancellation, retry-exhaustion sentinels, and exhausted attempt budgets; it does not special-case `final_review:*` validation failures, while the default retry policy marks both schema and domain validation failures as retryable. So a required final-review contract failure will still produce `StageFailed.will_retry = true` and rerun the whole `final_review` stage. That contradicts the stated no-retry requirement for these deterministic contract failures and can mask persistent model-output bugs behind a later lucky pass. The proposed remediation is correct and maintainable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}

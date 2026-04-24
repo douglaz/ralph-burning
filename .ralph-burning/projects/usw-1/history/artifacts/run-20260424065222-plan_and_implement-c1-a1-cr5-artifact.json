@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T11:30:55.464168242Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nMade exhausted final_review member retries terminal at the stage level by teaching engine retry gating to recognize final_review per-member retry exhaustion errors and refuse stage-level restarts, while preserving the operator-facing exhaustion message. Added regression coverage for the retry-budget gate and tightened the resume regression so final_review now fails once after inner retry exhaustion instead of compounding stage retries.\n\n## Steps\n\n1. [Completed] Inspect the final_review retry exhaustion path and confirm why exhausted member retries were still eligible for engine-level stage retries.\n2. [Completed] Patch stage retry gating so final_review per-member transient retry exhaustion errors are treated as terminal for the stage while keeping the exhaustion diagnostics intact.\n3. [Completed] Extend regression coverage for the non-retryable exhaustion path and rerun the required verification gates, including targeted tests, full test-stub coverage, and nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub stage_retry_budget_stops_after_final_review_member_retry_exhaustion` passed.\n- `nix develop -c cargo test --locked --features test-stub resume_after_apply_fixes_skipped_does_not_rerun_apply_fixes` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- Arbiter transient retries still rely on the shared final_review retry helper without a dedicated arbiter-specific transient regression test.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

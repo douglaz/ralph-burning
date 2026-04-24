@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T13:09:54.891010950Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 7/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-7-4ea9e91b`\n- `fr-7-91032cc9`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-4ea9e91b`\n\nHigh: final_review still bypasses the new per-member retry path during engine-side reviewer probing. In src/contexts/workflow_composition/engine.rs:9487-9512, an optional reviewer that hits a transient check_availability error is dropped from the panel immediately, before execute_final_review_panel/invoke_final_review_member can apply the new retry loop. If that transient drop takes the panel below quorum, src/contexts/workflow_composition/engine.rs:9524-9544 returns AppError::InsufficientPanelMembers, but that error is non-retryable (src/shared/error.rs:345-354; src/contexts/workflow_composition/engine.rs:5842-5863), so a single transient optional-reviewer probe failure can still hard-fail final_review. Even when quorum survives, the stage now votes with a smaller panel than configured, which can change consensus from a temporary backend blip. This needs to use the same transient classification/retry path as actual reviewer invocations instead of treating transient probe failures as durable panel shrinkage.\n\n### `fr-7-91032cc9`\n\nMedium: resume still treats transient final_review backend probe failures as stage drift. In src/contexts/workflow_composition/engine.rs:2250-2287, resume re-checks the arbiter and required reviewers with adapter.check_availability and converts any non-exhaustion failure into ResumeDriftFailure. That means a temporary network/probe blip during `run resume` prevents the failed final_review stage from resuming at all, even though the invocation path in src/contexts/workflow_composition/final_review.rs would now retry the same backend once execution starts. Optional reviewers are also silently dropped on resume by src/contexts/workflow_composition/engine.rs:2265-2299 for non-exhaustion probe errors, so resume can change panel membership for transient reasons.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

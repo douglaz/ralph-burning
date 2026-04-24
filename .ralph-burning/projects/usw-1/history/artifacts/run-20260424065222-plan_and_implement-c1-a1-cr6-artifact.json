@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T12:16:41.239813625Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining final_review retry gap for transient availability-probe failures by treating `AppError::BackendUnavailable` as retryable when it carries transport-class metadata or conservative transient codex/openrouter probe text, so reviewer/arbiter per-member retry budget now covers `AgentExecutionService::check_availability` blips as well as invoke-time failures. Kept exhausted transient failures operator-readable by rewriting `BackendUnavailable` exhaustion into the existing final-review invocation error shape, and added focused regression coverage proving a reviewer availability probe failure retries, rechecks availability, and still records a single successful outer invocation.\n\n## Steps\n\n1. [Completed] Inspect the current final_review retry path and confirm the pending gap was transient `BackendUnavailable` errors from pre-invoke availability checks bypassing the new per-member retry classification.\n2. [Completed] Extend transient codex failure classification and final_review exhaustion rewriting so availability-probe `BackendUnavailable` errors participate in the same retry/exhaustion flow as invoke-time transient failures.\n3. [Completed] Add regression coverage for transient reviewer availability-probe failures and verify the full required repository gates on the amended tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub final_review_retries_transient_reviewer_availability_probe_failures -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- There is still no dedicated arbiter-specific transient availability-probe regression; arbiter retries currently rely on the same shared final_review member retry path covered by reviewer tests.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 6
+}

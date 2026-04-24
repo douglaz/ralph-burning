@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260424065222-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T19:07:23.143012827Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nRejected the proposed amendment. The current final-review code intentionally applies the timeout retry rule, and the amendment does not establish that timeout-related final-review failures should consume the transport retry budget instead.\n\n## Votes\n\n- `fr-13-d13af22b`: Reject\n  `final_review_retry_failure_class` explicitly maps timeout-shaped errors to `FailureClass::Timeout`, and the retry loop then uses `retry_policy.max_attempts(retry_failure_class)` by design. That split is also covered by the dedicated regression `final_review_timeout_retries_stop_at_timeout_policy_limit`, which asserts that persistent final-review timeouts stop after 3 attempts while transport failures still get 5. Given that explicit policy and test coverage, the amendment's claim that final-review timeouts are supposed to use the transient transport budget is not supported by the implementation; changing it would collapse two intentionally distinct retry classes rather than fix a demonstrated correctness bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T16:23:19.167248791Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 10/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-10-605d65ac`\n\n## Rejected\n\n- `fr-10-e6cc1e2a`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-10-605d65ac`\n\nsrc/adapters/process_backend.rs:61-86; src/contexts/workflow_composition/final_review.rs:221-225,2587-2593: `is_transient_codex_failure` applies its substring heuristics to any `AppError::InvocationFailed`, regardless of the existing `failure_class`. That means a terminal `DomainValidationFailure` whose validation message happens to mention `503`, `timed out`, `rate limit`, etc. will be retried as transient, and an `InvocationFailed { failure_class: BackendExhausted, details: \"Rate limit reached, try again at ...\" }` will also burn the transient retry budget before the panel degrades. Both cases violate the bead contract: domain-validation failures must not be retried, and exhausted-backend handling is supposed to stay unchanged.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

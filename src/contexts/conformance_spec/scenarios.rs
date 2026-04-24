@@ -19941,12 +19941,19 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                     async move { adapter.invoke(request).await }
                 });
 
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                if !adapter
-                    .has_session(&session_name)
-                    .await
-                    .map_err(|e| format!("query session: {e}"))?
-                {
+                let mut session_found = false;
+                for _ in 0..10 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if adapter
+                        .has_session(&session_name)
+                        .await
+                        .map_err(|e| format!("query session: {e}"))?
+                    {
+                        session_found = true;
+                        break;
+                    }
+                }
+                if !session_found {
                     return Err("session should exist while invocation is running".into());
                 }
 

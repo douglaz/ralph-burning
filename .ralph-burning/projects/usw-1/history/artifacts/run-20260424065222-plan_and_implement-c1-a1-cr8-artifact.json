@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260424065222-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T14:31:20.787737435Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining final_review transient-probe gaps by reusing the final-review availability retry path in engine-side panel resolution and resume drift re-resolution. `src/contexts/workflow_composition/engine.rs` now resolves final-review runtime panels through shared helpers that retry transient arbiter/reviewer `check_availability` failures, preserve optional reviewers for invocation-time handling when transient probe retries exhaust, and carry the same exhaustion semantics through resume instead of converting transient probe blips into immediate panel shrinkage or `ResumeDriftFailure`. `src/contexts/workflow_composition/final_review.rs` exposes the shared retry-policy/failure-classification helpers plus `check_final_review_availability_with_retry(...)` for reviewer and arbiter probe reuse. Added focused engine/unit and workflow-engine resume regressions covering transient optional-reviewer probe recovery, transient optional-reviewer probe exhaustion without panel shrinkage, transient arbiter probe recovery, and resume succeeding without final-review drift after transient probe failures.\n\n## Steps\n\n1. [Completed] Inspect the pending final_review amendments against the current tree, focusing on engine-side final-review probe resolution and resume drift handling.\n2. [Completed] Route final-review panel probing and resume re-resolution through the shared transient availability retry helper so transient reviewer/arbiter probe failures no longer cause premature panel shrinkage or resume drift failures.\n3. [Completed] Add and verify focused regressions for transient final-review probe handling on dispatch and resume, then run the required repository verification gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub final_review_probe_retries_transient_optional_reviewers_before_shrinking_panel` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_probe_keeps_optional_reviewers_after_transient_retry_exhaustion` passed.\n- `nix develop -c cargo test --locked --features test-stub resume_retries_transient_final_review_probe_failures_without_drift` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed on the current tree.\n\n## Outstanding Risks\n\n- There is still no end-to-end resume regression that injects a transient arbiter probe failure specifically during `run resume`; arbiter probe retry coverage is currently split between the shared engine helper test and the broader reviewer/required-backend resume path.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 8
+}

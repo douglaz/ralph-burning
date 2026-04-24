@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T10:05:13.890781237Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-268947ee`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-268947ee`\n\nsrc/contexts/workflow_composition/final_review.rs:2437-2445 makes every `FailureClass::DomainValidationFailure` terminal before the new transient classifier is consulted. That breaks the exact codex path this bead was meant to fix: `src/adapters/process_backend.rs:2679-2705` explicitly treats `ERROR: stream disconnected before completion` / `You can retry your request...` carried as `DomainValidationFailure` as transient, but the final-review loop will still fail them immediately instead of retrying. The new no-retry test at src/contexts/workflow_composition/final_review.rs:4494-4587 also hard-codes the wrong rule by asserting that all domain-validation failures are non-retryable, so a 1-reviewer panel can still fail on the reproduced codex disconnect path.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}
