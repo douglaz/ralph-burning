@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260424065222",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 10
+      "completion_round": 11
     },
     "started_at": "2026-04-24T06:52:22.511124747Z",
     "prompt_hash_at_cycle_start": "cdf2d760247fd89d2928b8163fac92576590e1393ca2f1a7a29d999de381bb1c",
     "prompt_hash_at_stage_start": "cdf2d760247fd89d2928b8163fac92576590e1393ca2f1a7a29d999de381bb1c",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 9
+    "final_review_restart_count": 10
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 10,
+  "completion_rounds": 11,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-10-605d65ac",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 10,
+        "body": "src/adapters/process_backend.rs:61-86; src/contexts/workflow_composition/final_review.rs:221-225,2587-2593: `is_transient_codex_failure` applies its substring heuristics to any `AppError::InvocationFailed`, regardless of the existing `failure_class`. That means a terminal `DomainValidationFailure` whose validation message happens to mention `503`, `timed out`, `rate limit`, etc. will be retried as transient, and an `InvocationFailed { failure_class: BackendExhausted, details: \"Rate limit reached, try again at ...\" }` will also burn the transient retry budget before the panel degrades. Both cases violate the bead contract: domain-validation failures must not be retried, and exhausted-backend handling is supposed to stay unchanged.",
+        "created_at": "2026-04-24T16:23:19.167239353Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "ac9850cadd2066549224b0432aacc8eb0f90cbb99267238aceab905f84059389"
+      }
+    ],
     "processed_count": 11
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 11 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-24T15:14:28.277415980Z",
+    "resolved_at": "2026-04-24T16:10:25.660185791Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

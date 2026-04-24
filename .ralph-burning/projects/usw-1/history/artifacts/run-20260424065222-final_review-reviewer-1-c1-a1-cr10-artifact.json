@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T16:19:25.879016855Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff and the changed workflow/final_review/process-backend code. I found 2 fix-now correctness issues in the transient retry implementation. I could not run the Rust test/build commands here because `cargo` is unavailable in this environment.\n\n## Amendments\n\n1. src/adapters/process_backend.rs:61-86; src/contexts/workflow_composition/final_review.rs:221-225,2587-2593: `is_transient_codex_failure` applies its substring heuristics to any `AppError::InvocationFailed`, regardless of the existing `failure_class`. That means a terminal `DomainValidationFailure` whose validation message happens to mention `503`, `timed out`, `rate limit`, etc. will be retried as transient, and an `InvocationFailed { failure_class: BackendExhausted, details: \"Rate limit reached, try again at ...\" }` will also burn the transient retry budget before the panel degrades. Both cases violate the bead contract: domain-validation failures must not be retried, and exhausted-backend handling is supposed to stay unchanged.\n   Rationale: The retry gate needs to exclude non-transport terminal classes before it falls back to detail-string matching, otherwise final_review will misclassify terminal failures and change stage behavior.\n2. src/contexts/workflow_composition/final_review.rs:289-290 and 2592-2593; src/contexts/workflow_composition/retry_policy.rs:54,63: both retry loops stop at `retry_policy.max_attempts(retry_failure_class)`, so timeout failures only get 3 total attempts. The bead explicitly requires final_review transient retries to run up to the transport retry budget (`max_attempts(FailureClass::TransportFailure)`, currently 5 total invocations). As written, a reviewer/arbiter that times out three times is marked exhausted even though the requested transient retry budget still has two attempts left.\n   Rationale: This leaves the single-reviewer case vulnerable to transient timeout failures that should still have been retried under the requested transport budget.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}
