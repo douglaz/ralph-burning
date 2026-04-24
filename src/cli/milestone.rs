@@ -90,7 +90,7 @@ pub enum MilestoneSubcommand {
     },
     #[command(
         about = "Start the next actionable bead as a task run.",
-        long_about = "Create and start a task for the next unblocked bead, or use the active milestone when omitted.\n\nExample: ralph-burning milestone run ms-dogfood"
+        long_about = "Start or resume the next unblocked bead's task run, or use the active milestone when omitted.\n\nExample: ralph-burning milestone run ms-dogfood"
     )]
     Run {
         milestone_id: Option<String>,
@@ -118,7 +118,7 @@ pub enum MilestoneSubcommand {
     },
     #[command(
         about = "Show milestone progress (completed / in-progress / blocked / remaining).",
-        long_about = "Summarize milestone progress, or use the active milestone when omitted.\n\nExample: ralph-burning milestone status ms-alpha-plan"
+        long_about = "Summarize one milestone when given an ID, or list all milestone progress when omitted.\n\nExample: ralph-burning milestone status ms-alpha-plan"
     )]
     Status {
         milestone_id: Option<String>,

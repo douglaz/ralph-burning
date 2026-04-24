@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260423053722-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T04:37:11.051944425Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nConfirmed and retained the pending help-text remediations in `src/cli/milestone.rs`: `milestone status` now correctly says that omitting `milestone_id` lists milestone progress, and `milestone run` now says it starts or resumes the next actionable bead's task run instead of promising task creation. The existing milestone/task help vocabulary remains consistent, and top-level `milestone` and `task` help still surface the concise subcommand descriptions.\n\n## Steps\n\n0. [Completed] Inspect the working tree, current milestone/task clap help text, and the `handle_status`/`handle_run` implementations to confirm the two pending help-text mismatches.\n1. [Completed] Update or confirm the `milestone status` and `milestone run` `long_about` strings in `src/cli/milestone.rs` so they match real no-arg and run-adoption behavior without changing command structure.\n2. [Skipped] Skip README and snapshot changes because the remediation stayed within existing clap help strings and no help snapshot update was required.\n3. [Completed] Run focused help-output and diff-sanity checks for the remediated milestone help text and the top-level milestone/task command help.\n4. [Completed] Run the required validation gates on the current tree: `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, `cargo test --locked --features test-stub`, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo run --locked --quiet -- milestone status --help` passed and printed `Summarize one milestone when given an ID, or list all milestone progress when omitted.`\n- `nix develop -c cargo run --locked --quiet -- milestone run --help` passed and printed `Start or resume the next unblocked bead's task run, or use the active milestone when omitted.`\n- `nix develop -c cargo run --locked --quiet -- milestone --help` passed and listed concise descriptions for all milestone subcommands.\n- `nix develop -c cargo run --locked --quiet -- task --help` passed and listed concise task descriptions for create/show/select/list.\n- `git diff --check -- src/cli/milestone.rs` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed, including lib tests, 366 CLI integration tests, `tests/run_attach_tmux.rs`, 1079 unit tests, and doctests.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- The working tree still contains live orchestration state changes under `.ralph-burning/projects/ni95-1/`; per repo instructions those files were left untouched and excluded from review scope.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

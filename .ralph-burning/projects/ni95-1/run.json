@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260423053722",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-5ef9aa1c",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: `milestone status --help` now claims that omitting `milestone_id` uses the active milestone, but `handle_status` actually lists every milestone when no ID is provided. affected_files: `src/cli/milestone.rs:120-121`, `src/cli/milestone.rs:763-820`. remediation_hint: Reword the `long_about` to describe the real no-arg behavior, or change `handle_status` to resolve the active milestone instead of listing all milestones.",
-        "created_at": "2026-04-24T04:03:13.399444162Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "8730ccac3efb94ec92c8000f68437b57784fe2eb3abaa4c571cb437511db1afd"
-      },
-      {
-        "amendment_id": "fr-4-1dc53f17",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "finding_summary: `milestone run --help` promises it will \"Create and start a task,\" but the implementation can also adopt an existing bead-backed project and then `resume` or `sync-milestone` it without creating anything new. affected_files: `src/cli/milestone.rs:92-93`, `src/cli/milestone.rs:1068-1076`, `src/cli/milestone.rs:1181-1192`. remediation_hint: Rephrase the help to say the command starts or resumes the next actionable bead's task run, without promising task creation.",
-        "created_at": "2026-04-24T04:03:13.399447188Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "ae6b0975704b97efb7cec70294ac18f2dd41e1f2f7549786236ae44e08378b5f"
-      }
-    ],
-    "processed_count": 3
+    "pending": [],
+    "processed_count": 5
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T03:59:17.544553139Z",
