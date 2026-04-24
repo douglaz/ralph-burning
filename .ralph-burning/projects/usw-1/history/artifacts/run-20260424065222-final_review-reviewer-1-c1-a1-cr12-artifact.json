@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260424065222-final_review-reviewer-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T18:08:07.890299033Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch state and found one high-severity correctness gap: required final-review availability probes become terminal after inner retry exhaustion, so a transient arbiter/reviewer pre-invocation flap can still fail the run before any member invocation. I could not run cargo/nix verification here because `cargo` is unavailable in this environment.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/engine.rs:87-99`, `src/contexts/workflow_composition/engine.rs:9047-9085`, and `src/contexts/workflow_composition/engine.rs:9136-9159` now route required final-review reviewer/arbiter availability probes through the new retry helper, but any probe that exhausts its transient budget is then treated as terminal because `should_retry_stage_failure` suppresses all errors recognized by `is_final_review_retry_exhaustion_error` (`src/contexts/workflow_composition/final_review.rs:337-357`). A required reviewer or arbiter that hits repeated transient `check_availability` failures will therefore fail the run before any panel member is invoked, with no outer stage retry. That regresses the prior recovery path for pre-invocation probe flaps and still lets a transient backend blip take down the whole `final_review` stage.\n   Rationale: Only inner reviewer/voter/arbiter invocation exhaustion should bypass stage-level retry. Required pre-stage availability probes are still transient infrastructure checks, so they need either the prior outer stage retry behavior or equivalent deferred handling at invocation time.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 12
+}
