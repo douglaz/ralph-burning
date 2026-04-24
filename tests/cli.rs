@@ -19299,7 +19299,7 @@ fn task_list_shows_no_tasks_when_empty() {
 }
 
 #[test]
-fn task_list_filters_out_non_task_projects() {
+fn task_list_includes_standalone_projects_for_project_alias_compatibility() {
     let temp_dir = initialize_workspace_fixture();
     create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-1");
     create_bead_backed_project_fixture(temp_dir.path(), "beta", "ms-alpha", "ms-alpha.bead-2");
@@ -19328,7 +19328,7 @@ fn task_list_filters_out_non_task_projects() {
 
     assert!(task_stdout.contains("alpha *"));
     assert!(task_stdout.contains("beta"));
-    assert!(!task_stdout.contains("standalone"));
+    assert!(task_stdout.contains("standalone"));
     assert!(project_stdout.contains("standalone"));
     assert!(
         task_stderr.is_empty(),
@@ -19440,22 +19440,29 @@ fn task_show_json_includes_lineage_for_milestone_tasks() {
 }
 
 #[test]
-fn task_show_rejects_non_task_projects() {
+fn task_show_supports_standalone_projects() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "plain-task");
 
-    let output = Command::new(binary())
+    let task_output = Command::new(binary())
         .args(["task", "show", "--json", "plain-task"])
         .current_dir(temp_dir.path())
         .output()
         .expect("run task show --json");
+    let project_output = Command::new(binary())
+        .args(["project", "show", "--json", "plain-task"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show --json");
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("not a bead-backed task"),
-        "non-task project should be rejected by task show, got: {stderr}"
-    );
+    assert!(task_output.status.success());
+    assert!(project_output.status.success());
+    let task_json: serde_json::Value =
+        serde_json::from_slice(&task_output.stdout).expect("task show json should parse");
+    let project_json: serde_json::Value =
+        serde_json::from_slice(&project_output.stdout).expect("project show json should parse");
+    assert_eq!(task_json, project_json);
+    assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
 }
 
 #[test]
@@ -19625,7 +19632,7 @@ fn task_show_dispatches_to_project_show() {
 }
 
 #[test]
-fn task_list_filters_to_bead_backed_projects() {
+fn task_list_matches_project_list_for_legacy_projects() {
     let temp_dir = initialize_workspace_fixture();
     create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-1");
     create_bead_backed_project_fixture(temp_dir.path(), "beta", "ms-alpha", "ms-alpha.bead-2");
@@ -19651,15 +19658,16 @@ fn task_list_filters_to_bead_backed_projects() {
     let stdout = String::from_utf8_lossy(&task_output.stdout);
     assert!(stdout.contains("alpha *"));
     assert!(stdout.contains("beta"));
-    assert!(!stdout.contains("standalone"));
+    assert!(stdout.contains("standalone"));
     let project_stdout = String::from_utf8_lossy(&project_output.stdout);
     assert!(project_stdout.contains("standalone"));
+    assert_eq!(stdout, project_stdout);
     assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
     assert!(String::from_utf8_lossy(&project_output.stderr).contains("deprecated"));
 }
 
 #[test]
-fn task_select_rejects_non_task_projects() {
+fn task_select_supports_standalone_projects() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
 
@@ -19669,19 +19677,12 @@ fn task_select_rejects_non_task_projects() {
         .output()
         .expect("run task select");
 
-    assert!(
-        !task_output.status.success(),
-        "task select should reject standalone projects"
+    assert!(task_output.status.success(), "task select should succeed");
+    assert_eq!(
+        fs::read_to_string(active_project_path(temp_dir.path())).expect("read active project"),
+        "alpha"
     );
-    assert!(
-        String::from_utf8_lossy(&task_output.stderr).contains("not a bead-backed task"),
-        "task select should explain the task-only restriction: {}",
-        String::from_utf8_lossy(&task_output.stderr)
-    );
-    assert!(
-        !active_project_path(temp_dir.path()).exists(),
-        "task select should not create an active project pointer for standalone projects"
-    );
+    assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
 
     let project_output = Command::new(binary())
         .args(["project", "select", "alpha"])

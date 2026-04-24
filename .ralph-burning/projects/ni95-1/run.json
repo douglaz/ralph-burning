@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260423053722",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-7c2e7fc3",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "Finding: `task show`/`task select` now reject any project without `[task_source]` (`src/cli/task.rs:106-119`, `src/cli/task.rs:155-166`) and `task list` now filters those projects out entirely (`src/contexts/project_run_record/service.rs:1399-1422`). That changes the `task` namespace from the alias/wrapper behavior the product still advertises in `src/cli/project.rs:78-85` into a task-source-only view. The regression is user-visible today: a standalone project disappears from `task list`, and `task show <id>` / `task select <id>` fail with `ProjectNotTask` even though `project --help` tells operators to use those commands instead. It also misclassifies legacy bead-backed projects that are still recovered elsewhere via lineage fallback (`src/cli/project.rs:803-829`, `src/cli/project.rs:3881-3946`), because `is_milestone_task()` only checks explicit `task_source`. The rewritten assertions in `tests/cli.rs:19443-19457` and `tests/cli.rs:19628-19684` lock this regression in. Remediation: keep this bead to help-text updates only and revert the new filtering/gating, or preserve the original wrapper semantics plus legacy-lineage detection before tightening task-only behavior.",
-        "created_at": "2026-04-24T03:19:43.301108507Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "dadd447fd0b621a416100a62c7d899dd731d2bf6a7b3b2b187975c29d963f6e0"
-      }
-    ],
-    "processed_count": 2
+    "pending": [],
+    "processed_count": 3
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T03:10:10.967544253Z",

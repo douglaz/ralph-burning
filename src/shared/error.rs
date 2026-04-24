@@ -43,10 +43,6 @@ pub enum AppError {
         "project '{project_id}' was not found under .ralph-burning/projects/ or is missing project.toml"
     )]
     ProjectNotFound { project_id: String },
-    #[error(
-        "project '{project_id}' is not a bead-backed task; use `ralph-burning project ...` for standalone projects"
-    )]
-    ProjectNotTask { project_id: String },
     #[error("editor '{editor}' failed{details}")]
     EditorFailed { editor: String, details: String },
     #[error("project '{project_id}' already exists")]
