@@ -168,3 +168,16 @@ impl RetryPolicy {
         Duration::from_secs_f64(base.as_secs_f64() * factor)
     }
 }
+
+pub(crate) fn apply_test_retry_policy_overrides(retry_policy: RetryPolicy) -> RetryPolicy {
+    #[cfg(feature = "test-stub")]
+    {
+        if std::env::var_os("RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF").is_some()
+            || std::env::var_os("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE").is_some()
+        {
+            return retry_policy.with_no_backoff();
+        }
+    }
+
+    retry_policy
+}

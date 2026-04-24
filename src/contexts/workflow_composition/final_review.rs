@@ -45,7 +45,9 @@ use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewVoteDecision, FinalReviewVotePayload, RecordKind, RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
-use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
+use crate::contexts::workflow_composition::retry_policy::{
+    apply_test_retry_policy_overrides, RetryPolicy,
+};
 use crate::contexts::workflow_composition::review_classification;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
@@ -152,7 +154,7 @@ fn panel_member_identity_from_producer(
 }
 
 fn final_review_retry_policy(_role: BackendPolicyRole) -> RetryPolicy {
-    let policy = RetryPolicy::default_policy();
+    let policy = apply_test_retry_policy_overrides(RetryPolicy::default_policy());
     #[cfg(test)]
     {
         policy.with_no_backoff()
@@ -2614,11 +2616,56 @@ mod tests {
     use super::*;
     use crate::contexts::workflow_composition::panel_contracts::FinalReviewProposal;
 
+    static RETRY_POLICY_ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, original }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let original = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
     #[derive(Clone, Debug)]
     enum PlannedInvocationFailure {
         Transport(&'static str),
         Timeout(&'static str),
         DomainValidation(&'static str),
+    }
+
+    #[cfg(feature = "test-stub")]
+    #[test]
+    fn final_review_retry_policy_honours_fail_invoke_stage_override() {
+        let _env_lock = RETRY_POLICY_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let _fail_stage = EnvVarGuard::set("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "final_review");
+        let _explicit_override = EnvVarGuard::remove("RALPH_BURNING_TEST_DISABLE_RETRY_BACKOFF");
+
+        let policy = final_review_retry_policy(BackendPolicyRole::FinalReviewer);
+
+        assert_eq!(policy.backoff_for_attempt(1), Duration::ZERO);
+        assert_eq!(policy.max_attempts(FailureClass::TransportFailure), 5);
     }
 
     #[derive(Clone, Default)]
