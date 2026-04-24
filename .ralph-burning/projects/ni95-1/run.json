@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260423053722",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
-    "started_at": "2026-04-23T05:37:22.246890357Z",
+    "started_at": "2026-04-24T02:24:25.693774513Z",
     "prompt_hash_at_cycle_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "prompt_hash_at_stage_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-b09de892",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: The new `task` help text now claims these commands manage bead-backed tasks only and that `task show` includes milestone/bead lineage, but the implementation still delegates `show`, `select`, and `list` to the generic project store without filtering. `handle_show` accepts any `ProjectId` and only prints lineage when `detail.task_lineage` is present, `handle_select` selects any project ID, and `handle_list` calls `service::list_projects`, which returns every project in the workspace. In mixed workspaces, `ralph-burning task --help`, `task show --help`, and `task list --help` will therefore overpromise task-only behavior. affected_files: src/cli/task.rs:15-16, src/cli/task.rs:29-30, src/cli/task.rs:40-50, src/cli/task.rs:96-130, src/cli/task.rs:154-184, src/contexts/project_run_record/service.rs:1391-1409. remediation_hint: Either relax the help text to describe these as task-oriented aliases over project commands and make lineage conditional, or add filtering so the task commands only operate on bead-backed tasks.",
+        "created_at": "2026-04-24T02:29:13.354169252Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "a4354aec80592eb1e3776fb7e3361a36ea85fdb32dbc0cce8d080db1ca1d159a"
+      }
+    ],
     "processed_count": 1
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-23T06:05:01.433155854Z",
+    "resolved_at": "2026-04-24T02:24:25.730919317Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
