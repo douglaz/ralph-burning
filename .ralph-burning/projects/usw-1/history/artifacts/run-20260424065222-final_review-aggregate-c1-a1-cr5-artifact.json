@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424065222-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424065222-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T11:41:06.434010968Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-64319207`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-64319207`\n\n`src/contexts/workflow_composition/final_review.rs:2457-2463` only treats `InvocationTimeout` and `InvocationFailed` as transient. `AgentExecutionService::invoke` always runs `check_availability` before the actual invocation (`src/contexts/agent_execution/service.rs:197-208`), and OpenRouter turns transient probe/network failures into `BackendUnavailable` (`src/adapters/openrouter_backend.rs:187-206`). Because `BackendUnavailable` is never considered retryable here, a temporary availability-probe blip on a final-review reviewer or arbiter still fails or degrades the panel immediately instead of consuming the new per-member retry budget.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}
