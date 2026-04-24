@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-23T06:19:54.683678155Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch delta against 1839e0ce6dae162c8ed62cce2019595c5650bd30, excluding live .ralph-burning runtime state. Verified `nix build`, `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --locked -- -D warnings`, `nix develop -c cargo test --locked --features test-stub`, and milestone/task help smoke checks all completed successfully.\n\n## Amendments\n\n1. finding_summary: The new help text still describes tasks as projects in several visible `about` strings, which violates the bead's vocabulary rule and the acceptance criterion for consistent milestone/bead/task terminology. `ralph-burning task --help` surfaces `Create a task (project) from a bead.`, `Select a task as the active project.`, and `List tasks (bead-backed projects) in the workspace.`, and `ralph-burning milestone --help` surfaces `List tasks (bead-backed projects) for a milestone.` affected_files: src/cli/task.rs:24, src/cli/task.rs:40, src/cli/task.rs:48, src/cli/milestone.rs:129. remediation_hint: Use task-first wording such as `Create a task from a bead.`, `Select a task as the active task.`, `List tasks in the workspace.`, and `List tasks for a milestone.`\n   Rationale: This is the core user-facing surface this bead changes; the branch otherwise adds descriptions, but these strings fail the specified vocabulary constraint.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

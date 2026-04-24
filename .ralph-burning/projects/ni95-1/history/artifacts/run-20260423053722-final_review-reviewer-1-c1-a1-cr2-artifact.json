@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T02:28:21.263882070Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch delta against 1839e0ce6dae162c8ed62cce2019595c5650bd30, excluding live `.ralph-burning` runtime state, and found one low-severity help/behavior mismatch in the new `task` command descriptions.\n\n## Amendments\n\n1. finding_summary: The new `task` help text now claims these commands manage bead-backed tasks only and that `task show` includes milestone/bead lineage, but the implementation still delegates `show`, `select`, and `list` to the generic project store without filtering. `handle_show` accepts any `ProjectId` and only prints lineage when `detail.task_lineage` is present, `handle_select` selects any project ID, and `handle_list` calls `service::list_projects`, which returns every project in the workspace. In mixed workspaces, `ralph-burning task --help`, `task show --help`, and `task list --help` will therefore overpromise task-only behavior. affected_files: src/cli/task.rs:15-16, src/cli/task.rs:29-30, src/cli/task.rs:40-50, src/cli/task.rs:96-130, src/cli/task.rs:154-184, src/contexts/project_run_record/service.rs:1391-1409. remediation_hint: Either relax the help text to describe these as task-oriented aliases over project commands and make lineage conditional, or add filtering so the task commands only operate on bead-backed tasks.\n   Rationale: This bead changes user-facing CLI help, so misleading operators about what `task show`/`task select`/`task list` actually target is a correctness issue in the primary surface being modified.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

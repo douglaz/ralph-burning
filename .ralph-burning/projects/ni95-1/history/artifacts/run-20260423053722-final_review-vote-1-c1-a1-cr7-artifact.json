@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260423053722-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T06:15:09.543762192Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe proposed amendment does not establish a substantive defect. The `task` CLI is explicitly the preferred unified interface, and using task-centric labels for legacy-compatible records is a coherent compatibility strategy rather than contradictory behavior.\n\n## Votes\n\n- `fr-7-43c77882`: Reject\n  `src/cli/task.rs` deliberately positions `task` as the preferred interface while still accepting legacy standalone project IDs for compatibility. In that model, printing `Selected task ...` and `Task: ...` for records reached through the `task` command is consistent normalization, not an incorrect or unsafe behavior. The output also preserves the underlying project identifier (`project '...'`) and only shows milestone/bead lineage when present, so it does not misreport state. This is a terminology preference, not a correctness, robustness, or maintainability bug that warrants an amendment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

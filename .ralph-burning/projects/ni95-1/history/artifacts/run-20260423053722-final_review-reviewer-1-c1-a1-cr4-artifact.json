@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T04:02:45.174483771Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 low-severity fix-now issues: both are help-text correctness gaps in `milestone` subcommands where the newly added descriptions do not match the actual CLI behavior.\n\n## Amendments\n\n1. finding_summary: `milestone status --help` now claims that omitting `milestone_id` uses the active milestone, but `handle_status` actually lists every milestone when no ID is provided. affected_files: `src/cli/milestone.rs:120-121`, `src/cli/milestone.rs:763-820`. remediation_hint: Reword the `long_about` to describe the real no-arg behavior, or change `handle_status` to resolve the active milestone instead of listing all milestones.\n   Rationale: This bead is specifically about improving operator-facing help text, and the new description is materially incorrect for a common invocation path.\n2. finding_summary: `milestone run --help` promises it will \"Create and start a task,\" but the implementation can also adopt an existing bead-backed project and then `resume` or `sync-milestone` it without creating anything new. affected_files: `src/cli/milestone.rs:92-93`, `src/cli/milestone.rs:1068-1076`, `src/cli/milestone.rs:1181-1192`. remediation_hint: Rephrase the help to say the command starts or resumes the next actionable bead's task run, without promising task creation.\n   Rationale: The new help text overstates the command's behavior in recovery/retry paths, which is exactly where operators depend on precise wording.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

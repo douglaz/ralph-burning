@@ -11,12 +11,11 @@ use crate::shared::error::AppResult;
 
 use super::project::{self, CreateFromBeadArgs};
 
-/// Task commands — aliases for project operations in a bead/milestone context.
-///
-/// A "task" is a project that was created from a bead. These commands provide
-/// a task-oriented vocabulary while delegating to the underlying project services.
 #[derive(Debug, Args)]
-#[command(about = "Task commands (aliases for bead-backed project operations)")]
+#[command(
+    about = "Manage tasks and legacy standalone projects.",
+    long_about = "Manage bead-backed tasks through the preferred task interface.\nLegacy standalone projects remain available here for compatibility."
+)]
 pub struct TaskCommand {
     #[command(subcommand)]
     pub command: TaskSubcommand,
@@ -24,22 +23,34 @@ pub struct TaskCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum TaskSubcommand {
-    /// Create a new task from a bead (wraps `project create-from-bead`)
+    #[command(
+        about = "Create a task from a bead.",
+        long_about = "Create a task from a milestone bead and optionally choose a flow.\n\nExample: ralph-burning task create --milestone-id ms-dogfood --bead-id ralph-burning-9ni.4.1 --flow minimal"
+    )]
     Create(TaskCreateArgs),
-    /// Show task details (wraps `project show`)
+    #[command(
+        about = "Show task or legacy standalone project details, including milestone and bead lineage when available.",
+        long_about = "Show details for a task, or use the active selection when omitted.\nLegacy standalone projects also work here.\n\nExample: ralph-burning task show task-ms-dogfood-ralph-burning-xyz"
+    )]
     Show {
         /// Emit a stable JSON object for scripts.
         #[arg(long)]
         json: bool,
-        /// Task/project ID. Defaults to the active project if omitted.
+        /// Task or legacy standalone project ID. Defaults to the active selection if omitted.
         id: Option<String>,
     },
-    /// Select the active task (wraps `project select`)
+    #[command(
+        about = "Select a task or legacy standalone project as active.",
+        long_about = "Select which entry the task interface uses by default.\nLegacy standalone projects remain selectable for compatibility.\n\nExample: ralph-burning task select task-ms-dogfood-ralph-burning-xyz"
+    )]
     Select {
-        /// Task/project ID to make active
+        /// Task or legacy standalone project ID to make active.
         id: String,
     },
-    /// List all tasks/projects (wraps `project list`)
+    #[command(
+        about = "List tasks in the workspace, including legacy standalone projects.",
+        long_about = "List task interface entries and mark the active selection.\nLegacy standalone projects remain visible for compatibility.\n\nExample: ralph-burning task list"
+    )]
     List,
 }
 
@@ -49,7 +60,11 @@ pub struct TaskCreateArgs {
     pub milestone_id: String,
     #[arg(long = "bead-id")]
     pub bead_id: String,
-    #[arg(long = "project-id")]
+    #[arg(
+        long = "project-id",
+        value_name = "TASK_ID",
+        help = "Override the generated task ID."
+    )]
     pub project_id: Option<String>,
     #[arg(long = "prompt-file")]
     pub prompt_file: Option<PathBuf>,

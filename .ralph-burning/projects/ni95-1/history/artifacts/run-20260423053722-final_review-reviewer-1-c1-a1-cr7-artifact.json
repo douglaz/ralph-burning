@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T06:14:25.964278733Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 low-severity fix-now issue: the new `task` help broadens the command to standalone projects, but the actual `task` output still labels standalone projects as tasks. I spot-checked the generated help output and ran the relevant targeted CLI tests under `nix develop`; they passed. `nix build` was started but had not completed by the end of this review window.\n\n## Amendments\n\n1. finding_summary: The new `task` help explicitly advertises legacy standalone-project support, but the command still renders those same records as `task`, so this branch codifies contradictory vocabulary instead of cleaning it up.\naffected_files:\n- src/cli/task.rs:15-18 and 32-52 document standalone-project support, while 118-123 and 157-162 still print `Selected task ...` / `Task: ...` for any project ID.\n- tests/cli.rs:19302-19342, 19443-19465, 19635-19667, and 19670-19702 lock in that widened compatibility without checking the terminology mismatch.\nremediation_hint: Either keep the new help strictly bead-backed/task-only, or update the `task` output path to use neutral wording for records that have no bead lineage before advertising standalone projects under `task`.\n   Rationale: This bead is specifically about milestone/task vocabulary. After this change, `ralph-burning task --help` tells operators that standalone projects belong under `task`, but `task show` and `task select` still label those records as tasks even when they are not bead-backed. That leaves the preferred CLI path teaching inconsistent semantics.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

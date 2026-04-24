@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T03:18:27.988207663Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 medium fix-now regression: the branch turns `task show`/`task select`/`task list` into `task_source`-only commands, breaking the established alias/backward-compatibility contract for standalone and legacy lineage-backed projects.\n\n## Amendments\n\n1. Finding: `task show`/`task select` now reject any project without `[task_source]` (`src/cli/task.rs:106-119`, `src/cli/task.rs:155-166`) and `task list` now filters those projects out entirely (`src/contexts/project_run_record/service.rs:1399-1422`). That changes the `task` namespace from the alias/wrapper behavior the product still advertises in `src/cli/project.rs:78-85` into a task-source-only view. The regression is user-visible today: a standalone project disappears from `task list`, and `task show <id>` / `task select <id>` fail with `ProjectNotTask` even though `project --help` tells operators to use those commands instead. It also misclassifies legacy bead-backed projects that are still recovered elsewhere via lineage fallback (`src/cli/project.rs:803-829`, `src/cli/project.rs:3881-3946`), because `is_milestone_task()` only checks explicit `task_source`. The rewritten assertions in `tests/cli.rs:19443-19457` and `tests/cli.rs:19628-19684` lock this regression in. Remediation: keep this bead to help-text updates only and revert the new filtering/gating, or preserve the original wrapper semantics plus legacy-lineage detection before tightening task-only behavior.\n   Rationale: The branch introduces a backward-incompatible behavior change outside the help-text bead: existing standalone projects and legacy lineage-backed task projects can no longer be discovered, shown, or selected through the recommended `task` commands.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

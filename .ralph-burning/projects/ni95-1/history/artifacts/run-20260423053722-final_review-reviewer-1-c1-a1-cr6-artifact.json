@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260423053722-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T05:28:26.407592218Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against `1839e0ce6dae162c8ed62cce2019595c5650bd30`, read the changed CLI/test files end-to-end, ran `nix build` successfully, and spot-checked the affected task CLI tests under `nix develop`. I found 2 low-severity help-text accuracy issues in the new milestone/task descriptions.\n\n## Amendments\n\n1. finding_summary: `milestone next --help` and `milestone run --help` now say they operate on the next \"unblocked\" bead, but the implementation intentionally treats retryable blocked beads as actionable too. The new long_about text at `src/cli/milestone.rs:84` and `src/cli/milestone.rs:93` therefore misdocuments the real controller behavior: `handle_next` surfaces blocked-retry beads via `inspect_next_milestone_action` (`src/cli/milestone.rs:667`, `src/cli/milestone.rs:897-975`), and `execute_milestone_run` will resume them (`src/cli/milestone.rs:1014-1077`). The regression test at `src/cli/milestone.rs:3382-3464` already codifies that blocked retry beads are still actionable. remediation_hint: change these help strings to \"next actionable bead\" or explicitly mention retryable failed beads instead of saying \"unblocked\".\n   Rationale: This bead’s deliverable is CLI help text, so wording that contradicts actual milestone retry behavior is a correctness issue, not just a cosmetic one.\n2. finding_summary: the new `task` help text is internally inconsistent about legacy standalone-project compatibility. `task --help` explicitly says standalone projects remain supported (`src/cli/task.rs:16-18`), but the new per-subcommand descriptions for `show`, `select`, and `list` are task-only (`src/cli/task.rs:32-52`) even though those commands still show/select/list standalone projects. The updated compatibility tests at `tests/cli.rs:19443-19465` and `tests/cli.rs:19635-19702` confirm that standalone projects remain part of the supported behavior. As shipped, operators reading subcommand help will be told these commands are task-only when they are not. remediation_hint: either mention standalone-project compatibility in those subcommand descriptions or avoid wording like \"active task\" / \"List known tasks\" that implies non-task projects are unsupported.\n   Rationale: The branch intentionally preserves legacy standalone-project behavior, so the new help text should describe that behavior consistently instead of narrowing it at the subcommand level.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

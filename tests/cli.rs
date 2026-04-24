@@ -19180,7 +19180,7 @@ fn run_start_malformed_project_override_does_not_fall_back_to_workspace() {
 #[test]
 fn task_select_sets_active_project_with_task_aware_output() {
     let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-1");
 
     let output = Command::new(binary())
         .args(["task", "select", "alpha"])
@@ -19235,7 +19235,7 @@ fn task_select_updates_active_milestone_for_bead_backed_projects() {
 #[test]
 fn task_select_and_project_select_produce_same_state() {
     let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-1");
 
     // Use task select
     let task_output = Command::new(binary())
@@ -19299,51 +19299,12 @@ fn task_list_shows_no_tasks_when_empty() {
 }
 
 #[test]
-fn task_list_shows_same_entries_as_project_list() {
+fn task_list_includes_standalone_projects_for_project_alias_compatibility() {
     let temp_dir = initialize_workspace_fixture();
-    let prompt = write_prompt_fixture(temp_dir.path());
-
-    // Create two projects
-    Command::new(binary())
-        .args([
-            "project",
-            "create",
-            "--id",
-            "alpha",
-            "--name",
-            "Alpha",
-            "--prompt",
-            prompt.to_str().unwrap(),
-            "--flow",
-            "standard",
-        ])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("create alpha");
-
-    Command::new(binary())
-        .args([
-            "project",
-            "create",
-            "--id",
-            "beta",
-            "--name",
-            "Beta",
-            "--prompt",
-            prompt.to_str().unwrap(),
-            "--flow",
-            "quick_dev",
-        ])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("create beta");
-
-    // Select alpha as active
-    Command::new(binary())
-        .args(["project", "select", "alpha"])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("select alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-1");
+    create_bead_backed_project_fixture(temp_dir.path(), "beta", "ms-alpha", "ms-alpha.bead-2");
+    create_project_fixture(temp_dir.path(), "standalone");
+    select_active_project_fixture(temp_dir.path(), "alpha");
 
     let task_list = Command::new(binary())
         .args(["task", "list"])
@@ -19365,13 +19326,10 @@ fn task_list_shows_same_entries_as_project_list() {
     let task_stderr = String::from_utf8_lossy(&task_list.stderr);
     let project_stderr = String::from_utf8_lossy(&project_list.stderr);
 
-    // Both should show the same entries (same format)
     assert!(task_stdout.contains("alpha *"));
     assert!(task_stdout.contains("beta"));
-    assert!(task_stdout.contains("standard"));
-    assert!(task_stdout.contains("quick_dev"));
-    // The entry lines themselves should be identical
-    assert_eq!(task_stdout, project_stdout);
+    assert!(task_stdout.contains("standalone"));
+    assert!(project_stdout.contains("standalone"));
     assert!(
         task_stderr.is_empty(),
         "task aliases should not emit deprecation notices: {task_stderr}"
@@ -19408,24 +19366,7 @@ fn project_help_mentions_deprecation_and_aliases() {
 #[test]
 fn task_show_displays_task_aware_detail() {
     let temp_dir = initialize_workspace_fixture();
-    let prompt = write_prompt_fixture(temp_dir.path());
-
-    Command::new(binary())
-        .args([
-            "project",
-            "create",
-            "--id",
-            "showme",
-            "--name",
-            "Show Me",
-            "--prompt",
-            prompt.to_str().unwrap(),
-            "--flow",
-            "docs_change",
-        ])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("create project");
+    create_bead_backed_project_fixture(temp_dir.path(), "showme", "ms-alpha", "ms-alpha.bead-1");
 
     let output = Command::new(binary())
         .args(["task", "show", "showme"])
@@ -19439,7 +19380,7 @@ fn task_show_displays_task_aware_detail() {
         stdout.contains("Task: 'showme' (project 'showme')"),
         "task show should use task-aware header, got: {stdout}"
     );
-    assert!(stdout.contains("Name: Show Me"));
+    assert!(stdout.contains("Name: Fixture showme"));
     assert!(stdout.contains("Flow: docs_change"));
     assert!(stdout.contains("Run status: not started"));
 }
@@ -19447,24 +19388,12 @@ fn task_show_displays_task_aware_detail() {
 #[test]
 fn task_show_resolves_active_project_when_no_id_given() {
     let temp_dir = initialize_workspace_fixture();
-    let prompt = write_prompt_fixture(temp_dir.path());
-
-    Command::new(binary())
-        .args([
-            "project",
-            "create",
-            "--id",
-            "active-task",
-            "--name",
-            "Active Task",
-            "--prompt",
-            prompt.to_str().unwrap(),
-            "--flow",
-            "standard",
-        ])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("create project");
+    create_bead_backed_project_fixture(
+        temp_dir.path(),
+        "active-task",
+        "ms-alpha",
+        "ms-alpha.bead-1",
+    );
 
     Command::new(binary())
         .args(["task", "select", "active-task"])
@@ -19511,24 +19440,29 @@ fn task_show_json_includes_lineage_for_milestone_tasks() {
 }
 
 #[test]
-fn task_show_json_omits_lineage_for_non_milestone_tasks() {
+fn task_show_supports_standalone_projects() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "plain-task");
 
-    let output = Command::new(binary())
+    let task_output = Command::new(binary())
         .args(["task", "show", "--json", "plain-task"])
         .current_dir(temp_dir.path())
         .output()
         .expect("run task show --json");
+    let project_output = Command::new(binary())
+        .args(["project", "show", "--json", "plain-task"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show --json");
 
-    assert!(output.status.success());
-    let value: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("task show json should parse");
-    assert_eq!(value["record"]["id"], "plain-task");
-    assert!(
-        value.get("task_lineage").is_none(),
-        "non-milestone task json should omit task_lineage"
-    );
+    assert!(task_output.status.success());
+    assert!(project_output.status.success());
+    let task_json: serde_json::Value =
+        serde_json::from_slice(&task_output.stdout).expect("task show json should parse");
+    let project_json: serde_json::Value =
+        serde_json::from_slice(&project_output.stdout).expect("project show json should parse");
+    assert_eq!(task_json, project_json);
+    assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
 }
 
 #[test]
@@ -19670,7 +19604,7 @@ fn milestone_status_shows_current_state() {
 #[test]
 fn task_show_dispatches_to_project_show() {
     let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "alpha");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-1");
 
     let task_output = Command::new(binary())
         .args(["task", "show", "alpha", "--json"])
@@ -19698,10 +19632,11 @@ fn task_show_dispatches_to_project_show() {
 }
 
 #[test]
-fn task_list_dispatches_to_project_list() {
+fn task_list_matches_project_list_for_legacy_projects() {
     let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "alpha");
-    create_project_fixture(temp_dir.path(), "beta");
+    create_bead_backed_project_fixture(temp_dir.path(), "alpha", "ms-alpha", "ms-alpha.bead-1");
+    create_bead_backed_project_fixture(temp_dir.path(), "beta", "ms-alpha", "ms-alpha.bead-2");
+    create_project_fixture(temp_dir.path(), "standalone");
     select_active_project_fixture(temp_dir.path(), "alpha");
 
     let task_output = Command::new(binary())
@@ -19720,16 +19655,19 @@ fn task_list_dispatches_to_project_list() {
         project_output.status.success(),
         "project list should succeed"
     );
-    assert_eq!(task_output.stdout, project_output.stdout);
     let stdout = String::from_utf8_lossy(&task_output.stdout);
     assert!(stdout.contains("alpha *"));
     assert!(stdout.contains("beta"));
+    assert!(stdout.contains("standalone"));
+    let project_stdout = String::from_utf8_lossy(&project_output.stdout);
+    assert!(project_stdout.contains("standalone"));
+    assert_eq!(stdout, project_stdout);
     assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
     assert!(String::from_utf8_lossy(&project_output.stderr).contains("deprecated"));
 }
 
 #[test]
-fn task_select_dispatches_to_project_select() {
+fn task_select_supports_standalone_projects() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
 
@@ -19745,8 +19683,6 @@ fn task_select_dispatches_to_project_select() {
         "alpha"
     );
     assert!(String::from_utf8_lossy(&task_output.stderr).is_empty());
-
-    fs::remove_file(active_project_path(temp_dir.path())).expect("clear active project");
 
     let project_output = Command::new(binary())
         .args(["project", "select", "alpha"])

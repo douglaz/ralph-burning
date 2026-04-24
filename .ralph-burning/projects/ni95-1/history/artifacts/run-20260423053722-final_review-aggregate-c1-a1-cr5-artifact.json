@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260423053722-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260423053722-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T04:45:20.659752544Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-c2f61e15`\n- `fr-5-cf7be5a2`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-c2f61e15`\n\nfinding_summary: `task --help` now says the command family manages only tasks \"created from milestone beads\", but the implementation still intentionally fronts the generic project store, including standalone legacy projects.\naffected_files:\n- src/cli/task.rs:15-16\n- src/cli/task.rs:96-149\n- tests/cli.rs:19302-19342\n- tests/cli.rs:19443-19465\n- tests/cli.rs:19670-19701\nremediation_hint: Either restrict `task show`/`task select`/`task list` to bead-backed records, or loosen the new top-level help text so it explicitly covers legacy/standalone project compatibility.\n\n### `fr-5-cf7be5a2`\n\nfinding_summary: `milestone tasks --help` says the command lists \"task runs\", but the command actually lists linked tasks/projects; run attempts are handled by `milestone bead-history`.\naffected_files:\n- src/cli/milestone.rs:128-130\n- src/cli/milestone.rs:1413-1431\n- src/cli/milestone.rs:2038-2048\n- src/contexts/milestone_record/queries.rs:161-180\nremediation_hint: Change the long help text to describe tasks/projects linked to the milestone, not run attempts.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

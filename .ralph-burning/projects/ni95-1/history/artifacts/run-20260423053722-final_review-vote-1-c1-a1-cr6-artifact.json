@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260423053722-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260423053722-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T05:29:03.785475790Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real help-text regressions where the CLI documentation no longer matches implemented and tested behavior. They are low-risk but valid maintainability and operator-correctness issues, so both should be accepted.\n\n## Votes\n\n- `fr-6-90ff7de2`: Accept\n  The amendment is technically correct. `milestone next` and `milestone run` advertise the next \"unblocked\" bead, but the implementation explicitly treats blocked-with-retry-context beads as actionable, and the regression test confirms that behavior. Leaving the help text as-is misdocuments the command contract and will mislead operators about when a blocked bead can still be resumed.\n- `fr-6-45d04e77`: Accept\n  The amendment is technically correct. The top-level `task` help says legacy standalone projects remain supported, while the `show`, `select`, and `list` subcommand text narrows the behavior to tasks only even though the code and tests still support standalone projects. That internal inconsistency is a real documentation defect and should be fixed so the CLI help accurately reflects supported behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
