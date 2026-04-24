@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260423053722",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 6
+      "completion_round": 7
     },
     "started_at": "2026-04-24T02:24:25.693774513Z",
     "prompt_hash_at_cycle_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "prompt_hash_at_stage_start": "8154ff37dab91f4d6f74dae097cce4f9ba27178bf13cd450167acdac4b4a273d",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 5
+    "final_review_restart_count": 6
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 6,
+  "completion_rounds": 7,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-6-90ff7de2",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "finding_summary: `milestone next --help` and `milestone run --help` now say they operate on the next \"unblocked\" bead, but the implementation intentionally treats retryable blocked beads as actionable too. The new long_about text at `src/cli/milestone.rs:84` and `src/cli/milestone.rs:93` therefore misdocuments the real controller behavior: `handle_next` surfaces blocked-retry beads via `inspect_next_milestone_action` (`src/cli/milestone.rs:667`, `src/cli/milestone.rs:897-975`), and `execute_milestone_run` will resume them (`src/cli/milestone.rs:1014-1077`). The regression test at `src/cli/milestone.rs:3382-3464` already codifies that blocked retry beads are still actionable. remediation_hint: change these help strings to \"next actionable bead\" or explicitly mention retryable failed beads instead of saying \"unblocked\".",
+        "created_at": "2026-04-24T05:29:03.825619971Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "32c8d0b9c7a46cfce4f137ac4309ed874f9598f3d9c1f6782ac4d188a8e582a4"
+      },
+      {
+        "amendment_id": "fr-6-45d04e77",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "finding_summary: the new `task` help text is internally inconsistent about legacy standalone-project compatibility. `task --help` explicitly says standalone projects remain supported (`src/cli/task.rs:16-18`), but the new per-subcommand descriptions for `show`, `select`, and `list` are task-only (`src/cli/task.rs:32-52`) even though those commands still show/select/list standalone projects. The updated compatibility tests at `tests/cli.rs:19443-19465` and `tests/cli.rs:19635-19702` confirm that standalone projects remain part of the supported behavior. As shipped, operators reading subcommand help will be told these commands are task-only when they are not. remediation_hint: either mention standalone-project compatibility in those subcommand descriptions or avoid wording like \"active task\" / \"List known tasks\" that implies non-task projects are unsupported.",
+        "created_at": "2026-04-24T05:29:03.825625391Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "94183bb5d548da698500f595f4a5ea53ec34c2771e8afa5ea5b3c2de1ee09d17"
+      }
+    ],
     "processed_count": 7
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 7 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-24T04:37:11.323477028Z",
+    "resolved_at": "2026-04-24T05:18:38.342867325Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
