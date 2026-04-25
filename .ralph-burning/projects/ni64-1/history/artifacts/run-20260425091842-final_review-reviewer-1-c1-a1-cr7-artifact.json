@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T17:00:32.474612491Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now issues: related-work entries are not filtered against detail-only closed/deferred status, and prompt-review can silently add synthetic `Nearby work` content to legacy prompts.\n\n## Amendments\n\n1. finding_summary: `Nearby work` can still surface closed/deferred beads under `Related work` when `br list` is stale. In `src/cli/project.rs:2755-2766`, related-work selection only filters on `BeadSummary.status`, even though `src/cli/project.rs:1956-1964` prefetches `br show` details for those same candidates. If the summary says a related bead is open but the detail says `closed` or `deferred`, the prompt still renders it (now with the closed status) and downstream review/final_review routing will treat that bead as a valid planned-elsewhere target.\nseverity: medium\naffected_files:\n- src/cli/project.rs:1956-1964\n- src/cli/project.rs:2755-2827\nremediation_hint: Filter related-work candidates with `nearby_candidate_status_is_omitted(...)` using `bead_details` before applying the top-3 limit, and add a regression test for summary-open/detail-closed related beads.\n   Rationale: The bead contract explicitly says closed/deferred nearby work must be omitted. Emitting a closed related bead undermines the new routing behavior by letting reviewers map findings to work that is no longer actually planned.\n2. finding_summary: Prompt-review drift validation does not preserve the legacy prompt shape. In `src/contexts/workflow_composition/prompt_review.rs:333-340`, when the original prompt is a legacy v1 prompt without `## Nearby work`, the refined prompt is checked with the compatibility validator, so a refiner can add a brand-new `## Nearby work` section and still pass validation. That section is supposed to be graph-derived builder output, not free-form prompt-review text; once accepted, any fabricated nearby bead IDs become valid planned-elsewhere routing targets in later review stages.\nseverity: low\naffected_files:\n- src/contexts/workflow_composition/prompt_review.rs:333-340\nremediation_hint: When the original prompt is legacy-without-nearby, require the refined prompt to stay on that same section shape unless there is an explicit migration path that rebuilds nearby-work content from bead data.\n   Rationale: The new nearby-work section changes routing semantics, so allowing prompt-review to synthesize it on old prompts creates a contract-integrity gap even if the text still passes structural validation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}
