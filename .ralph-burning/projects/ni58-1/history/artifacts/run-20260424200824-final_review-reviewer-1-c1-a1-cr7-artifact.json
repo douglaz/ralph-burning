@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T04:10:11.921167973Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 fix-now correctness issue. The new qualified-to-short retry path in `load_bead_detail` can incorrectly accept a foreign unqualified explicit bead and create a project against the wrong bead.\n\n## Amendments\n\n1. finding_summary: Fully-qualified explicit bead lookups can now bind the wrong bead after the new short-form retry path. In `src/cli/project.rs:1728-1731`, a request like `ms-alpha.api-1` falls back to `api-1` when the qualified `br show` misses. That retry result is accepted by `bead_matches_show_query` (`src/cli/project.rs:1775-1784`) and then treated as local by `ensure_bead_belongs_to_milestone` (`src/cli/project.rs:1957-1973`) if the returned bead id is the unqualified `api-1`. In a workspace where another bead already owns that short explicit id, `project create-from-bead` can create/claim work for the foreign bead even though the requested fully-qualified bead was not found.\n\naffected_files:\n- src/cli/project.rs:1728-1731\n- src/cli/project.rs:1775-1784\n- src/cli/project.rs:1957-1973\n\nremediation_hint: Do not short-retry fully-qualified explicit ids, or require the retry result to come back with an unambiguous same-milestone qualified id before accepting it.\n   Rationale: This is a correctness bug in the new lookup path: the command can select and mutate the wrong bead, not just fail the lookup.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}
