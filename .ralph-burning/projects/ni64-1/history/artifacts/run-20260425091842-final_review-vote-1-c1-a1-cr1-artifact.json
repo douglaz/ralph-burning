@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T10:21:16.851880461Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment. The cited changes make `## Nearby work` mandatory for prompts still labeled `bead_execution_prompt/1`, so persisted older `/1` prompts no longer satisfy the validator and downstream canonical-contract logic regresses.\n\n## Votes\n\n- `fr-1-2f4bfd83`: Accept\n  `BEAD_TASK_PROMPT_CONTRACT_VERSION` remains `1`, but `BEAD_TASK_PROMPT_SECTION_TITLES` now includes `SECTION_NEARBY_WORK`, and `validate_canonical_prompt_shape` treats every listed section as required. That means previously generated `/1` prompts without `## Nearby work` now fail validation. The failure is observable in multiple consumers: canonical scope detection is gated on `validate_canonical_prompt_shape(...).is_ok()`, prompt review rejects refinements that preserve an older prompt verbatim, and project creation rejects prompt overrides that declare the contract but use the older shape. This is a real backward-compatibility defect in a persisted prompt contract, so the amendment is technically correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

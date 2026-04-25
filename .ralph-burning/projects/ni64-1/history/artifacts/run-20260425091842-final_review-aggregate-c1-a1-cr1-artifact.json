@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T10:21:16.881401206Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-2f4bfd83`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-2f4bfd83`\n\nfinding_summary: The branch makes `## Nearby work` a required `bead_execution_prompt/1` section without a compatibility path for the older `/1` prompts that are already persisted on existing tasks. `BEAD_TASK_PROMPT_CONTRACT_VERSION` is still `1`, but `SECTION_NEARBY_WORK` was added to `BEAD_TASK_PROMPT_SECTION_TITLES` in `src/contexts/project_run_record/task_prompt_contract.rs:18-19,42-53`, and the renderer now always emits that section in `src/contexts/project_run_record/service.rs:1217-1231`. Older version-1 prompts generated before this bead therefore fail `validate_canonical_prompt_shape`, which disables canonical scope handling in `src/contexts/workflow_composition/review_classification.rs:519-521` and causes prompt-review / override validation to reject unchanged historical prompts in `src/contexts/workflow_composition/prompt_review.rs:328-339` and `src/contexts/project_run_record/service.rs:426-435`.\nremediation_hint: Either introduce a new contract version and keep consumers able to recognize/validate legacy v1 prompts, or keep `Nearby work` optional when validating older `/1` prompts.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
