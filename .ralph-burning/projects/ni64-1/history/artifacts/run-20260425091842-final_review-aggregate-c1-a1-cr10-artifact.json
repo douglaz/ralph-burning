@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr10-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T20:06:57.703622521Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 10/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-10-8787411a`\n\n## Rejected\n\n- `fr-10-444a7a7f`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-10-8787411a`\n\nfinding_summary: equivalent planned-elsewhere targets are merged as conflicts when reviewers use different allowed aliases for the same nearby bead. `src/contexts/project_run_record/task_prompt_contract.rs:556-567` adds both canonical and short-form nearby IDs to the allowlist, and `src/contexts/workflow_composition/review_classification.rs:439-441` exposes every allowed form to reviewers, but `src/contexts/workflow_composition/final_review.rs:541-584` compares `mapped_to_bead_id` as raw strings during amendment merge. If one reviewer writes `9ni.6.5` and another writes `6.5`, the merge downgrades the amendment to `fix-now` even though both point at the same bead. affected_files: `src/contexts/project_run_record/task_prompt_contract.rs`, `src/contexts/workflow_composition/review_classification.rs`, `src/contexts/workflow_composition/final_review.rs`. remediation_hint: canonicalize `mapped_to_bead_id` against the prompt allowlist before merging/voting, or stop advertising short aliases in reviewer guidance.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}
