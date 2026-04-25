@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424200824-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T01:31:58.326096052Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nClosed the remaining 9ni.5.8 amendment by stopping short dotted bead aliases from binding across milestones. In `src/cli/project.rs`, `create-from-bead` now treats dotted numeric aliases as candidates only, accepts a `br show` result for those queries only when the returned bead id is unambiguously owned by the requested milestone, and otherwise retries the canonical `{milestone}.{alias}` lookup instead of accepting or hard-failing on a foreign bead. The same unambiguous-ownership rule now gates milestone membership and plan resolution, so ambiguous short dotted ids are rejected until canonicalized rather than being treated as equivalent to a qualified plan bead id. Regression coverage in `src/cli/project.rs` and `tests/cli.rs` now proves the CLI skips a foreign short-id collision, retries the canonical lookup, and still creates the project against the correct planned bead.\n\n## Steps\n\n1. [Completed] Inspect the short dotted alias lookup path in `project create-from-bead` to confirm where milestone-agnostic matching could still accept a foreign bead before canonical retry.\n2. [Completed] Tighten bead lookup and milestone validation so dotted aliases are only provisional candidates, returned beads must be unambiguously owned by the requested milestone, and ambiguous short dotted ids are rejected until canonicalized.\n3. [Completed] Add regression coverage for the foreign short-id collision path at both the unit helper level and the end-to-end CLI level.\n4. [Completed] Run the required validation gates, including targeted regressions, repository-wide tests, linting, formatting, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub load_bead_detail_skips_foreign_short_dotted_result_and_retries_canonical_show -- --nocapture` succeeded.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_skips_foreign_short_dotted_result_and_uses_canonical_retry -- --nocapture` succeeded.\n- `nix develop -c cargo fmt --check` succeeded.\n- `nix develop -c cargo clippy --locked -- -D warnings` succeeded.\n- `nix develop -c cargo test --locked --features test-stub conformance_full_suite_passes -- --nocapture` succeeded.\n- `nix develop -c cargo test --locked --features test-stub` succeeded: lib tests `1215 passed` with `6 ignored`, CLI tests `375 passed` with `3 ignored`, `run_attach_tmux` tests `1 passed`, unit tests `1079 passed` with `1 ignored`, doc tests clean with `9 ignored`.\n- `nix build` succeeded.\n\n## Outstanding Risks\n\n- Unrelated live orchestration-state changes under `.ralph-burning/` remain in the worktree and were excluded from review per instructions.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 5
+}

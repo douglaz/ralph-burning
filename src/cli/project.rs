@@ -24,7 +24,7 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
 use crate::contexts::milestone_record::bead_refs::{
-    br_show_output_indicates_missing, canonicalize_milestone_bead_ref, milestone_bead_refs_match,
+    br_show_output_indicates_missing, milestone_bead_refs_match,
 };
 use crate::contexts::milestone_record::bundle::{bead_matches_implicit_slot, MilestoneBundle};
 use crate::contexts::milestone_record::controller::{
@@ -1678,12 +1678,12 @@ async fn load_bead_detail(
 
         if let Some(response) = show_response {
             if let Some(bead) =
-                select_matching_bead_from_show_response(milestone_id, bead_id, response)?
+                select_matching_bead_from_show_response(milestone_id, bead_id, &query, response)?
             {
                 return Ok(bead);
             }
 
-            if query.contains('.') {
+            if query.contains('.') && !is_short_dotted_alias_candidate(milestone_id, &query) {
                 return Err(unmatched_br_show_error(milestone_id, bead_id));
             }
         }
@@ -1707,7 +1707,7 @@ async fn load_bead_detail(
 
         if let Some(response) = show_no_db_response {
             if let Some(bead) =
-                select_matching_bead_from_show_response(milestone_id, bead_id, response)?
+                select_matching_bead_from_show_response(milestone_id, bead_id, &query, response)?
             {
                 return Ok(bead);
             }
@@ -1727,7 +1727,7 @@ fn bead_show_query_candidates(milestone_id: &MilestoneId, bead_id: &str) -> Vec<
         if !short_ref.is_empty() {
             queries.push(short_ref.to_owned());
         }
-    } else if dotted_bead_ref_belongs_to_milestone(milestone_id, bead_id) {
+    } else if is_short_dotted_alias_candidate(milestone_id, bead_id) {
         queries.push(format!("{qualified_prefix}{bead_id}"));
     }
 
@@ -1735,24 +1735,32 @@ fn bead_show_query_candidates(milestone_id: &MilestoneId, bead_id: &str) -> Vec<
     queries
 }
 
-fn dotted_bead_ref_belongs_to_milestone(milestone_id: &MilestoneId, bead_id: &str) -> bool {
+fn is_short_dotted_alias_candidate(milestone_id: &MilestoneId, bead_id: &str) -> bool {
     let trimmed = bead_id.trim();
     if !trimmed.contains('.') || trimmed.starts_with(&format!("{}.", milestone_id.as_str())) {
         return false;
     }
 
-    let is_short_numeric_alias = trimmed
+    trimmed
         .split('.')
-        .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()));
-    if !is_short_numeric_alias {
-        return false;
-    }
+        .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
+}
 
-    milestone_bead_refs_match(
-        milestone_id,
-        trimmed,
-        &format!("{}.{}", milestone_id.as_str(), trimmed),
-    )
+fn bead_id_is_unambiguous_for_milestone(milestone_id: &MilestoneId, bead_id: &str) -> bool {
+    let trimmed = bead_id.trim();
+    !trimmed.is_empty()
+        && (!trimmed.contains('.') || trimmed.starts_with(&format!("{}.", milestone_id.as_str())))
+}
+
+fn bead_matches_show_query(
+    milestone_id: &MilestoneId,
+    requested_bead_id: &str,
+    query: &str,
+    bead: &BeadDetail,
+) -> bool {
+    milestone_bead_refs_match(milestone_id, &bead.id, requested_bead_id)
+        && (!is_short_dotted_alias_candidate(milestone_id, query)
+            || bead_id_is_unambiguous_for_milestone(milestone_id, &bead.id))
 }
 
 fn map_br_show_error(bead_id: &str, error: BrError) -> AppError {
@@ -1776,16 +1784,17 @@ fn map_br_show_error(bead_id: &str, error: BrError) -> AppError {
 fn select_matching_bead_from_show_response(
     milestone_id: &MilestoneId,
     bead_id: &str,
+    query: &str,
     response: BrShowResponse,
 ) -> AppResult<Option<BeadDetail>> {
     match response {
         BrShowResponse::Single(bead) => {
-            Ok(milestone_bead_refs_match(milestone_id, &bead.id, bead_id).then_some(bead))
+            Ok(bead_matches_show_query(milestone_id, bead_id, query, &bead).then_some(bead))
         }
         BrShowResponse::Many(beads) => {
             let mut matches = beads
                 .into_iter()
-                .filter(|bead| milestone_bead_refs_match(milestone_id, &bead.id, bead_id));
+                .filter(|bead| bead_matches_show_query(milestone_id, bead_id, query, bead));
             let bead = matches.next();
             if matches.next().is_some() {
                 return Err(AppError::Io(std::io::Error::other(format!(
@@ -1930,11 +1939,7 @@ fn ensure_bead_belongs_to_milestone(
     bead: &BeadDetail,
 ) -> AppResult<()> {
     let expected_prefix = format!("{}.", milestone_id.as_str());
-    let canonical_bead_id = canonicalize_milestone_bead_ref(milestone_id, &bead.id);
-    if !bead.id.contains('.')
-        || canonical_bead_id.starts_with(&expected_prefix)
-        || dotted_bead_ref_belongs_to_milestone(milestone_id, &bead.id)
-    {
+    if bead_id_is_unambiguous_for_milestone(milestone_id, &bead.id) {
         return Ok(());
     }
 
@@ -4188,7 +4193,7 @@ status_summary = "{status_summary}"
     }
 
     #[test]
-    fn resolve_bead_plan_matches_short_live_bead_id_against_qualified_plan_bead_id() {
+    fn resolve_bead_plan_rejects_ambiguous_short_live_bead_id_against_qualified_plan_bead_id() {
         let milestone_id = MilestoneId::new("9ni").expect("milestone id");
         let bundle = MilestoneBundle {
             schema_version: 1,
@@ -4243,11 +4248,10 @@ status_summary = "{status_summary}"
             updated_at: None,
         };
 
-        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("ambiguous short dotted bead id should be rejected");
 
-        assert_eq!(resolved.flow_override, Some(FlowPreset::Minimal));
-        assert!(resolved.membership_confirmed);
-        assert!(!resolved.used_legacy_title_fallback);
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
     }
 
     #[test]
@@ -5120,23 +5124,27 @@ status_summary = "{status_summary}"
     }
 
     #[test]
-    fn ensure_bead_belongs_to_milestone_accepts_short_dotted_aliases() {
+    fn ensure_bead_belongs_to_milestone_rejects_short_dotted_aliases_until_canonicalized() {
         let milestone_id = MilestoneId::new("9ni").expect("milestone id");
         let mut bead = sample_bead();
         bead.id = "8.5.3".to_owned();
 
-        ensure_bead_belongs_to_milestone(&milestone_id, &bead)
-            .expect("short dotted alias should pass");
+        let error = ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect_err("short dotted alias should stay ambiguous until canonicalized");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
     }
 
     #[test]
-    fn ensure_bead_belongs_to_milestone_accepts_numeric_short_dotted_aliases() {
+    fn ensure_bead_belongs_to_milestone_rejects_numeric_short_dotted_aliases_until_canonicalized() {
         let milestone_id = MilestoneId::new("10").expect("milestone id");
         let mut bead = sample_bead();
         bead.id = "8.5.3".to_owned();
 
-        ensure_bead_belongs_to_milestone(&milestone_id, &bead)
-            .expect("numeric short dotted alias should pass");
+        let error = ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect_err("numeric short dotted alias should stay ambiguous until canonicalized");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
     }
 
     #[test]
@@ -5315,6 +5323,49 @@ esac
                 .expect("chmod fake br");
         }
 
+        fn install_fake_br_show_short_alias_foreign_then_canonical(
+            base_dir: &std::path::Path,
+            short_bead_id: &str,
+            canonical_bead_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    if [ "$2" = "{short_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{short_bead_id}","title":"Foreign bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    if [ "$2" = "{canonical_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{canonical_bead_id}","title":"Expected explicit bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         #[tokio::test]
         async fn load_bead_detail_retries_no_db_for_unqualified_explicit_ids(
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -5348,6 +5399,24 @@ esac
             let bead = super::super::load_bead_detail(base_dir, &milestone_id, "8.5.3").await?;
 
             assert_eq!(bead.id, "9ni.8.5.3");
+            assert_eq!(bead.status, BeadStatus::InProgress);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_skips_foreign_short_dotted_result_and_retries_canonical_show(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_short_alias_foreign_then_canonical(base_dir, "8.5.3", "10.8.5.3");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("10")?;
+            let bead = super::super::load_bead_detail(base_dir, &milestone_id, "8.5.3").await?;
+
+            assert_eq!(bead.id, "10.8.5.3");
             assert_eq!(bead.status, BeadStatus::InProgress);
             Ok(())
         }

@@ -7167,6 +7167,114 @@ exit 1
 }
 
 #[test]
+fn project_create_from_bead_skips_foreign_short_dotted_result_and_uses_canonical_retry() {
+    let temp_dir = initialize_workspace_fixture();
+    write_alias_milestone_fixture(temp_dir.path(), "10");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
+if [ "$1" = "show" ] && [ "$2" = "8.5.3" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "8.5.3",
+    "title": "Foreign bead with matching short id",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "This bead belongs to a different milestone namespace.",
+    "acceptance_criteria": "- foreign bead should not be selected",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "show" ] && [ "$2" = "10.8.5.3" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "10.8.5.3",
+    "title": "Alias-backed create-from-bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "Resolve create-from-bead against a stable qualified bead id.",
+    "acceptance_criteria": "- canonical retry wins after foreign short-id collision",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "ready" ] && [ "$2" = "--json" ]; then
+echo '[]'
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
+cat <<'EOF'
+{
+  "issues": [
+    {
+      "id": "10.8.5.3",
+      "title": "Alias-backed create-from-bead",
+      "status": "open",
+      "priority": "P1",
+      "issue_type": "task",
+      "labels": ["creation"]
+    }
+  ]
+}
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "10",
+            "--bead-id",
+            "8.5.3",
+            "--project-id",
+            "foreign-short-id-collision-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "foreign-short-id-collision-project").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"docs_change\""));
+    assert!(project_toml.contains("milestone_id = \"10\""));
+    assert!(project_toml.contains("bead_id = \"10.8.5.3\""));
+}
+
+#[test]
 fn project_create_from_bead_uses_explicit_flow_override_when_title_drifted_but_id_matches() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
