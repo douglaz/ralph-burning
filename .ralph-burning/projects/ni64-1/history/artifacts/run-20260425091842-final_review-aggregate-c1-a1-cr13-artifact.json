@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T23:15:44.760868873Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 3\n**Final Review Restarts:** 13/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-13-64fbce41`\n- `fr-13-7bb1dc84`\n\n## Rejected\n\n- `fr-13-6ada3d44`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-13-64fbce41`\n\nfinding_summary: Nearby-work detail refresh silently discards every `br show` failure and then renders from stale summary/relation data as if the refresh succeeded, which can reintroduce closed/deferred beads or outdated titles/descriptions into `Nearby work`. `src/cli/project.rs:2133-2156` converts each `load_bead_detail` error to `None`, while `src/cli/project.rs:2776-2837` and `src/cli/project.rs:3171-3203` fall back to summary/relation status whenever detail is missing. affected_files: `src/cli/project.rs:2133-2156`, `src/cli/project.rs:2776-2837`, `src/cli/project.rs:3171-3203`. remediation_hint: propagate nearby detail-load failures, or conservatively omit entries whose authoritative detail could not be loaded instead of silently trusting stale summary data.\n\n### `fr-13-7bb1dc84`\n\nfinding_summary: Nearby-work hydration now fans out one unbounded `br show` call per direct dependency/dependent before any production cap is applied, so highly connected beads can spawn dozens or hundreds of subprocesses during project creation. `src/cli/project.rs:1875-1886` feeds all IDs from `nearby_all_direct_relation_detail_candidate_ids`, `src/cli/project.rs:3076-3090` has no runtime limit, and `src/cli/project.rs:2133-2150` launches them all concurrently via `FuturesUnordered`. affected_files: `src/cli/project.rs:1875-1886`, `src/cli/project.rs:2133-2150`, `src/cli/project.rs:3076-3090`. remediation_hint: enforce a real runtime cap and/or semaphore around per-bead detail fetches, and prefer summary data for noncritical candidates.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}
