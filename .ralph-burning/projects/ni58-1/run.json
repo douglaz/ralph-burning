@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260424200824",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 6
+      "completion_round": 7
     },
     "started_at": "2026-04-24T20:08:24.156825965Z",
     "prompt_hash_at_cycle_start": "9a82948aa2e5afa45d304f8fd06f2e3552bcc18b52e7ba3d93c0a4e788968a53",
     "prompt_hash_at_stage_start": "9a82948aa2e5afa45d304f8fd06f2e3552bcc18b52e7ba3d93c0a4e788968a53",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 5
+    "final_review_restart_count": 6
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 6,
+  "completion_rounds": 7,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-6-723e7126",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "`bead_execution_history` now tries to recover stable lineage metadata by calling `find_matching_task_source_for_bead`, but that helper returns the first matching project from `list_project_ids()` (`src/contexts/milestone_record/service.rs:3929-3949, 4004-4025`). `FsProjectStore::list_project_ids()` is lexicographically sorted, not ordered by recency or metadata quality (`src/adapters/fs.rs:1536-1575`), so when a bead has multiple terminal projects on the same `plan_hash`, an older project without `plan_workstream_index`/`plan_bead_index` can mask a newer indexed project. In that state, history/lineage reconstruction drops back to the legacy title-only path and can still lose bead title/acceptance data or fail on title drift even though a correct indexed task source exists. The helper needs deterministic selection that prefers indexed task sources (and ideally the newest matching project), plus a regression test with two same-bead projects sharing one plan hash.",
+        "created_at": "2026-04-25T03:23:54.621457008Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "8d281d359df2a7f5b3689ac01f84a3c10e77b8598164a6cfade9c568fb72a636"
+      }
+    ],
     "processed_count": 7
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 7 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-25T01:31:58.621108090Z",
+    "resolved_at": "2026-04-25T03:10:51.021427186Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

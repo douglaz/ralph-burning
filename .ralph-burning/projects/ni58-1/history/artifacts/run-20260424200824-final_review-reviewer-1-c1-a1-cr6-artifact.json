@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T03:22:47.250401888Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 medium correctness issue in the new lineage-recovery path. Targeted `create-from-bead`, `read_bead_lineage`, and `bead_execution_history` tests passed under `nix develop -c cargo test --locked --features test-stub`, but the multi-project selection path still needs to be fixed.\n\n## Amendments\n\n1. `bead_execution_history` now tries to recover stable lineage metadata by calling `find_matching_task_source_for_bead`, but that helper returns the first matching project from `list_project_ids()` (`src/contexts/milestone_record/service.rs:3929-3949, 4004-4025`). `FsProjectStore::list_project_ids()` is lexicographically sorted, not ordered by recency or metadata quality (`src/adapters/fs.rs:1536-1575`), so when a bead has multiple terminal projects on the same `plan_hash`, an older project without `plan_workstream_index`/`plan_bead_index` can mask a newer indexed project. In that state, history/lineage reconstruction drops back to the legacy title-only path and can still lose bead title/acceptance data or fail on title drift even though a correct indexed task source exists. The helper needs deterministic selection that prefers indexed task sources (and ideally the newest matching project), plus a regression test with two same-bead projects sharing one plan hash.\n   Rationale: This branch’s new index fields are supposed to make legacy title-only plans resilient, but the first-match scan reintroduces nondeterministic behavior whenever multiple same-bead projects exist. The resulting failure is operator-visible in milestone history views and defeats the intended robustness improvement.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}
