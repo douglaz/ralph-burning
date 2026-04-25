@@ -2586,6 +2586,37 @@ fn create_project_from_bead_context_rejects_invalid_canonical_prompt_override() 
 }
 
 #[test]
+fn create_project_from_bead_context_rejects_canonical_override_missing_nearby_work() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let marker =
+        ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker();
+
+    let error = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("missing-nearby-work").unwrap()),
+            prompt_override: Some(format!(
+                "{marker}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH"
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect_err("canonical override missing nearby work should fail");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidPrompt { ref path, ref reason }
+            if path == "<prompt override>"
+                && reason.contains("canonical bead task contract violated")
+                && reason.contains("missing section heading `## Nearby work`")
+    ));
+}
+
+#[test]
 fn create_project_from_bead_context_allows_generic_override_that_quotes_marker() {
     let store = RecordingProjectStore::empty();
     let journal_store = FakeJournalStore;

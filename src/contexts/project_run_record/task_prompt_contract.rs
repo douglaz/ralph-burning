@@ -52,7 +52,11 @@ pub const BEAD_TASK_PROMPT_SECTION_TITLES: &[&str] = &[
     SECTION_AGENTS_REPO_GUIDANCE,
 ];
 
-fn is_optional_canonical_section(index: usize) -> bool {
+fn is_optional_canonical_section(index: usize, allow_legacy_missing_nearby_work: bool) -> bool {
+    if !allow_legacy_missing_nearby_work {
+        return false;
+    }
+
     BEAD_TASK_PROMPT_SECTION_TITLES
         .get(index)
         .is_some_and(|section| *section == SECTION_NEARBY_WORK)
@@ -292,6 +296,20 @@ pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
 
 /// Validate that a prompt preserves the canonical marker and section order.
 pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
+    validate_canonical_prompt_shape_with_options(prompt, true)
+}
+
+/// Validate the current canonical prompt shape for newly generated or refined
+/// prompts. Unlike [`validate_canonical_prompt_shape`], this compatibility-free
+/// check requires `Nearby work` so prompt review cannot silently drop it.
+pub fn validate_current_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
+    validate_canonical_prompt_shape_with_options(prompt, false)
+}
+
+fn validate_canonical_prompt_shape_with_options(
+    prompt: &str,
+    allow_legacy_missing_nearby_work: bool,
+) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     let marker = contract_marker();
     let mut marker_line_index = None;
@@ -341,7 +359,7 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
 
         if found_index > expected_index && expected_index < BEAD_TASK_PROMPT_SECTION_TITLES.len() {
             for missing_index in expected_index..found_index {
-                if is_optional_canonical_section(missing_index) {
+                if is_optional_canonical_section(missing_index, allow_legacy_missing_nearby_work) {
                     reported_missing[missing_index] = true;
                     continue;
                 }
@@ -388,7 +406,7 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     for (index, section) in BEAD_TASK_PROMPT_SECTION_TITLES.iter().enumerate() {
         if seen_positions[index].is_none()
             && !reported_missing[index]
-            && !is_optional_canonical_section(index)
+            && !is_optional_canonical_section(index, allow_legacy_missing_nearby_work)
         {
             errors.push(format!("missing section heading `## {section}`"));
         }
@@ -611,6 +629,20 @@ mod tests {
         );
 
         assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn current_canonical_prompt_shape_requires_nearby_work() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors =
+            validate_current_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing section heading `## Nearby work`")));
     }
 
     #[test]

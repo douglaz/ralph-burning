@@ -330,7 +330,7 @@ fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str
         return Vec::new();
     }
 
-    match task_prompt_contract::validate_canonical_prompt_shape(refined_prompt) {
+    match task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt) {
         Ok(()) => Vec::new(),
         Err(errors) => vec![format!(
             "Preserve the canonical bead task prompt contract exactly: {}",
@@ -635,6 +635,17 @@ mod tests {
 
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("must appear before the canonical section block"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_missing_nearby_work_in_refined_prompt() {
+        let concerns = canonical_contract_drift_concerns(
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            CANONICAL_PROMPT,
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("missing section heading `## Nearby work`"));
     }
 
     #[test]

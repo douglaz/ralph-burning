@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T12:01:20.905722235Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the two pending review findings in the current tree. Nearby direct dependency/dependent entries now include only `DependencyKind::Blocks` relations, leaving `parent_child` hierarchy links for parent/sibling inference only. Canonical prompt validation now has a strict current-shape validator that requires `## Nearby work`; generated bead prompts, prompt overrides, and prompt-review drift checks use that strict path, while the legacy validator still accepts old v1 prompts without the section for read-only compatibility. Added regression coverage for filtering parent/child links, requiring Nearby work on current prompts, rejecting prompt overrides that omit it, and detecting prompt-review drift that drops it.\n\n## Steps\n\n0. [Completed] Inspected the nearby-context builder, dependency relation handling, canonical prompt validation, prompt creation, and prompt-review drift call sites.\n1. [Completed] Ensured direct nearby relation construction filters to blocking dependency edges and added a regression test excluding parent_child links from direct dependency/dependent subsections.\n2. [Completed] Ensured current canonical prompt validation requires Nearby work while preserving legacy read-only compatibility, and wired strict validation into prompt creation and prompt-review drift detection.\n3. [Completed] Added focused regression tests for strict Nearby work validation on current prompts and prompt-review refinements.\n4. [Completed] Ran focused and full validation gates, including the repository-authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context --lib` passed: 5 tests.\n- `nix develop -c cargo test --locked --features test-stub canonical_prompt_shape --lib` passed: 16 tests.\n- `nix develop -c cargo test --locked --features test-stub canonical_contract_drift_flags_missing_nearby_work_in_refined_prompt --lib` passed: 1 test.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

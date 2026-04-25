@@ -2456,6 +2456,7 @@ fn nearby_entries_from_relations(
 ) -> Vec<NearbyBeadEntry> {
     let mut entries = relations
         .iter()
+        .filter(|relation| relation.kind == DependencyKind::Blocks)
         .filter_map(|relation| {
             if included_ids.contains(&relation.id) {
                 return None;
@@ -3898,6 +3899,92 @@ mod tests {
             .scope_summary
             .ends_with("..."));
         assert!(!context.direct_dependencies[0].scope_summary.contains('\n'));
+    }
+
+    #[test]
+    fn build_nearby_bead_context_excludes_parent_child_relations_from_direct_lists() {
+        let mut bead = sample_bead();
+        bead.dependencies = vec![
+            DependencyRef {
+                id: "ms-alpha.epic".to_owned(),
+                kind: DependencyKind::ParentChild,
+                title: Some("Parent epic".to_owned()),
+                status: Some(BeadStatus::Open),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-1".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Prepare substrate".to_owned()),
+                status: Some(BeadStatus::Open),
+            },
+        ];
+        bead.dependents = vec![
+            DependencyRef {
+                id: "ms-alpha.child".to_owned(),
+                kind: DependencyKind::ParentChild,
+                title: Some("Child bead".to_owned()),
+                status: Some(BeadStatus::Open),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-4".to_owned(),
+                kind: DependencyKind::Blocks,
+                title: Some("Consume nearby context".to_owned()),
+                status: Some(BeadStatus::Open),
+            },
+        ];
+        let bead_summaries = BTreeMap::from([
+            (
+                "ms-alpha.epic".to_owned(),
+                summary(
+                    "ms-alpha.epic",
+                    "Parent epic",
+                    BeadStatus::Open,
+                    &[],
+                    Some("Coordinate child work."),
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.child".to_owned(),
+                summary(
+                    "ms-alpha.child",
+                    "Child bead",
+                    BeadStatus::Open,
+                    &[],
+                    Some("Handle hierarchy-only child work."),
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.bead-1".to_owned(),
+                summary(
+                    "ms-alpha.bead-1",
+                    "Prepare substrate",
+                    BeadStatus::Open,
+                    &[],
+                    Some("Prepare blocking dependency."),
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.bead-4".to_owned(),
+                summary(
+                    "ms-alpha.bead-4",
+                    "Consume nearby context",
+                    BeadStatus::Open,
+                    &[],
+                    Some("Consume downstream output."),
+                    None,
+                ),
+            ),
+        ]);
+
+        let context = build_nearby_bead_context(&bead, &bead_summaries);
+
+        assert_eq!(context.direct_dependencies.len(), 1);
+        assert_eq!(context.direct_dependencies[0].bead_id, "ms-alpha.bead-1");
+        assert_eq!(context.direct_dependents.len(), 1);
+        assert_eq!(context.direct_dependents[0].bead_id, "ms-alpha.bead-4");
     }
 
     #[test]
