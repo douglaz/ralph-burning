@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T13:01:37.493779538Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-1e9269ce`\n- `fr-4-10480d9a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-1e9269ce`\n\n`src/contexts/project_run_record/service.rs:427-430` explicitly accepts contract-marked prompt overrides that omit `## Nearby work`, and `src/contexts/workflow_composition/prompt_review.rs:333-340` also treats that legacy shape as valid. But `src/contexts/project_run_record/task_prompt_contract.rs:182-190` and `src/contexts/workflow_composition/prompt_review.rs:366-367` still inject guidance that says `Nearby work` is an authoritative canonical section whenever the marker is present. On a supported legacy override, prompt-review/completion/final-review agents are told to preserve and use a section that does not exist, which can create false contract-drift or scope complaints.\n\n### `fr-4-10480d9a`\n\n`src/cli/project.rs:2586-2606` never truncates `NearbyBeadEntry.title` (and even falls back to the title for `scope_summary`), while `src/contexts/project_run_record/task_prompt_contract.rs:92-111` can only get back under budget by dropping whole entries and `src/contexts/project_run_record/task_prompt_contract.rs:140-148` renders the full title verbatim. A single long bead title can therefore blow the nearby-work byte budget or cause the highest-priority direct dependency to be removed entirely instead of being shortened, violating the per-entry and section-budget requirements.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

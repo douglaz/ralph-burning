@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T13:01:37.457835399Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real robustness issues: legacy contract guidance currently contradicts accepted prompt shapes, and nearby-work budgeting does not truncate oversized entries before dropping them.\n\n## Votes\n\n- `fr-4-1e9269ce`: Accept\n  The cited code paths are inconsistent. Contract-marked prompt overrides are explicitly allowed to use the legacy shape without `## Nearby work`, and prompt-review drift detection also accepts that shape. But the injected contract guidance still tells downstream agents that `Nearby work` is an authoritative canonical section whenever the marker is present. That gives prompt-review, completion, and final-review agents contradictory instructions for a supported prompt form and can plausibly produce false drift or scope complaints.\n- `fr-4-10480d9a`: Accept\n  `NearbyBeadEntry.title` is rendered verbatim, while budget enforcement only gets back under the cap by removing whole entries. There is no title-truncation path for nearby-work entries, and `scope_summary` can also duplicate the title when description text is absent. As a result, one unusually long title can force the highest-value nearby context, including direct dependencies, to be dropped entirely instead of being shortened. The final section is usually brought back under budget by omission rather than true overflow, but that is still a real correctness/robustness defect in how the nearby-work budget is enforced.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
