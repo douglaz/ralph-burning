@@ -370,7 +370,7 @@ pub(crate) async fn execute_create_from_bead_in_dir(
     if bead_plan.used_legacy_title_fallback {
         warn_once_for_legacy_plan_lookup(current_dir, &milestone_id, &bead.id);
     }
-    let confirmed_plan_version = if bead_plan.membership_confirmed {
+    let confirmed_plan_version = if bead_plan.plan_snapshot_validated {
         validate_milestone_plan_snapshot(
             &milestone_id,
             milestone_snapshot.plan_hash.as_deref(),
@@ -385,10 +385,10 @@ pub(crate) async fn execute_create_from_bead_in_dir(
         .or(bead_plan.flow_override)
         .unwrap_or(milestone_bundle.bundle.default_flow);
     let plan_hash = bead_plan
-        .membership_confirmed
+        .plan_snapshot_validated
         .then(|| milestone_bundle.plan_hash.clone());
     let plan_version = bead_plan
-        .membership_confirmed
+        .plan_snapshot_validated
         .then_some(confirmed_plan_version)
         .flatten();
     let (upstream_dependencies, downstream_dependents, planned_elsewhere) =
@@ -1905,6 +1905,7 @@ fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
 struct ResolvedBeadPlan {
     flow_override: Option<FlowPreset>,
     membership_confirmed: bool,
+    plan_snapshot_validated: bool,
     used_legacy_title_fallback: bool,
     matched_workstream_index: Option<usize>,
     matched_bead_index: Option<usize>,
@@ -2035,6 +2036,7 @@ fn resolve_bead_plan(
             return Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: true,
+                plan_snapshot_validated: true,
                 used_legacy_title_fallback: false,
                 matched_workstream_index: Some(*workstream_index),
                 matched_bead_index: Some(*bead_index),
@@ -2056,6 +2058,7 @@ fn resolve_bead_plan(
         return Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
             membership_confirmed: false,
+            plan_snapshot_validated: true,
             used_legacy_title_fallback: true,
             matched_workstream_index: Some(workstream_index),
             matched_bead_index: Some(bead_index),
@@ -2067,6 +2070,7 @@ fn resolve_bead_plan(
             Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: false,
+                plan_snapshot_validated: true,
                 used_legacy_title_fallback: true,
                 matched_workstream_index: Some(*workstream_index),
                 matched_bead_index: Some(*bead_index),

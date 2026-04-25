@@ -6252,6 +6252,13 @@ exit 1
     let second_stderr = String::from_utf8_lossy(&second_output.stderr);
     assert!(first_stderr.contains("legacy title-only bead entries"));
     assert!(!second_stderr.contains("legacy title-only bead entries"));
+
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "legacy-warning-second").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
+    assert!(project_toml.contains("plan_version = 2"));
 }
 
 #[test]
@@ -6527,6 +6534,88 @@ exit 1
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("plan_hash but plan_version is 0"));
     assert!(!project_root(temp_dir.path(), "corrupt-status-project").exists());
+}
+
+#[test]
+fn project_create_from_bead_rejects_stale_status_hash_for_legacy_title_only_plan() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_path = milestone_root(temp_dir.path(), "ms-alpha").join("plan.json");
+    let mut legacy_plan: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read plan"))
+            .expect("parse plan");
+    for workstream in legacy_plan["workstreams"]
+        .as_array_mut()
+        .expect("workstreams array")
+    {
+        for bead in workstream["beads"].as_array_mut().expect("beads array") {
+            bead.as_object_mut().expect("bead object").remove("bead_id");
+            bead.as_object_mut()
+                .expect("bead object")
+                .remove("explicit_id");
+        }
+    }
+    fs::write(
+        &plan_path,
+        serde_json::to_string_pretty(&legacy_plan).expect("serialize legacy plan"),
+    )
+    .expect("write legacy plan");
+    fs::write(
+        milestone_root(temp_dir.path(), "ms-alpha").join("status.json"),
+        r#"{
+  "status": "ready",
+  "plan_hash": "stale-plan-hash",
+  "plan_version": 2,
+  "progress": {
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  },
+  "updated_at": "2026-04-01T10:05:00Z"
+}"#,
+    )
+    .expect("write stale status");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        r#"[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "stale-legacy-plan-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("plan metadata is stale"));
+    assert!(!project_root(temp_dir.path(), "stale-legacy-plan-project").exists());
 }
 
 #[test]

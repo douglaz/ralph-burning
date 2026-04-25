@@ -3655,20 +3655,32 @@ fn find_bead_plan_details(
     let requested_short_id = bead_id
         .strip_prefix(milestone_prefix.as_str())
         .unwrap_or(bead_id);
+    let mut next_implicit_bead = 1usize;
 
     for workstream in &bundle.workstreams {
         for bead in &workstream.beads {
-            let Some(planned_bead_id) = bead.bead_id.as_deref() else {
-                continue;
+            let implicit_bead_id = format!("{}.bead-{}", bundle.identity.id, next_implicit_bead);
+            next_implicit_bead += 1;
+            let matches_requested_bead = match bead.bead_id.as_deref() {
+                Some(planned_bead_id) => {
+                    let short_id = planned_bead_id
+                        .strip_prefix(milestone_prefix.as_str())
+                        .unwrap_or(planned_bead_id);
+                    planned_bead_id == bead_id
+                        || short_id == bead_id
+                        || planned_bead_id == requested_short_id
+                        || short_id == requested_short_id
+                }
+                None => {
+                    bead_matches_implicit_slot(bead_id, &bundle.identity.id, &implicit_bead_id)
+                        || bead_matches_implicit_slot(
+                            requested_short_id,
+                            &bundle.identity.id,
+                            &implicit_bead_id,
+                        )
+                }
             };
-            let short_id = planned_bead_id
-                .strip_prefix(milestone_prefix.as_str())
-                .unwrap_or(planned_bead_id);
-            if planned_bead_id != bead_id
-                && short_id != bead_id
-                && planned_bead_id != requested_short_id
-                && short_id != requested_short_id
-            {
+            if !matches_requested_bead {
                 continue;
             }
 

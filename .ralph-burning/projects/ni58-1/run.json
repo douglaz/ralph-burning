@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424200824",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-91373a14",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "finding_summary: `resolve_bead_plan` now marks every legacy title-only match as `membership_confirmed = false`, and `execute_create_from_bead_in_dir` uses that flag to skip `validate_milestone_plan_snapshot` and to drop `plan_hash`/`plan_version` from the created project. That means a supported pre-change plan with no `bead_id` can silently bypass stale `status.json` detection and lose plan lineage metadata even when the title fallback resolved a unique bead successfully.\naffected_files:\n- src/cli/project.rs:373-392\n- src/cli/project.rs:2055-2072\nremediation_hint: keep the legacy warning path, but decouple it from snapshot/lineage validation. A unique successful legacy fallback should still validate the current plan snapshot and persist `plan_hash`/`plan_version`, or the code should introduce a separate flag for \"used legacy fallback\" instead of reusing `membership_confirmed` to disable those checks.",
-        "created_at": "2026-04-24T23:38:06.442476435Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "15212b577f22657d0c056020d3428a68b86c1c817763eaa143c06c37ab1eb980"
-      }
-    ],
-    "processed_count": 3
+    "pending": [],
+    "processed_count": 4
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-24T23:29:10.376680298Z",
