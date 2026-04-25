@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260424200824-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T04:42:56.010010309Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated the `project create-from-bead` lookup path so fully qualified explicit bead ids no longer retry a stripped short alias when `br show` misses. In `src/cli/project.rs`, `bead_show_query_candidates` now only adds the canonical milestone-qualified retry for unqualified short dotted aliases, which prevents a request like `ms-alpha.api-1` from incorrectly binding a foreign `api-1` bead. Added focused regressions in `src/cli/project.rs` and `tests/cli.rs` proving qualified explicit misses fail closed while the supported retry paths remain intact.\n\n## Steps\n\n1. [Completed] Inspect the bead lookup and milestone-membership path in `src/cli/project.rs` to confirm that fully qualified explicit ids were still falling through to a short-form retry after a missing `br show` result.\n2. [Completed] Tighten `bead_show_query_candidates` so only unqualified short dotted aliases receive a canonical milestone-qualified retry, eliminating the foreign-bead binding path for qualified explicit ids.\n3. [Completed] Add regression coverage for the qualified-explicit miss case in both the local unit-style fake-`br` tests and the end-to-end CLI test module.\n4. [Completed] Run the required validation gates and targeted regressions for the amended lookup behavior.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub load_bead_detail_does_not_retry_short_lookup_for_qualified_explicit_ids -- --nocapture` succeeded.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_does_not_retry_short_lookup_for_qualified_explicit_ids -- --nocapture` succeeded.\n- `nix develop -c cargo fmt --check` succeeded.\n- `nix develop -c cargo clippy --locked -- -D warnings` succeeded.\n- `nix develop -c cargo test --locked --features test-stub` succeeded: lib tests `1220 passed` with `6 ignored`, CLI tests `373 passed` with `3 ignored`, `run_attach_tmux` tests `1 passed`, unit tests `1079 passed` with `1 ignored`, doc tests clean with `9 ignored`.\n- `nix build` succeeded.\n\n## Outstanding Risks\n\n- Unrelated live orchestration-state changes under `.ralph-burning/` remain in the worktree and were excluded from review per instructions.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 8
+}

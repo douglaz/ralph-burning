@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260424200824",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-0ee7c4c4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: Fully-qualified explicit bead lookups can now bind the wrong bead after the new short-form retry path. In `src/cli/project.rs:1728-1731`, a request like `ms-alpha.api-1` falls back to `api-1` when the qualified `br show` misses. That retry result is accepted by `bead_matches_show_query` (`src/cli/project.rs:1775-1784`) and then treated as local by `ensure_bead_belongs_to_milestone` (`src/cli/project.rs:1957-1973`) if the returned bead id is the unqualified `api-1`. In a workspace where another bead already owns that short explicit id, `project create-from-bead` can create/claim work for the foreign bead even though the requested fully-qualified bead was not found.\n\naffected_files:\n- src/cli/project.rs:1728-1731\n- src/cli/project.rs:1775-1784\n- src/cli/project.rs:1957-1973\n\nremediation_hint: Do not short-retry fully-qualified explicit ids, or require the retry result to come back with an unambiguous same-milestone qualified id before accepting it.",
-        "created_at": "2026-04-25T04:12:05.084156739Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "1e19575998bf1126a602c26a2fac3356826f420e4559a40bf9bcd67bc0510b74"
-      }
-    ],
-    "processed_count": 8
+    "pending": [],
+    "processed_count": 9
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T04:02:23.881901502Z",

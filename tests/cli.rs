@@ -6983,6 +6983,61 @@ exit 1
 }
 
 #[test]
+fn project_create_from_bead_does_not_retry_short_lookup_for_qualified_explicit_ids() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.api-1" ] && [ "$3" = "--json" ]; then
+echo "issue not found: ms-alpha.api-1" >&2
+exit 1
+fi
+if [ "$1" = "show" ] && [ "$2" = "api-1" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "api-1",
+    "title": "Foreign explicit bead",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "task",
+    "description": "This should never be selected for a qualified lookup.",
+    "acceptance_criteria": "- short retry must not happen",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.api-1",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("br show returned no matching bead"));
+    assert!(!project_root(temp_dir.path(), "task-ms-alpha-api-1").exists());
+}
+
+#[test]
 fn project_create_from_bead_accepts_short_dotted_alias_and_retries_canonical_show() {
     let temp_dir = initialize_workspace_fixture();
     write_alias_milestone_fixture(temp_dir.path(), "9ni");
