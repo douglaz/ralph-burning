@@ -439,6 +439,8 @@ pub(crate) async fn execute_create_from_bead_in_dir(
         flow,
         plan_hash,
         plan_version,
+        plan_workstream_index: bead_plan.matched_workstream_index,
+        plan_bead_index: bead_plan.matched_bead_index,
     };
 
     // Validate project_id before any external side effects so that a
@@ -1724,7 +1726,7 @@ fn bead_show_query_candidates(milestone_id: &MilestoneId, bead_id: &str) -> Vec<
     let mut queries = vec![bead_id.to_owned()];
 
     if let Some(short_ref) = bead_id.strip_prefix(&qualified_prefix) {
-        if !short_ref.is_empty() {
+        if qualified_bead_id_allows_short_retry(short_ref) {
             queries.push(short_ref.to_owned());
         }
     } else if is_short_dotted_alias_candidate(milestone_id, bead_id) {
@@ -1733,6 +1735,24 @@ fn bead_show_query_candidates(milestone_id: &MilestoneId, bead_id: &str) -> Vec<
 
     queries.dedup();
     queries
+}
+
+fn qualified_bead_id_allows_short_retry(short_ref: &str) -> bool {
+    let trimmed = short_ref.trim();
+    !trimmed.is_empty() && !is_implicit_slot_suffix(trimmed) && !is_numeric_dotted_bead_ref(trimmed)
+}
+
+fn is_implicit_slot_suffix(bead_id: &str) -> bool {
+    bead_id
+        .strip_prefix("bead-")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_numeric_dotted_bead_ref(bead_id: &str) -> bool {
+    bead_id.contains('.')
+        && bead_id
+            .split('.')
+            .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn is_short_dotted_alias_candidate(milestone_id: &MilestoneId, bead_id: &str) -> bool {
@@ -5366,6 +5386,47 @@ esac
                 .expect("chmod fake br");
         }
 
+        fn install_fake_br_show_qualified_slot_missing_with_foreign_short_retry(
+            base_dir: &std::path::Path,
+            qualified_bead_id: &str,
+            short_bead_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    if [ "$2" = "{qualified_bead_id}" ] && [ "$3" = "--json" ]; then
+      echo "issue not found: {qualified_bead_id}" >&2
+      exit 1
+    fi
+    if [ "$2" = "{short_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{short_bead_id}","title":"Foreign authored bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         #[tokio::test]
         async fn load_bead_detail_retries_no_db_for_unqualified_explicit_ids(
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -5418,6 +5479,31 @@ esac
 
             assert_eq!(bead.id, "10.8.5.3");
             assert_eq!(bead.status, BeadStatus::InProgress);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_does_not_retry_short_lookup_for_qualified_implicit_slot_ids(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_qualified_slot_missing_with_foreign_short_retry(
+                base_dir,
+                "ms-alpha.bead-2",
+                "bead-2",
+            );
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("ms-alpha")?;
+            let error = super::super::load_bead_detail(base_dir, &milestone_id, "ms-alpha.bead-2")
+                .await
+                .expect_err("qualified implicit slot ids must not retry the short alias");
+
+            assert!(error
+                .to_string()
+                .contains("br show returned no matching bead"));
             Ok(())
         }
     }

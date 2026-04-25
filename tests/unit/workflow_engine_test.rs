@@ -3883,6 +3883,8 @@ async fn bead_backed_run_started_failure_does_not_open_milestone_lineage() {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         },
     );
 
@@ -3950,6 +3952,8 @@ async fn bead_backed_run_resumed_failure_does_not_open_milestone_lineage() {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         },
     );
 

@@ -288,6 +288,8 @@ pub struct BeadProjectContext {
     pub flow: FlowPreset,
     pub plan_hash: Option<String>,
     pub plan_version: Option<u32>,
+    pub plan_workstream_index: Option<usize>,
+    pub plan_bead_index: Option<usize>,
 }
 
 /// Input for creating a project directly from milestone + bead context.
@@ -460,6 +462,8 @@ pub fn create_project_from_bead_context(
             origin: super::model::TaskOrigin::Milestone,
             plan_hash: context.plan_hash.clone(),
             plan_version: context.plan_version,
+            plan_workstream_index: context.plan_workstream_index,
+            plan_bead_index: context.plan_bead_index,
         }),
     );
 
@@ -471,6 +475,8 @@ pub fn create_project_from_bead_context(
         origin: super::model::TaskOrigin::Milestone,
         plan_hash: context.plan_hash,
         plan_version: context.plan_version,
+        plan_workstream_index: context.plan_workstream_index,
+        plan_bead_index: context.plan_bead_index,
     });
 
     let input = CreateProjectInput {
@@ -1375,6 +1381,18 @@ fn inject_task_source_initial_details(
             serde_json::Value::Number(plan_version.into()),
         );
     }
+    if let Some(plan_workstream_index) = task_source.plan_workstream_index {
+        details.insert(
+            "plan_workstream_index".to_owned(),
+            serde_json::Value::Number((plan_workstream_index as u64).into()),
+        );
+    }
+    if let Some(plan_bead_index) = task_source.plan_bead_index {
+        details.insert(
+            "plan_bead_index".to_owned(),
+            serde_json::Value::Number((plan_bead_index as u64).into()),
+        );
+    }
 }
 
 fn build_missing_task_lineage_detail(task_source: &TaskSource) -> BeadLineageView {
@@ -1427,12 +1445,13 @@ fn load_task_lineage_detail(
         task_source.milestone_id.clone(),
     )?;
 
-    match crate::contexts::milestone_record::service::read_bead_lineage(
+    match crate::contexts::milestone_record::service::read_bead_lineage_with_task_source(
         milestone_store,
         plan_store,
         base_dir,
         &milestone_id,
         &task_source.bead_id,
+        Some(task_source),
         task_source.plan_hash.as_deref(),
     ) {
         Ok(lineage) => Ok(Some(lineage)),
@@ -2851,6 +2870,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: Some("stale-plan-hash".to_owned()),
                     plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )?;
@@ -2916,6 +2937,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: None,
                     plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )?;
@@ -2983,6 +3006,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: Some(current_plan_hash),
                     plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )?;
@@ -3053,6 +3078,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: Some(current_plan_hash),
                     plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )?;
@@ -3115,6 +3142,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: Some("plan-hash".to_owned()),
                     plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )?;
@@ -3175,6 +3204,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: Some("plan-hash".to_owned()),
                     plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )?;

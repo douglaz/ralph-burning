@@ -49,7 +49,10 @@ fn binary_path() -> PathBuf {
     // path so nested sub-spawns remain reliable even if cargo relinks the
     // original binary during parallel test execution.
     if let Ok(override_path) = std::env::var("RALPH_BURNING_CLI_PATH") {
-        return PathBuf::from(override_path);
+        let override_path = PathBuf::from(override_path);
+        if override_path.exists() {
+            return override_path.canonicalize().unwrap_or(override_path);
+        }
     }
     let exe = std::env::current_exe().expect("current executable path");
     // Canonicalize to an absolute path so the binary can be found even when the
@@ -68,8 +71,10 @@ fn run_cli(args: &[&str], cwd: &Path) -> Result<CmdOutput, String> {
 }
 
 fn run_cli_with_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> Result<CmdOutput, String> {
-    let mut cmd = Command::new(binary_path());
+    let binary = binary_path();
+    let mut cmd = Command::new(&binary);
     cmd.args(args).current_dir(cwd);
+    cmd.env("RALPH_BURNING_CLI_PATH", &binary);
     if !env.iter().any(|(key, _)| *key == "RALPH_BURNING_BACKEND") {
         cmd.env("RALPH_BURNING_BACKEND", "stub");
     }

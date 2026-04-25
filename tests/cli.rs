@@ -6092,6 +6092,8 @@ fn project_create_from_bead_preserves_metadata_for_legacy_plan_json_without_expl
     assert!(project_toml.contains("flow = \"docs_change\""));
     assert!(project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
     assert!(project_toml.contains("plan_version = 2"));
+    assert!(project_toml.contains("plan_workstream_index = 0"));
+    assert!(project_toml.contains("plan_bead_index = 1"));
 }
 
 #[test]
