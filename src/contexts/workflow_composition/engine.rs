@@ -10707,7 +10707,7 @@ mod tests {
             backend: "codex".to_owned(),
             contract_id: "final_review:reviewer".to_owned(),
             failure_class: FailureClass::TransportFailure,
-            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: ERROR: stream disconnected before completion".to_owned(),
+            details: "reviewer-1 (codex/gpt-5.5-xhigh) exhausted 5 transient retries: ERROR: stream disconnected before completion".to_owned(),
         };
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
 
@@ -10725,7 +10725,7 @@ mod tests {
         let retry_policy = RetryPolicy::default_policy().with_no_backoff();
         let error = AppError::BackendUnavailable {
             backend: "codex".to_owned(),
-            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: stream disconnected before completion".to_owned(),
+            details: "reviewer-1 (codex/gpt-5.5-xhigh) exhausted 5 transient retries: stream disconnected before completion".to_owned(),
             failure_class: Some(FailureClass::TransportFailure),
         };
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
@@ -11086,7 +11086,7 @@ mod tests {
 
         let run_id = RunId::new("run-iter-terminal").expect("run id");
         let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
-        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5");
         let stage_entry = StagePlan {
             stage_id: StageId::PlanAndImplement,
             role: role_for_stage(StageId::PlanAndImplement),
@@ -11206,7 +11206,7 @@ mod tests {
             stage_id: StageId::PlanAndImplement,
             role: role_for_stage(StageId::PlanAndImplement),
             contract: contracts::contract_for_stage(StageId::PlanAndImplement),
-            target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
+            target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5"),
         };
         let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
         let invocation_id =
@@ -11231,7 +11231,7 @@ mod tests {
         });
         let producer = RecordProducer::Agent {
             requested_backend_family: "codex".to_owned(),
-            requested_model_id: "gpt-5.4".to_owned(),
+            requested_model_id: "gpt-5.5".to_owned(),
             actual_backend_family: "openrouter".to_owned(),
             actual_model_id: "openai/gpt-4.1".to_owned(),
         };
@@ -11308,7 +11308,7 @@ mod tests {
 
         let run_id = RunId::new("run-iter-terminal-raw-fallback").expect("run id");
         let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
-        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5");
         let stage_entry = StagePlan {
             stage_id: StageId::PlanAndImplement,
             role: role_for_stage(StageId::PlanAndImplement),
@@ -11378,9 +11378,9 @@ mod tests {
                     producer,
                     RecordProducer::Agent {
                         requested_backend_family: "codex".to_owned(),
-                        requested_model_id: "gpt-5.4".to_owned(),
+                        requested_model_id: "gpt-5.5".to_owned(),
                         actual_backend_family: "codex".to_owned(),
-                        actual_model_id: "gpt-5.4".to_owned(),
+                        actual_model_id: "gpt-5.5".to_owned(),
                     }
                 );
             }
@@ -11530,7 +11530,7 @@ mod tests {
 
         let run_id = RunId::new("run-iter-terminal-codex-raw").expect("run id");
         let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
-        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5");
         let stage_entry = StagePlan {
             stage_id: StageId::PlanAndImplement,
             role: role_for_stage(StageId::PlanAndImplement),
@@ -11605,9 +11605,9 @@ mod tests {
                     producer,
                     RecordProducer::Agent {
                         requested_backend_family: "codex".to_owned(),
-                        requested_model_id: "gpt-5.4".to_owned(),
+                        requested_model_id: "gpt-5.5".to_owned(),
                         actual_backend_family: "codex".to_owned(),
-                        actual_model_id: "gpt-5.4".to_owned(),
+                        actual_model_id: "gpt-5.5".to_owned(),
                     }
                 );
             }
@@ -11642,7 +11642,7 @@ mod tests {
         let old_run_id = RunId::new("run-iter-old").expect("old run id");
         let run_id = RunId::new("run-iter-new").expect("new run id");
         let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
-        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5");
         let stage_entry = StagePlan {
             stage_id: StageId::PlanAndImplement,
             role: role_for_stage(StageId::PlanAndImplement),
@@ -11776,7 +11776,7 @@ mod tests {
 
         let run_id = RunId::new("run-iter-terminal-rewind").expect("run id");
         let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
-        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5");
         let stage_entry = StagePlan {
             stage_id: StageId::PlanAndImplement,
             role: role_for_stage(StageId::PlanAndImplement),
@@ -11819,7 +11819,7 @@ mod tests {
             &mut seq,
             &stage_entry,
             &cursor,
-            &ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
+            &ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5"),
             2,
             1,
             1,

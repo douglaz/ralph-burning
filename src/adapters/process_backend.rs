@@ -2783,10 +2783,10 @@ mod tests {
     fn codex_model_suffix_parses_reasoning_effort_and_fast_mode() {
         assert_eq!(
             ProcessBackendAdapter::codex_model_reasoning_effort_and_fast(
-                "gpt-5.4-xhigh-fast",
+                "gpt-5.5-xhigh-fast",
                 true
             ),
-            ("gpt-5.4", Some("xhigh"), true)
+            ("gpt-5.5", Some("xhigh"), true)
         );
         assert_eq!(
             ProcessBackendAdapter::codex_model_reasoning_effort_and_fast(
@@ -2796,12 +2796,12 @@ mod tests {
             ("gpt-5.3-codex-spark", Some("xhigh"), true)
         );
         assert_eq!(
-            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-fast", true),
-            ("gpt-5.4", None, true)
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.5-fast", true),
+            ("gpt-5.5", None, true)
         );
         assert_eq!(
-            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.4-xhigh", true),
-            ("gpt-5.4", Some("xhigh"), false)
+            ProcessBackendAdapter::codex_model_reasoning_effort_and_fast("gpt-5.5-xhigh", true),
+            ("gpt-5.5", Some("xhigh"), false)
         );
         assert_eq!(
             ProcessBackendAdapter::codex_model_reasoning_effort_and_fast(

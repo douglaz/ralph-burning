@@ -276,7 +276,7 @@ fn show_effective_reports_compiled_implementer_default_source() {
         .find(|r| r.role == "implementer")
         .expect("implementer row should exist");
     assert_eq!("codex", implementer.backend_family);
-    assert_eq!("gpt-5.4-high", implementer.model_id);
+    assert_eq!("gpt-5.5-high", implementer.model_id);
     assert_eq!(
         "workflow.implementer_backend (default)", implementer.override_source,
         "compiled implementer default should be attributed to workflow.implementer_backend"
@@ -654,7 +654,7 @@ fn show_effective_reports_final_review_panel_members() {
         .find(|r| r.role == "final_reviewer")
         .expect("compatibility final_reviewer row should exist");
     assert_eq!("codex", final_reviewer.backend_family);
-    assert_eq!("gpt-5.4-xhigh", final_reviewer.model_id);
+    assert_eq!("gpt-5.5-xhigh", final_reviewer.model_id);
     assert_eq!(
         "final_review.backends (default)",
         final_reviewer.model_source
@@ -666,7 +666,7 @@ fn show_effective_reports_final_review_panel_members() {
         .find(|r| r.role == "final_review_panel.reviewer[0]")
         .expect("first final-review reviewer row should exist");
     assert_eq!("codex", reviewer0.backend_family);
-    assert_eq!("gpt-5.4-xhigh", reviewer0.model_id);
+    assert_eq!("gpt-5.5-xhigh", reviewer0.model_id);
     assert_eq!("final_review.backends (default)", reviewer0.override_source);
     assert_eq!("final_review.backends (default)", reviewer0.model_source);
 
@@ -686,7 +686,7 @@ fn show_effective_reports_final_review_panel_members() {
         .find(|r| r.role == "arbiter")
         .expect("arbiter row should exist");
     assert_eq!("codex", arbiter.backend_family);
-    assert_eq!("gpt-5.4-xhigh", arbiter.model_id);
+    assert_eq!("gpt-5.5-xhigh", arbiter.model_id);
     assert_eq!(
         "final_review.arbiter_backend (default)",
         arbiter.override_source
@@ -716,9 +716,9 @@ fn show_effective_final_reviewer_uses_explicit_default_model_before_compiled_cod
         .iter()
         .find(|r| r.role == "final_reviewer")
         .expect("compatibility final_reviewer row should exist");
-    // First reviewer has an inline model override (gpt-5.4-xhigh), unaffected
+    // First reviewer has an inline model override (gpt-5.5-xhigh), unaffected
     // by default_model.
-    assert_eq!("gpt-5.4-xhigh", final_reviewer.model_id);
+    assert_eq!("gpt-5.5-xhigh", final_reviewer.model_id);
     assert_eq!(
         "final_review.backends (default)",
         final_reviewer.model_source
@@ -729,7 +729,7 @@ fn show_effective_final_reviewer_uses_explicit_default_model_before_compiled_cod
         .iter()
         .find(|r| r.role == "final_review_panel.reviewer[0]")
         .expect("first final-review reviewer row should exist");
-    assert_eq!("gpt-5.4-xhigh", reviewer0.model_id);
+    assert_eq!("gpt-5.5-xhigh", reviewer0.model_id);
     assert_eq!("final_review.backends (default)", reviewer0.model_source);
 }
 
@@ -752,7 +752,7 @@ fn probe_singular_final_reviewer_returns_first_panel_member() {
         .target
         .expect("singular role probe should return a target");
     assert_eq!("codex", target.backend_family);
-    assert_eq!("gpt-5.4-xhigh", target.model_id);
+    assert_eq!("gpt-5.5-xhigh", target.model_id);
 }
 
 #[test]
@@ -781,9 +781,9 @@ fn probe_implementer_and_final_reviewer_use_explicit_default_model_before_compil
         .expect("final reviewer probe should resolve");
     let final_reviewer_target = final_reviewer.target.expect("final reviewer target");
     assert_eq!("codex", final_reviewer_target.backend_family);
-    // First reviewer has an inline model override (gpt-5.4-xhigh), unaffected
+    // First reviewer has an inline model override (gpt-5.5-xhigh), unaffected
     // by default_model.
-    assert_eq!("gpt-5.4-xhigh", final_reviewer_target.model_id);
+    assert_eq!("gpt-5.5-xhigh", final_reviewer_target.model_id);
 }
 
 #[test]

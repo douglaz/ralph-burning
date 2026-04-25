@@ -442,7 +442,7 @@ async fn service_reuses_supported_sessions_and_persists_updated_metadata() {
         sessions: vec![SessionMetadata {
             role: BackendRole::Implementer,
             backend_family: BackendFamily::Codex,
-            model_id: "gpt-5.4-high".to_owned(),
+            model_id: "gpt-5.5-high".to_owned(),
             session_id: "existing-session".to_owned(),
             created_at: timestamp,
             last_used_at: timestamp,

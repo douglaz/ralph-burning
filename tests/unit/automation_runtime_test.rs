@@ -3537,8 +3537,8 @@ async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
-    // Set up workspace with explicit defaults (codex / gpt-5.4)
-    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5.4");
+    // Set up workspace with explicit defaults (codex / gpt-5.5)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5.5");
 
     // Build the service the same way the daemon does after the fix
     let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
@@ -3565,8 +3565,8 @@ async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
             inv.resolved_target.backend.family
         );
         assert_eq!(
-            "gpt-5.4", inv.resolved_target.model.model_id,
-            "invocation '{}' should use workspace default model (gpt-5.4), got {}",
+            "gpt-5.5", inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5.5), got {}",
             inv.contract_label, inv.resolved_target.model.model_id
         );
     }
@@ -3581,8 +3581,8 @@ async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
-    // Set up workspace with explicit defaults (codex / gpt-5.4)
-    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5.4");
+    // Set up workspace with explicit defaults (codex / gpt-5.5)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5.5");
 
     // Build the service the same way the daemon does after the fix
     let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
@@ -3609,8 +3609,8 @@ async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
             inv.resolved_target.backend.family
         );
         assert_eq!(
-            "gpt-5.4", inv.resolved_target.model.model_id,
-            "invocation '{}' should use workspace default model (gpt-5.4), got {}",
+            "gpt-5.5", inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5.5), got {}",
             inv.contract_label, inv.resolved_target.model.model_id
         );
     }

@@ -1097,12 +1097,12 @@ async fn codex_resume_suffix_model_adds_reasoning_effort_override() {
     let _path_guard = PathGuard::prepend(bin_dir.path());
 
     let (_dir, mut request) = request_fixture(BackendFamily::Codex);
-    request.resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh");
+    request.resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-xhigh");
     request.session_policy = SessionPolicy::ReuseIfAllowed;
     request.prior_session = Some(SessionMetadata {
         role: BackendRole::Implementer,
         backend_family: BackendFamily::Codex,
-        model_id: "gpt-5.4-xhigh".to_owned(),
+        model_id: "gpt-5.5-xhigh".to_owned(),
         session_id: "codex-ses-456".to_owned(),
         created_at: Utc::now(),
         last_used_at: Utc::now(),
@@ -1142,7 +1142,7 @@ async fn codex_resume_suffix_model_adds_reasoning_effort_override() {
             "--dangerously-bypass-approvals-and-sandbox".to_owned(),
             "--skip-git-repo-check".to_owned(),
             "--model".to_owned(),
-            "gpt-5.4".to_owned(),
+            "gpt-5.5".to_owned(),
             "-c".to_owned(),
             "model_reasoning_effort=\"xhigh\"".to_owned(),
             "--output-schema".to_owned(),
@@ -1162,12 +1162,12 @@ async fn codex_resume_fast_suffix_adds_service_tier_override() {
     let _path_guard = PathGuard::prepend(bin_dir.path());
 
     let (_dir, mut request) = request_fixture(BackendFamily::Codex);
-    request.resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-fast");
+    request.resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-fast");
     request.session_policy = SessionPolicy::ReuseIfAllowed;
     request.prior_session = Some(SessionMetadata {
         role: BackendRole::Implementer,
         backend_family: BackendFamily::Codex,
-        model_id: "gpt-5.4-fast".to_owned(),
+        model_id: "gpt-5.5-fast".to_owned(),
         session_id: "codex-ses-456".to_owned(),
         created_at: Utc::now(),
         last_used_at: Utc::now(),
@@ -1207,7 +1207,7 @@ async fn codex_resume_fast_suffix_adds_service_tier_override() {
             "--dangerously-bypass-approvals-and-sandbox".to_owned(),
             "--skip-git-repo-check".to_owned(),
             "--model".to_owned(),
-            "gpt-5.4".to_owned(),
+            "gpt-5.5".to_owned(),
             "-c".to_owned(),
             "service_tier=\"fast\"".to_owned(),
             "--output-schema".to_owned(),

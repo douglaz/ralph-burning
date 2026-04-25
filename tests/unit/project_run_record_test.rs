@@ -2913,7 +2913,7 @@ fn active_run_with_snapshot_round_trip() {
             }),
             stage_target: Some(ResolvedTargetRecord {
                 backend_family: "codex".to_owned(),
-                model_id: "gpt-5.4".to_owned(),
+                model_id: "gpt-5.5".to_owned(),
             }),
         }),
         stage_resolution_snapshot: Some(StageResolutionSnapshot {

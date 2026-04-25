@@ -55,7 +55,7 @@ fn effective_config_loads_compiled_defaults() {
     );
     assert_eq!(
         vec![
-            "codex/gpt-5.4-xhigh".to_owned(),
+            "codex/gpt-5.5-xhigh".to_owned(),
             "?claude/claude-opus-4-7-max".to_owned(),
             "?codex/gpt-5.3-codex-spark-xhigh".to_owned(),
         ],
@@ -69,7 +69,7 @@ fn effective_config_loads_compiled_defaults() {
         }
     );
     assert_eq!(
-        Some("gpt-5.4-high".to_owned()),
+        Some("gpt-5.5-high".to_owned()),
         match config
             .get("backends.codex.role_models.implementer")
             .expect("codex implementer role model")
@@ -91,7 +91,7 @@ fn effective_config_loads_compiled_defaults() {
         }
     );
     assert_eq!(
-        Some("gpt-5.4-xhigh".to_owned()),
+        Some("gpt-5.5-xhigh".to_owned()),
         match config
             .get("backends.codex.role_models.arbiter")
             .expect("codex arbiter role model")
@@ -113,7 +113,7 @@ fn effective_config_loads_compiled_defaults() {
         }
     );
     assert_eq!(
-        Some("gpt-5.4-xhigh".to_owned()),
+        Some("gpt-5.5-xhigh".to_owned()),
         match config
             .get("backends.codex.role_models.final_reviewer")
             .expect("codex final reviewer role model")
@@ -582,12 +582,12 @@ fn config_set_accepts_panel_backend_model_overrides_and_displays_them() {
     let entry = EffectiveConfig::set(
         temp_dir.path(),
         "final_review.backends",
-        r#"["codex/gpt-5.4-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
+        r#"["codex/gpt-5.5-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
     )
     .expect("set final review backends");
 
     assert_eq!(
-        r#"["codex/gpt-5.4-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
+        r#"["codex/gpt-5.5-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
         entry.value.toml_like_value()
     );
 
@@ -596,7 +596,7 @@ fn config_set_accepts_panel_backend_model_overrides_and_displays_them() {
         .get("final_review.backends")
         .expect("get final review backends");
     assert_eq!(
-        r#"["codex/gpt-5.4-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
+        r#"["codex/gpt-5.5-xhigh", "?codex/gpt-5.3-codex-spark-xhigh"]"#,
         fetched.value.toml_like_value()
     );
 }
@@ -609,12 +609,12 @@ fn config_set_accepts_legacy_parenthesized_panel_backend_model_overrides() {
     let entry = EffectiveConfig::set(
         temp_dir.path(),
         "final_review.backends",
-        r#"["openrouter(openai/gpt-5.4)", "?openrouter(openai/gpt-5.4-mini)"]"#,
+        r#"["openrouter(openai/gpt-5.5)", "?openrouter(openai/gpt-5.5-mini)"]"#,
     )
     .expect("set final review backends");
 
     assert_eq!(
-        r#"["openrouter/openai/gpt-5.4", "?openrouter/openai/gpt-5.4-mini"]"#,
+        r#"["openrouter/openai/gpt-5.5", "?openrouter/openai/gpt-5.5-mini"]"#,
         entry.value.toml_like_value()
     );
 
@@ -623,7 +623,7 @@ fn config_set_accepts_legacy_parenthesized_panel_backend_model_overrides() {
         .get("final_review.backends")
         .expect("get final review backends");
     assert_eq!(
-        r#"["openrouter/openai/gpt-5.4", "?openrouter/openai/gpt-5.4-mini"]"#,
+        r#"["openrouter/openai/gpt-5.5", "?openrouter/openai/gpt-5.5-mini"]"#,
         fetched.value.toml_like_value()
     );
 }
