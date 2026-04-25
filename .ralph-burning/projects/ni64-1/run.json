@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 5
+      "completion_round": 6
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 4
+    "final_review_restart_count": 5
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 5,
+  "completion_rounds": 6,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-5-6701467c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: The new `Nearby work` IDs cannot actually be used for `planned-elsewhere` routing. Review-stage guidance is still built from `extract_pe_bead_ids` only (`src/contexts/workflow_composition/engine.rs:191-195`), the classifier prompt still says `planned-elsewhere` only applies to beads listed under `Already Planned Elsewhere` (`src/contexts/workflow_composition/review_classification.rs:417-425`), and `final_review.rs` strips any `mapped_to_bead_id` that is not in that PE-only allowlist before voting and again before restart routing (`src/contexts/workflow_composition/final_review.rs:1111-1123`, `src/contexts/workflow_composition/final_review.rs:1844-1858`). When a prompt has Nearby work but no PE entries, every mapping to a sibling/dependent/related bead is discarded, so this bead's core end-to-end behavior still does not work.",
+        "created_at": "2026-04-25T13:54:59.022239355Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "3904fb0af5d6c4a40de354bc0b9ae8cdad7a3c574dc630e93e345c42bcb31c2b"
+      },
+      {
+        "amendment_id": "fr-5-aa3a69df",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 5,
+        "body": "finding_summary: Sibling inference and one-line scope summaries currently depend on `br list` returning fields that the load path does not guarantee. `load_bead_summaries` only loads `br list --all --deferred --limit=0 --json` (`src/cli/project.rs:1837-1852`), but `nearby_sibling_entries` reads `summary.dependencies` to recover the parent epic (`src/cli/project.rs:2492-2522`, `src/cli/project.rs:2579-2585`) and nearby entry rendering reads `summary.description` for the scope line (`src/cli/project.rs:2473-2480`, `src/cli/project.rs:2611-2617`). Those fields are optional/defaulted on `BeadSummary` (`src/adapters/br_models.rs:253-267`), so a summary-shaped list response silently yields no siblings and title-only scope summaries, with no fallback.",
+        "created_at": "2026-04-25T13:54:59.022243373Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "4eef37d4511c48e68db39f2e5eed4273feb34e84f34c529874c4aa9922c956a8"
+      }
+    ],
     "processed_count": 7
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 6 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-25T12:50:29.983506135Z",
+    "resolved_at": "2026-04-25T13:44:47.053215458Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
