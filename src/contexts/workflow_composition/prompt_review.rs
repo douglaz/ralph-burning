@@ -349,13 +349,80 @@ fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str
         task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt)
     };
 
-    match validation_result {
+    let validation_passed = validation_result.is_ok();
+    let mut concerns = match validation_result {
         Ok(()) => Vec::new(),
         Err(errors) => vec![format!(
             "Preserve the canonical bead task prompt contract exactly: {}",
             errors.join("; ")
         )],
+    };
+
+    let original_nearby_work = nearby_work_section_body(original_prompt);
+    if validation_passed
+        && original_nearby_work.is_some()
+        && original_nearby_work != nearby_work_section_body(refined_prompt)
+    {
+        concerns.push(
+            "Preserve graph-derived `## Nearby work` verbatim; prompt review must not add, remove, or rewrite nearby bead IDs".to_owned(),
+        );
     }
+
+    concerns
+}
+
+fn nearby_work_section_body(prompt: &str) -> Option<&str> {
+    canonical_section_body(prompt, task_prompt_contract::SECTION_NEARBY_WORK)
+}
+
+fn canonical_section_body<'a>(prompt: &'a str, section_title: &str) -> Option<&'a str> {
+    let section_header = format!("## {section_title}");
+    let mut active_fence = None;
+    let mut offset = 0usize;
+    let mut body_start = None;
+
+    for segment in prompt.split_inclusive('\n') {
+        let line = segment.trim_end_matches('\n').trim_end_matches('\r');
+
+        if let Some(opening) = active_fence {
+            if crate::contexts::project_run_record::fence_util::closes_fence(line, opening) {
+                active_fence = None;
+            }
+            offset += segment.len();
+            continue;
+        }
+
+        if let Some(opening) =
+            crate::contexts::project_run_record::fence_util::opening_fence_delimiter(line)
+        {
+            active_fence = Some(opening);
+            offset += segment.len();
+            continue;
+        }
+
+        if body_start.is_some() && line.starts_with("## ") {
+            return body_start.map(|start| &prompt[start..offset]);
+        }
+
+        if line == section_header {
+            body_start = Some(offset + segment.len());
+        }
+
+        offset += segment.len();
+    }
+
+    if offset < prompt.len() {
+        let segment = &prompt[offset..];
+        let line = segment.trim_end_matches('\r');
+        if body_start.is_some() && line.starts_with("## ") {
+            return body_start.map(|start| &prompt[start..offset]);
+        }
+        if line == section_header {
+            body_start = Some(prompt.len());
+        }
+    }
+
+    body_start.map(|start| &prompt[start..])
 }
 
 fn build_prompt_review_member_prompt(
@@ -538,6 +605,7 @@ mod tests {
     use super::*;
 
     const CANONICAL_PROMPT: &str = "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH";
+    const CURRENT_CANONICAL_PROMPT: &str = "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Milestone ID: ms-alpha\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `ms-alpha.real` [open] Real nearby owner\n  Scope: Graph-derived context.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH";
 
     #[test]
     fn build_prompt_review_member_prompt_surfaces_contract_guidance() {
@@ -555,6 +623,23 @@ mod tests {
 
         assert!(prompt.contains("## Task Prompt Contract"));
         assert!(prompt.contains("preserve the exact contract marker line"));
+    }
+
+    #[test]
+    fn build_prompt_review_member_prompt_requires_nearby_work_verbatim_for_current_prompt() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            CURRENT_CANONICAL_PROMPT,
+            CURRENT_CANONICAL_PROMPT,
+            "refiner",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.contains("Preserve the graph-derived `Nearby work` body verbatim"));
     }
 
     #[test]
@@ -683,6 +768,16 @@ mod tests {
 
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("missing section heading `## Nearby work`"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_rewritten_nearby_work_body() {
+        let refined = CURRENT_CANONICAL_PROMPT.replace("ms-alpha.real", "ms-alpha.fake");
+
+        let concerns = canonical_contract_drift_concerns(CURRENT_CANONICAL_PROMPT, &refined);
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve graph-derived `## Nearby work` verbatim"));
     }
 
     #[test]

@@ -294,6 +294,10 @@ fn prompt_review_consumer_guidance_with_sections(
         out.push_str(
             " This prompt uses the legacy v1 shape without `Nearby work`; do not add that section unless explicitly modernizing the prompt.",
         );
+    } else if section_titles.contains(&SECTION_NEARBY_WORK) {
+        out.push_str(
+            " Preserve the graph-derived `Nearby work` body verbatim; do not add, remove, or rewrite nearby bead IDs.",
+        );
     }
     out.push_str(
         "\n\nPreserve milestone-provided `AGENTS / Repo Guidance` verbatim instead of rewriting it into synthesized bullets.",
