@@ -1554,7 +1554,7 @@ fn default_final_review_backends() -> Vec<PanelBackendSpec> {
     vec![
         PanelBackendSpec::required_selection(BackendSelection::new(
             BackendFamily::Codex,
-            Some("gpt-5.4-xhigh".to_owned()),
+            Some("gpt-5.5-xhigh".to_owned()),
         )),
         PanelBackendSpec::optional_selection(BackendSelection::new(
             BackendFamily::Claude,
@@ -1604,9 +1604,9 @@ fn default_backend_runtime_settings(backend_name: &str) -> AppResult<BackendRunt
         timeout_seconds: None,
         role_models: match backend_name {
             "codex" => BackendRoleModels {
-                implementer: Some("gpt-5.4-high".to_owned()),
-                final_reviewer: Some("gpt-5.4-xhigh".to_owned()),
-                arbiter: Some("gpt-5.4-xhigh".to_owned()),
+                implementer: Some("gpt-5.5-high".to_owned()),
+                final_reviewer: Some("gpt-5.5-xhigh".to_owned()),
+                arbiter: Some("gpt-5.5-xhigh".to_owned()),
                 ..Default::default()
             },
             "claude" => BackendRoleModels {

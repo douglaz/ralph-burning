@@ -24,5 +24,5 @@ fn backend_resolver_preserves_role_specific_default_model_when_backend_family_ch
 
     assert_eq!(resolved.backend.family, BackendFamily::Codex);
     assert_eq!(resolved.model.backend_family, BackendFamily::Codex);
-    assert_eq!(resolved.model.model_id, "gpt-5.4-high");
+    assert_eq!(resolved.model.model_id, "gpt-5.5-high");
 }

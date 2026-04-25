@@ -2906,11 +2906,11 @@ mod tests {
             backend: "codex".to_owned(),
             contract_id: "final_review:reviewer".to_owned(),
             failure_class: FailureClass::TransportFailure,
-            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: ERROR: stream disconnected before completion".to_owned(),
+            details: "reviewer-1 (codex/gpt-5.5-xhigh) exhausted 5 transient retries: ERROR: stream disconnected before completion".to_owned(),
         };
         let availability_exhaustion = AppError::BackendUnavailable {
             backend: "codex".to_owned(),
-            details: "reviewer-1 (codex/gpt-5.4-xhigh) exhausted 5 transient retries: stream disconnected before completion".to_owned(),
+            details: "reviewer-1 (codex/gpt-5.5-xhigh) exhausted 5 transient retries: stream disconnected before completion".to_owned(),
             failure_class: Some(FailureClass::TransportFailure),
         };
 
@@ -4633,7 +4633,7 @@ mod tests {
             .len() as u64;
         let panel = FinalReviewPanelResolution {
             reviewers: vec![ResolvedPanelMember {
-                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-xhigh"),
                 required: true,
                 configured_index: 0,
             }],
@@ -4735,7 +4735,7 @@ mod tests {
             .len() as u64;
         let panel = FinalReviewPanelResolution {
             reviewers: vec![ResolvedPanelMember {
-                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-xhigh"),
                 required: true,
                 configured_index: 0,
             }],
@@ -4829,7 +4829,7 @@ mod tests {
             .len() as u64;
         let panel = FinalReviewPanelResolution {
             reviewers: vec![ResolvedPanelMember {
-                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-xhigh"),
                 required: true,
                 configured_index: 0,
             }],
@@ -4902,7 +4902,7 @@ mod tests {
         let panel = FinalReviewPanelResolution {
             reviewers: vec![
                 ResolvedPanelMember {
-                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-xhigh"),
                     required: false,
                     configured_index: 0,
                 },
@@ -4982,7 +4982,7 @@ mod tests {
         let base_dir = tmp.path();
         let project_id = setup_project(base_dir, "fr-reviewer-availability-retry");
         let adapter = RecordingFinalReviewAdapter::with_scripted_availability_failures(
-            "gpt-5.4-xhigh",
+            "gpt-5.5-xhigh",
             vec!["availability probe failed: connection reset by peer"],
         );
         let agent_service =
@@ -4995,7 +4995,7 @@ mod tests {
             .len() as u64;
         let panel = FinalReviewPanelResolution {
             reviewers: vec![ResolvedPanelMember {
-                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-xhigh"),
                 required: true,
                 configured_index: 0,
             }],
@@ -5034,7 +5034,7 @@ mod tests {
             "stage should complete after the availability retry"
         );
         assert!(
-            adapter.availability_checks_for("gpt-5.4-xhigh") >= 2,
+            adapter.availability_checks_for("gpt-5.5-xhigh") >= 2,
             "proposal availability should be rechecked after the transient failure"
         );
         assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 1);
@@ -5056,7 +5056,7 @@ mod tests {
         let base_dir = tmp.path();
         let project_id = setup_project(base_dir, "fr-reviewer-availability-rate-limit-retry");
         let adapter = RecordingFinalReviewAdapter::with_scripted_availability_failures(
-            "gpt-5.4-xhigh",
+            "gpt-5.5-xhigh",
             vec!["HTTP 429: Too Many Requests"],
         );
         let agent_service =
@@ -5070,7 +5070,7 @@ mod tests {
             .len() as u64;
         let panel = FinalReviewPanelResolution {
             reviewers: vec![ResolvedPanelMember {
-                target: ResolvedBackendTarget::new(BackendFamily::OpenRouter, "gpt-5.4-xhigh"),
+                target: ResolvedBackendTarget::new(BackendFamily::OpenRouter, "gpt-5.5-xhigh"),
                 required: true,
                 configured_index: 0,
             }],
@@ -5109,7 +5109,7 @@ mod tests {
             "stage should complete after the transient 429 availability retry"
         );
         assert!(
-            adapter.availability_checks_for("gpt-5.4-xhigh") >= 2,
+            adapter.availability_checks_for("gpt-5.5-xhigh") >= 2,
             "proposal availability should be rechecked after the transient 429 failure"
         );
         assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 1);
@@ -5146,7 +5146,7 @@ mod tests {
             .len() as u64;
         let panel = FinalReviewPanelResolution {
             reviewers: vec![ResolvedPanelMember {
-                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh"),
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.5-xhigh"),
                 required: true,
                 configured_index: 0,
             }],

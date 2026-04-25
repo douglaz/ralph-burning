@@ -63,7 +63,7 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
         .resolve_role_target(BackendPolicyRole::Implementer, 1)
         .expect("resolve implementer");
     assert_eq!(BackendFamily::Codex, implementer.backend.family);
-    assert_eq!("gpt-5.4-high", implementer.model.model_id);
+    assert_eq!("gpt-5.5-high", implementer.model.model_id);
 
     let panel = policy
         .resolve_final_review_panel(1)
@@ -73,7 +73,7 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
         BackendFamily::Codex,
         panel.reviewers[0].target.backend.family
     );
-    assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
+    assert_eq!("gpt-5.5-xhigh", panel.reviewers[0].target.model.model_id);
     assert_eq!(
         BackendFamily::Claude,
         panel.reviewers[1].target.backend.family
@@ -93,7 +93,7 @@ fn compiled_defaults_use_codex_high_implementer_and_cross_model_final_review_pan
     );
     assert!(!panel.reviewers[2].required);
     assert_eq!(BackendFamily::Codex, panel.arbiter.backend.family);
-    assert_eq!("gpt-5.4-xhigh", panel.arbiter.model.model_id);
+    assert_eq!("gpt-5.5-xhigh", panel.arbiter.model.model_id);
 }
 
 #[test]
@@ -199,9 +199,9 @@ fn compiled_default_final_review_panel_honors_role_model_overrides() {
         BackendFamily::Codex,
         panel.reviewers[0].target.backend.family
     );
-    // First reviewer has an inline model override (gpt-5.4-xhigh) that is not
+    // First reviewer has an inline model override (gpt-5.5-xhigh) that is not
     // affected by role_models overrides.
-    assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
+    assert_eq!("gpt-5.5-xhigh", panel.reviewers[0].target.model.model_id);
     assert_eq!(
         BackendFamily::Claude,
         panel.reviewers[1].target.backend.family
@@ -247,9 +247,9 @@ fn explicit_default_model_overrides_compiled_codex_role_defaults() {
         .resolve_final_review_panel(1)
         .expect("resolve final review panel");
     assert_eq!(3, panel.reviewers.len());
-    // First reviewer has an inline model override (gpt-5.4-xhigh), unaffected
+    // First reviewer has an inline model override (gpt-5.5-xhigh), unaffected
     // by default_model.
-    assert_eq!("gpt-5.4-xhigh", panel.reviewers[0].target.model.model_id);
+    assert_eq!("gpt-5.5-xhigh", panel.reviewers[0].target.model.model_id);
     // Second reviewer has an inline model override (claude-opus-4-7-max),
     // unaffected by default_model.
     assert_eq!(
@@ -511,7 +511,7 @@ fn final_review_panel_resolution_includes_reviewers_and_arbiter() {
         "final-review reviewers should resolve"
     );
     assert_eq!(BackendFamily::Codex, panel.arbiter.backend.family);
-    assert_eq!("gpt-5.4-xhigh", panel.arbiter.model.model_id);
+    assert_eq!("gpt-5.5-xhigh", panel.arbiter.model.model_id);
 }
 
 #[test]
@@ -538,7 +538,7 @@ fn final_review_panel_supports_same_family_with_distinct_models() {
         )),
         PanelBackendSpec::required_selection(BackendSelection::new(
             BackendFamily::Codex,
-            Some("gpt-5.4-xhigh".to_owned()),
+            Some("gpt-5.5-xhigh".to_owned()),
         )),
     ]);
     workspace.final_review.min_reviewers = Some(2);
@@ -562,7 +562,7 @@ fn final_review_panel_supports_same_family_with_distinct_models() {
         BackendFamily::Codex,
         panel.reviewers[1].target.backend.family
     );
-    assert_eq!("gpt-5.4-xhigh", panel.reviewers[1].target.model.model_id);
+    assert_eq!("gpt-5.5-xhigh", panel.reviewers[1].target.model.model_id);
 }
 
 #[test]

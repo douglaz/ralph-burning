@@ -321,7 +321,7 @@ fn reviewer_completed_event_builder_serializes_timing_metadata() {
         "reviewer-2",
         "reviewer",
         "codex",
-        "gpt-5.4",
+        "gpt-5.5",
         37,
         "proposed_amendments",
         2,

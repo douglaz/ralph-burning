@@ -12120,8 +12120,8 @@ fn run_tail_with_logs_renders_final_review_member_timing_summary() {
 
     let journal_path = project_root(temp_dir.path(), "tail-reviewers").join("journal.ndjson");
     let reviewer_events = [
-        r#"{"sequence":2,"timestamp":"2026-04-02T10:00:00Z","event_type":"reviewer_started","details":{"run_id":"run-1","stage_id":"final_review","cycle":1,"attempt":1,"completion_round":1,"panel":"final_review","phase":"proposal","reviewer_id":"reviewer-2","role":"reviewer","backend_family":"codex","model_id":"gpt-5.4"}}"#,
-        r#"{"sequence":3,"timestamp":"2026-04-02T10:00:05Z","event_type":"reviewer_completed","details":{"run_id":"run-1","stage_id":"final_review","cycle":1,"attempt":1,"completion_round":1,"panel":"final_review","phase":"proposal","reviewer_id":"reviewer-2","role":"reviewer","backend_family":"codex","model_id":"gpt-5.4","duration_ms":37,"outcome":"proposed_amendments","amendment_count":2}}"#,
+        r#"{"sequence":2,"timestamp":"2026-04-02T10:00:00Z","event_type":"reviewer_started","details":{"run_id":"run-1","stage_id":"final_review","cycle":1,"attempt":1,"completion_round":1,"panel":"final_review","phase":"proposal","reviewer_id":"reviewer-2","role":"reviewer","backend_family":"codex","model_id":"gpt-5.5"}}"#,
+        r#"{"sequence":3,"timestamp":"2026-04-02T10:00:05Z","event_type":"reviewer_completed","details":{"run_id":"run-1","stage_id":"final_review","cycle":1,"attempt":1,"completion_round":1,"panel":"final_review","phase":"proposal","reviewer_id":"reviewer-2","role":"reviewer","backend_family":"codex","model_id":"gpt-5.5","duration_ms":37,"outcome":"proposed_amendments","amendment_count":2}}"#,
     ]
     .join("\n")
         + "\n";
@@ -12140,7 +12140,7 @@ fn run_tail_with_logs_renders_final_review_member_timing_summary() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("final_review reviewer reviewer-2 proposal [codex / gpt-5.4]"));
+    assert!(stdout.contains("final_review reviewer reviewer-2 proposal [codex / gpt-5.5]"));
     assert!(
         stdout.contains(
             "final_review reviewer reviewer-2 proposal completed in 37ms outcome=proposed_amendments amendments=2"
@@ -19500,7 +19500,7 @@ fn backend_probe_final_reviewer() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("gpt-5.4-xhigh"),
+        stdout.contains("gpt-5.5-xhigh"),
         "should show the default first final reviewer target: {}",
         stdout
     );

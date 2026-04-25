@@ -96,25 +96,25 @@ fn project_id_rejects_path_like_values() {
 
 #[test]
 fn panel_backend_spec_parses_inline_model_overrides_and_optional_marker() {
-    let required = "codex/gpt-5.4-xhigh"
+    let required = "codex/gpt-5.5-xhigh"
         .parse::<PanelBackendSpec>()
         .expect("parse required panel backend");
-    let optional = "?openrouter/openai/gpt-5.4"
+    let optional = "?openrouter/openai/gpt-5.5"
         .parse::<PanelBackendSpec>()
         .expect("parse optional panel backend");
 
     assert_eq!(BackendFamily::Codex, required.selection().family);
-    assert_eq!(Some("gpt-5.4-xhigh"), required.selection().model.as_deref());
+    assert_eq!(Some("gpt-5.5-xhigh"), required.selection().model.as_deref());
     assert!(!required.is_optional());
-    assert_eq!("codex/gpt-5.4-xhigh", required.to_string());
+    assert_eq!("codex/gpt-5.5-xhigh", required.to_string());
 
     assert_eq!(BackendFamily::OpenRouter, optional.selection().family);
     assert_eq!(
-        Some("openai/gpt-5.4"),
+        Some("openai/gpt-5.5"),
         optional.selection().model.as_deref()
     );
     assert!(optional.is_optional());
-    assert_eq!("?openrouter/openai/gpt-5.4", optional.to_string());
+    assert_eq!("?openrouter/openai/gpt-5.5", optional.to_string());
 }
 
 #[test]
@@ -141,23 +141,23 @@ fn panel_backend_spec_serde_round_trips_inline_model_overrides() {
 
 #[test]
 fn panel_backend_spec_parses_legacy_parenthesized_model_overrides_with_slashes() {
-    let required = "openrouter(openai/gpt-5.4)"
+    let required = "openrouter(openai/gpt-5.5)"
         .parse::<PanelBackendSpec>()
         .expect("parse required legacy panel backend");
-    let optional = "?openrouter(openai/gpt-5.4)"
+    let optional = "?openrouter(openai/gpt-5.5)"
         .parse::<PanelBackendSpec>()
         .expect("parse optional legacy panel backend");
 
     assert_eq!(BackendFamily::OpenRouter, required.selection().family);
     assert_eq!(
-        Some("openai/gpt-5.4"),
+        Some("openai/gpt-5.5"),
         required.selection().model.as_deref()
     );
     assert!(!required.is_optional());
 
     assert_eq!(BackendFamily::OpenRouter, optional.selection().family);
     assert_eq!(
-        Some("openai/gpt-5.4"),
+        Some("openai/gpt-5.5"),
         optional.selection().model.as_deref()
     );
     assert!(optional.is_optional());
@@ -170,22 +170,22 @@ fn panel_backend_spec_serde_accepts_legacy_parenthesized_model_overrides() {
         spec: PanelBackendSpec,
     }
 
-    let from_json: Wrapper = serde_json::from_str(r#"{"spec":"?openrouter(openai/gpt-5.4)"}"#)
+    let from_json: Wrapper = serde_json::from_str(r#"{"spec":"?openrouter(openai/gpt-5.5)"}"#)
         .expect("deserialize legacy panel backend from json");
     assert_eq!(BackendFamily::OpenRouter, from_json.spec.selection().family);
     assert_eq!(
-        Some("openai/gpt-5.4"),
+        Some("openai/gpt-5.5"),
         from_json.spec.selection().model.as_deref()
     );
     assert_eq!(
-        r#"{"spec":"?openrouter/openai/gpt-5.4"}"#,
+        r#"{"spec":"?openrouter/openai/gpt-5.5"}"#,
         serde_json::to_string(&from_json).expect("serialize normalized panel backend to json")
     );
 
-    let from_toml: Wrapper = toml::from_str("spec = \"?openrouter(openai/gpt-5.4)\"")
+    let from_toml: Wrapper = toml::from_str("spec = \"?openrouter(openai/gpt-5.5)\"")
         .expect("deserialize legacy panel backend from toml");
     assert_eq!(from_json, from_toml);
     assert!(toml::to_string(&from_toml)
         .expect("serialize normalized panel backend to toml")
-        .contains("?openrouter/openai/gpt-5.4"));
+        .contains("?openrouter/openai/gpt-5.5"));
 }
