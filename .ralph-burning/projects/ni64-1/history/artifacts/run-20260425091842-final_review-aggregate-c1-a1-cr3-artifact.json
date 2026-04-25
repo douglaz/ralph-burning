@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T12:09:27.141910277Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-854612ff`\n- `fr-3-4750302e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-854612ff`\n\n`src/contexts/workflow_composition/prompt_review.rs:328-339` and `src/contexts/project_run_record/service.rs:426-435` now require `validate_current_canonical_prompt_shape`, which rejects canonical v1 prompts that legitimately omit `## Nearby work`. That bypasses the compatibility path intentionally added in `src/contexts/project_run_record/task_prompt_contract.rs:298-306`, so prompt review and `project create-from-bead --prompt-file ...` can no longer accept previously generated canonical task prompts unless the caller invents a Nearby work section it was never given. Keep the stricter validator for freshly generated prompts, but preserve legacy-compatible validation when the source prompt predates this section or version-bump the contract before making the new heading mandatory everywhere.\n\n### `fr-3-4750302e`\n\n`src/cli/project.rs:2457-2460` drops every non-`blocks` relation from `Nearby work`, so parent/child edges never appear in `direct_dependencies` or `direct_dependents`. Because bead creation still accepts any open/in-progress bead type (`src/cli/project.rs:1396-1423`), epic beads lose all child-bead scope summaries in `Direct dependents`, and child beads lose their parent epic in `Direct dependencies`, even though the bead spec says these subsections should summarize the focal bead's direct dependency/dependent IDs. If you want to avoid duplicate parent-epic noise for leaf beads, that needs a narrower rule than excluding the entire `parent-child` relation class.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}
