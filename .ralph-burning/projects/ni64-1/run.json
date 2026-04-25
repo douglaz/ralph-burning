@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-f5738668",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: `build_nearby_bead_context()` is treating hierarchy links as nearby dependency work. It passes the full `bead.dependencies` and `bead.dependents` arrays into `nearby_entries_from_relations()` (`src/cli/project.rs:2434-2437`), and that helper never filters by `DependencyKind` (`src/cli/project.rs:2457-2480`). Any bead with a `parent_child` link to its epic will therefore show that epic under `## Nearby work` as a direct dependency, and epics can likewise surface child beads as direct dependents. That misstates the relationship the section is supposed to convey and spends the nearby-context budget on hierarchy metadata instead of actual dependency/sibling context.\naffected_files: src/cli/project.rs:2434-2480\nremediation_hint: only include `DependencyKind::Blocks` edges in the direct dependency/dependent subsections; keep `parent_child` links for parent/sibling inference only.",
+        "created_at": "2026-04-25T11:06:42.215970352Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "40fe080f9847ca590b09b05e72a04d698a37e3cde4e8199a8b0f8e312d3ca570"
+      },
+      {
+        "amendment_id": "fr-2-4a207ecd",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "finding_summary: the new `## Nearby work` section is not actually preserved by canonical-prompt validation. `is_optional_canonical_section()` marks `Nearby work` optional for every `bead_execution_prompt/1` prompt (`src/contexts/project_run_record/task_prompt_contract.rs:55-58`), and `validate_canonical_prompt_shape()` therefore accepts prompts that omit it (`src/contexts/project_run_record/task_prompt_contract.rs:342-346` and `src/contexts/project_run_record/task_prompt_contract.rs:388-392`). Prompt-review drift detection relies on that validator (`src/contexts/workflow_composition/prompt_review.rs:328-339`), so a rewritten prompt can silently drop the new section and still be accepted as canonical. That makes the feature non-durable in normal workflows: the prompt starts with nearby context, then prompt review can remove it without any rejection.\naffected_files: src/contexts/project_run_record/task_prompt_contract.rs:55-58,342-346,388-392; src/contexts/workflow_composition/prompt_review.rs:328-339\nremediation_hint: either bump the contract version for the new shape or keep legacy compatibility in read-only consumers while requiring `## Nearby work` on newly generated/refined canonical prompts.",
+        "created_at": "2026-04-25T11:06:42.215980822Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "ff6f4d8a33c29b65d67cf705c9386c6ea74e4f7f35225ce3f91fa3532974be6f"
+      }
+    ],
     "processed_count": 1
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-25T10:14:01.860862713Z",
+    "resolved_at": "2026-04-25T11:00:08.070692566Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

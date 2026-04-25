@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T11:05:23.118582168Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now issues in the nearby-work prompt changes: hierarchy edges are being surfaced as direct dependency/dependent work, and canonical prompt validation still allows the new section to be dropped during prompt rewrites.\n\n## Amendments\n\n1. finding_summary: `build_nearby_bead_context()` is treating hierarchy links as nearby dependency work. It passes the full `bead.dependencies` and `bead.dependents` arrays into `nearby_entries_from_relations()` (`src/cli/project.rs:2434-2437`), and that helper never filters by `DependencyKind` (`src/cli/project.rs:2457-2480`). Any bead with a `parent_child` link to its epic will therefore show that epic under `## Nearby work` as a direct dependency, and epics can likewise surface child beads as direct dependents. That misstates the relationship the section is supposed to convey and spends the nearby-context budget on hierarchy metadata instead of actual dependency/sibling context.\naffected_files: src/cli/project.rs:2434-2480\nremediation_hint: only include `DependencyKind::Blocks` edges in the direct dependency/dependent subsections; keep `parent_child` links for parent/sibling inference only.\n   Rationale: This produces misleading prompt context for normal bead-backed tasks and can crowd out the more useful nearby entries the feature is meant to surface.\n2. finding_summary: the new `## Nearby work` section is not actually preserved by canonical-prompt validation. `is_optional_canonical_section()` marks `Nearby work` optional for every `bead_execution_prompt/1` prompt (`src/contexts/project_run_record/task_prompt_contract.rs:55-58`), and `validate_canonical_prompt_shape()` therefore accepts prompts that omit it (`src/contexts/project_run_record/task_prompt_contract.rs:342-346` and `src/contexts/project_run_record/task_prompt_contract.rs:388-392`). Prompt-review drift detection relies on that validator (`src/contexts/workflow_composition/prompt_review.rs:328-339`), so a rewritten prompt can silently drop the new section and still be accepted as canonical. That makes the feature non-durable in normal workflows: the prompt starts with nearby context, then prompt review can remove it without any rejection.\naffected_files: src/contexts/project_run_record/task_prompt_contract.rs:55-58,342-346,388-392; src/contexts/workflow_composition/prompt_review.rs:328-339\nremediation_hint: either bump the contract version for the new shape or keep legacy compatibility in read-only consumers while requiring `## Nearby work` on newly generated/refined canonical prompts.\n   Rationale: The bead's core guarantee is that nearby-work context is present when later stages classify scope; allowing canonical rewrites to delete that section defeats the feature.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
