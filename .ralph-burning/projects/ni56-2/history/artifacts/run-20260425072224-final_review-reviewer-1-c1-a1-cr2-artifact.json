@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425072224-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260425072224-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T08:54:58.125278689Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nNo correctness, safety, or robustness issues stood out in the reviewed branch state relative to a7e87bf1ea94d13d2b8594d76901dfbf7bdee466. I read the changed Rust implementation and test areas, and targeted filters passed for task-source validation, create-from-bead missing-milestone/missing-bead handling, lineage listing, active-project milestone validation, prompt-hash sync corruption handling, and the stub-backend run smoke test. `nix build` was started but not completed during this review pass.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}
