@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 11
+      "completion_round": 12
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 10
+    "final_review_restart_count": 11
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 11,
+  "completion_rounds": 12,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-11-6582129e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 11,
+        "body": "finding_summary: Nearby-work status filtering still trusts `br list` too early, so the prompt can surface the wrong beads. Direct dependencies/dependents only prefetch `br show` detail when the summary text is sparse (`src/cli/project.rs:3013-3054`), while sibling/related scans discard `closed`/`deferred` summaries before a detail refresh can prove they are actually open (`src/cli/project.rs:3064-3153`). The renderer then uses whatever status survived that pipeline (`src/cli/project.rs:2771-2849`). If `br list` and `br show` disagree, closed direct relations can leak into `## Nearby work` or open nearby beads can disappear, violating the bead's filtering contract and hiding/creating the wrong planned-elsewhere targets.\naffected_files:\n- src/cli/project.rs:2771-3054\n- src/cli/project.rs:3064-3153\nremediation_hint: Decouple status verification from title/description sparsity. Refresh candidate detail for status-sensitive nearby entries within the existing scan limits, and do not omit summary-closed candidates until the detail pass has had a chance to confirm their real state.",
+        "created_at": "2026-04-25T21:24:02.514778874Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "ae1f141c5276dfaa165cb56b008dd4ca83793b5cc2f2fca192db0211573562e8"
+      },
+      {
+        "amendment_id": "fr-11-2951dc45",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 11,
+        "body": "finding_summary: Prompt review is allowed to rewrite the graph-derived `## Nearby work` body, and final review then trusts the rewritten IDs as authoritative routing targets. The prompt-review guidance only requires the contract marker and section headings to survive (`src/contexts/project_run_record/task_prompt_contract.rs:284-301`), and `canonical_contract_drift_concerns` only revalidates shape (`src/contexts/workflow_composition/prompt_review.rs:333-350`). Later, final review builds the planned-elsewhere allowlist directly from the prompt text (`src/contexts/workflow_composition/final_review.rs:2364-2369`). A refiner can therefore delete real nearby beads or hallucinate new ones without tripping validation, which can suppress a needed restart by misclassifying a finding as planned-elsewhere.\naffected_files:\n- src/contexts/project_run_record/task_prompt_contract.rs:284-301\n- src/contexts/workflow_composition/prompt_review.rs:333-350\n- src/contexts/workflow_composition/final_review.rs:2364-2369\nremediation_hint: Treat `## Nearby work` like `AGENTS / Repo Guidance`: preserve it verbatim during prompt review, or regenerate/reconcile it from the bead graph before accepting a refined prompt.",
+        "created_at": "2026-04-25T21:24:02.514784174Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "73c441f8e6a4f6bce7602820ce67ae0cd060531075d58f5b04cb3c4b7ea0a746"
+      }
+    ],
     "processed_count": 17
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 12 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-25T19:48:57.057099271Z",
+    "resolved_at": "2026-04-25T21:12:24.671413154Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

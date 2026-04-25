@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T21:24:02.476718543Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness issues in how nearby-work data feeds planned-elsewhere routing. One trusts summary status too early; the other trusts prompt-reviewed nearby-work text too much.\n\n## Votes\n\n- `fr-11-6582129e`: Accept\n  The code only prefetches direct relation detail when the summary/title data is sparse, but nearby rendering chooses status from detail first and otherwise falls back to summary or relation status. That leaves a real gap where a non-sparse direct dependency/dependent can render as open from stale list data even if its detail is closed. Sibling and related-work discovery have the inverse problem: summary-closed candidates are filtered out before a detail fetch can prove they are actually open, so valid nearby beads can disappear permanently. Because Nearby work later feeds planned-elsewhere routing, this is a correctness bug, not just cosmetic drift.\n- `fr-11-2951dc45`: Accept\n  Prompt review currently enforces only contract shape plus verbatim AGENTS guidance; it does not preserve the body of the Nearby work section. The drift check revalidates headings/order only, so a refiner can replace nearby bullets without being rejected. Final review then builds its planned-elsewhere allowlist directly from the resulting prompt text, so hallucinated nearby IDs become trusted routing targets and real nearby IDs can be removed from the allowlist. Since planned-elsewhere findings do not trigger restart, that can incorrectly suppress restart-worthy issues.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 11
+}
