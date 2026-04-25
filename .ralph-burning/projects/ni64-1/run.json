@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-2f4bfd83",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "finding_summary: The branch makes `## Nearby work` a required `bead_execution_prompt/1` section without a compatibility path for the older `/1` prompts that are already persisted on existing tasks. `BEAD_TASK_PROMPT_CONTRACT_VERSION` is still `1`, but `SECTION_NEARBY_WORK` was added to `BEAD_TASK_PROMPT_SECTION_TITLES` in `src/contexts/project_run_record/task_prompt_contract.rs:18-19,42-53`, and the renderer now always emits that section in `src/contexts/project_run_record/service.rs:1217-1231`. Older version-1 prompts generated before this bead therefore fail `validate_canonical_prompt_shape`, which disables canonical scope handling in `src/contexts/workflow_composition/review_classification.rs:519-521` and causes prompt-review / override validation to reject unchanged historical prompts in `src/contexts/workflow_composition/prompt_review.rs:328-339` and `src/contexts/project_run_record/service.rs:426-435`.\nremediation_hint: Either introduce a new contract version and keep consumers able to recognize/validate legacy v1 prompts, or keep `Nearby work` optional when validating older `/1` prompts.",
-        "created_at": "2026-04-25T10:21:16.881385487Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "c01edfe147a20b107307abec5ce1c0edb061bb110bcdabed51aa793765ad8dbb"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T10:14:01.860862713Z",

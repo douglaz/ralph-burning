@@ -52,6 +52,12 @@ pub const BEAD_TASK_PROMPT_SECTION_TITLES: &[&str] = &[
     SECTION_AGENTS_REPO_GUIDANCE,
 ];
 
+fn is_optional_canonical_section(index: usize) -> bool {
+    BEAD_TASK_PROMPT_SECTION_TITLES
+        .get(index)
+        .is_some_and(|section| *section == SECTION_NEARBY_WORK)
+}
+
 /// Nearby bead graph context pre-truncated by the builder to
 /// [`NEARBY_BEAD_CONTEXT_BYTE_CAP`] before prompt rendering.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -335,6 +341,10 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
 
         if found_index > expected_index && expected_index < BEAD_TASK_PROMPT_SECTION_TITLES.len() {
             for missing_index in expected_index..found_index {
+                if is_optional_canonical_section(missing_index) {
+                    reported_missing[missing_index] = true;
+                    continue;
+                }
                 errors.push(format!(
                     "missing section heading `## {}`",
                     BEAD_TASK_PROMPT_SECTION_TITLES[missing_index]
@@ -376,7 +386,10 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 
     for (index, section) in BEAD_TASK_PROMPT_SECTION_TITLES.iter().enumerate() {
-        if seen_positions[index].is_none() && !reported_missing[index] {
+        if seen_positions[index].is_none()
+            && !reported_missing[index]
+            && !is_optional_canonical_section(index)
+        {
             errors.push(format!("missing section heading `## {section}`"));
         }
     }
@@ -588,6 +601,29 @@ mod tests {
         assert!(errors
             .iter()
             .any(|error| error.contains("## Current Bead Details")));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_allows_legacy_v1_prompt_without_nearby_work() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn canonical_prompt_shape_rejects_nearby_work_after_later_sections() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Nearby work\n\nN\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("unexpected canonical heading `## Nearby work`")));
     }
 
     #[test]
