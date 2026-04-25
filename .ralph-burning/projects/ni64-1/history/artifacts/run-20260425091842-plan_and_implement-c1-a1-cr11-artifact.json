@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr11-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr11",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T21:12:24.394138842Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the planned-elsewhere alias merge issue in final review. `mapped_to_bead_id` values are now canonicalized through a prompt-derived allowlist before amendment merge/voting validation, so canonical and safe short-form aliases for the same nearby bead merge as the same planned-elsewhere target instead of being downgraded to fix-now. Added regression coverage for reviewers mapping the same amendment to `9ni.6.5` and `6.5`.\n\n## Steps\n\n0. [Completed] Inspected planned-elsewhere ID extraction, review guidance, and final-review amendment merge/validation paths.\n1. [Completed] Added prompt-derived `PlannedElsewhereIdCanonicalizer` handling for canonical and safe short-form mapped bead IDs.\n2. [Completed] Wired canonicalization into final-review amendment merging and downstream mapped-ID validation so invalid mappings still fail closed to fix-now.\n3. [Completed] Added focused regression coverage for canonical-vs-short nearby bead aliases merging to one planned-elsewhere target.\n4. [Completed] Ran focused, formatting, linting, full test, Nix build, and whitespace validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub merge_planned_elsewhere_alias_targets_use_canonical_mapping` passed: 1 test.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- Initial `nix develop -c cargo test --locked --features test-stub` hit one transient/unrelated fake-backend fixture failure: `cat: command not found`; the exact failed test passed when rerun serially.\n- `nix develop -c cargo test --locked --features test-stub build_stage_prompt_keeps_claude_prompt_schema_in_sync_with_transport_schema --test unit -- --test-threads=1` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed on rerun.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 11
+}

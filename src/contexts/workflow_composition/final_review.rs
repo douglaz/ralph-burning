@@ -450,6 +450,84 @@ fn normalize_mapped_to_bead_id(id: Option<&String>) -> Option<String> {
     })
 }
 
+#[derive(Debug, Clone, Default)]
+struct PlannedElsewhereIdCanonicalizer {
+    allowed_ids: HashSet<String>,
+    canonical_by_allowed_id: HashMap<String, String>,
+    enforce_allowlist: bool,
+}
+
+impl PlannedElsewhereIdCanonicalizer {
+    #[cfg(test)]
+    fn permissive() -> Self {
+        Self::default()
+    }
+
+    fn from_prompt(prompt: &str) -> Self {
+        let allowed_ids = task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(prompt);
+        let canonical_ids =
+            task_prompt_contract::extract_planned_elsewhere_canonical_routing_bead_ids(prompt);
+        let mut canonical_by_allowed_id = HashMap::new();
+        let mut alias_targets: HashMap<String, Option<String>> = HashMap::new();
+
+        for canonical_id in canonical_ids {
+            let canonical_id = canonical_id.trim();
+            if canonical_id.is_empty() || !allowed_ids.contains(canonical_id) {
+                continue;
+            }
+            canonical_by_allowed_id.insert(canonical_id.to_owned(), canonical_id.to_owned());
+
+            if let Some(short_id) = task_prompt_contract::strip_milestone_prefix(canonical_id) {
+                if allowed_ids.contains(short_id) {
+                    alias_targets
+                        .entry(short_id.to_owned())
+                        .and_modify(|target| {
+                            if target.as_deref() != Some(canonical_id) {
+                                *target = None;
+                            }
+                        })
+                        .or_insert_with(|| Some(canonical_id.to_owned()));
+                }
+            }
+        }
+
+        for (alias, canonical_id) in alias_targets {
+            if let Some(canonical_id) = canonical_id {
+                canonical_by_allowed_id.insert(alias, canonical_id);
+            }
+        }
+
+        Self {
+            allowed_ids,
+            canonical_by_allowed_id,
+            enforce_allowlist: true,
+        }
+    }
+
+    fn canonicalize_optional(&self, id: Option<&String>) -> Option<String> {
+        let normalized = normalize_mapped_to_bead_id(id)?;
+        if !self.enforce_allowlist {
+            return Some(normalized);
+        }
+        self.canonicalize_allowed(&normalized)
+    }
+
+    fn canonicalize_allowed(&self, id: &str) -> Option<String> {
+        let trimmed = id.trim();
+        if trimmed.is_empty() || self.allowed_ids.is_empty() || !self.allowed_ids.contains(trimmed)
+        {
+            return None;
+        }
+        Some(
+            self.canonical_by_allowed_id
+                .get(trimmed)
+                .cloned()
+                .unwrap_or_else(|| trimmed.to_owned()),
+        )
+    }
+}
+
+#[cfg(test)]
 fn mapped_to_bead_id_is_allowed(allowed_planned_elsewhere_ids: &HashSet<String>, id: &str) -> bool {
     !allowed_planned_elsewhere_ids.is_empty() && allowed_planned_elsewhere_ids.contains(id.trim())
 }
@@ -517,9 +595,22 @@ fn infer_classification(
     }
 }
 
+#[cfg(test)]
 fn merge_final_review_amendments(
     completion_round: u32,
     proposals: &[ReviewerProposalRecord],
+) -> Vec<CanonicalAmendment> {
+    merge_final_review_amendments_with_canonicalizer(
+        completion_round,
+        proposals,
+        &PlannedElsewhereIdCanonicalizer::permissive(),
+    )
+}
+
+fn merge_final_review_amendments_with_canonicalizer(
+    completion_round: u32,
+    proposals: &[ReviewerProposalRecord],
+    mapped_id_canonicalizer: &PlannedElsewhereIdCanonicalizer,
 ) -> Vec<CanonicalAmendment> {
     let mut by_body: HashMap<String, CanonicalAmendment> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -538,15 +629,21 @@ fn merge_final_review_amendments(
                 model_id: proposal.model_id.clone(),
             };
 
-            let incoming_mapped = normalize_mapped_to_bead_id(amendment.mapped_to_bead_id.as_ref());
+            let incoming_mapped =
+                mapped_id_canonicalizer.canonicalize_optional(amendment.mapped_to_bead_id.as_ref());
             let inferred_classification = infer_classification(amendment);
             let (
-                incoming_classification,
+                mut incoming_classification,
                 incoming_proposed_title,
                 incoming_proposed_scope,
                 incoming_severity,
                 incoming_rationale,
             ) = normalize_propose_new_bead_fields(amendment, inferred_classification);
+            if incoming_classification == AmendmentClassification::PlannedElsewhere
+                && incoming_mapped.is_none()
+            {
+                incoming_classification = AmendmentClassification::FixNow;
+            }
 
             match by_body.get_mut(&normalized_body) {
                 Some(existing) => {
@@ -1078,7 +1175,12 @@ where
         });
     }
 
-    let mut amendments = merge_final_review_amendments(cursor.completion_round, &reviewer_records);
+    let mapped_id_canonicalizer = PlannedElsewhereIdCanonicalizer::from_prompt(&project_prompt);
+    let mut amendments = merge_final_review_amendments_with_canonicalizer(
+        cursor.completion_round,
+        &reviewer_records,
+        &mapped_id_canonicalizer,
+    );
     if amendments.is_empty() {
         let aggregate = FinalReviewAggregatePayload {
             restart_required: false,
@@ -1116,12 +1218,15 @@ where
     // Fail closed: if no adjacent planned-elsewhere IDs are present in the
     // prompt, strip ALL mapped_to_bead_id values so they cannot mislead the
     // voting panel.
-    let allowed_planned_elsewhere_ids =
-        task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(&project_prompt);
     for amendment in &mut amendments {
-        if let Some(ref mapped_to) = amendment.mapped_to_bead_id {
-            if !mapped_to_bead_id_is_allowed(&allowed_planned_elsewhere_ids, mapped_to) {
+        if let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() {
+            if let Some(canonical_id) = mapped_id_canonicalizer.canonicalize_allowed(mapped_to) {
+                amendment.mapped_to_bead_id = Some(canonical_id);
+            } else {
                 amendment.mapped_to_bead_id = None;
+                if amendment.classification == AmendmentClassification::PlannedElsewhere {
+                    amendment.classification = AmendmentClassification::FixNow;
+                }
             }
         }
     }
@@ -1850,8 +1955,10 @@ where
     // `amendments` before voter/arbiter prompts, but this guards against any
     // code path that could re-introduce an invalid mapping.
     for amendment in &mut final_accepted_amendments {
-        if let Some(ref mapped_to) = amendment.mapped_to_bead_id {
-            if !mapped_to_bead_id_is_allowed(&allowed_planned_elsewhere_ids, mapped_to) {
+        if let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() {
+            if let Some(canonical_id) = mapped_id_canonicalizer.canonicalize_allowed(mapped_to) {
+                amendment.mapped_to_bead_id = Some(canonical_id);
+            } else {
                 amendment.mapped_to_bead_id = None;
                 // If the mapped bead ID was invalid, downgrade to fix-now
                 // since we can't route a planned-elsewhere without a target.
@@ -3878,6 +3985,28 @@ mod tests {
             merged[0].mapped_to_bead_id, None,
             "conflicting targets should clear mapping"
         );
+    }
+
+    #[test]
+    fn merge_planned_elsewhere_alias_targets_use_canonical_mapping() {
+        let project_prompt = "- Milestone: `9ni`\n\n## Nearby work\n\n### Siblings\n- `9ni.6.5` [open] Adjacent prompt routing\n  Scope: Owns review routing for adjacent findings.\n";
+        let canonicalizer = PlannedElsewhereIdCanonicalizer::from_prompt(project_prompt);
+
+        let merged = merge_final_review_amendments_with_canonicalizer(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix adjacent routing", Some("9ni.6.5")),
+                proposal_record_with_mapping("reviewer-b", "fix adjacent routing", Some("6.5")),
+            ],
+            &canonicalizer,
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].classification,
+            AmendmentClassification::PlannedElsewhere
+        );
+        assert_eq!(merged[0].mapped_to_bead_id.as_deref(), Some("9ni.6.5"));
     }
 
     #[test]
