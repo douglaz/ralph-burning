@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424200824-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T01:43:06.619482681Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness regressions: one can resolve `create-from-bead` to the wrong bead after a qualified-id fallback, and the other breaks durable lineage/history lookup for projects created from legacy title-only plan entries that map to explicit bead ids.\n\n## Votes\n\n- `fr-5-e63924c7`: Accept\n  `bead_show_query_candidates()` strips any `milestone.` prefix, including implicit slot ids like `ms-alpha.bead-2`. If the exact qualified lookup misses, the retry against `bead-2` can succeed, and `milestone_bead_refs_match()` treats `bead-2` and `ms-alpha.bead-2` as equivalent local refs. `ensure_bead_belongs_to_milestone()` then accepts the returned unqualified explicit id, so `project create-from-bead` can claim/bootstrap the wrong bead instead of failing. That is a concrete correctness bug.\n- `fr-5-bd2a5840`: Accept\n  The create path now allows resolving a legacy title-only plan entry by title when no `bead_id` is stored, but `find_bead_plan_details()` does not preserve or reproduce that lookup strategy. It only matches persisted explicit ids or the implicit `bead-N` slot. For a project created from a legacy title-only entry that corresponds to an explicit live bead id like `api-1`, the stored `plan_hash` may still match the current validated plan and yet `read_bead_lineage()` / `bead_execution_history()` will fail because the plan can no longer re-identify that bead. That is a real durability regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}

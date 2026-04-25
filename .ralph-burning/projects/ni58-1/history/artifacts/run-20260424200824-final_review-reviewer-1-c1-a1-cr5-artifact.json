@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T01:41:00.754369030Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch state against 88f4f42a39bdb4b0e468b17277f4415f176e31f3 and found two fix-now correctness regressions in the new qualified-bead fallback and legacy title-only lookup paths.\n\n## Amendments\n\n1. finding_summary: [src/cli/project.rs:1665-1763] `load_bead_detail()` now retries any qualified bead id with the stripped short form. That is required for canonicalized explicit ids such as `ms-explicit.ralph-burning-evi`, but it also applies to generated slot ids like `ms-alpha.bead-2`. If the exact bead is missing and an unrelated explicit bead `bead-2` exists, the fallback path accepts it via `milestone_bead_refs_match()`, so `project create-from-bead` can claim/bootstrap the wrong bead instead of failing. affected_files: src/cli/project.rs. remediation_hint: only strip-and-retry qualified ids that can represent authored explicit ids, or otherwise reject implicit-slot aliases like `bead-N` on the fallback path.\n   Rationale: This is a correctness issue, not just messaging: the command can operate on the wrong live bead and write incorrect milestone/project state when a short-id collision exists.\n2. finding_summary: [src/contexts/milestone_record/service.rs:3650-3721] The new legacy title-only plan support is not durable for explicit beads. `resolve_bead_plan()` can now create a project from a legacy entry with no `bead_id`, but later lineage/history reads call `find_bead_plan_details()`, which only matches by stable `bead_id` or the implicit `bead-N` slot. For a legacy title-only entry that originally pointed at an explicit bead such as `api-1`, `read_bead_lineage()` / `bead_execution_history()` will fail with `bead 'api-1' was not found in the validated milestone plan` even when the stored `plan_hash` still matches. affected_files: src/contexts/milestone_record/service.rs. remediation_hint: persist enough metadata to re-identify legacy title-only matches, or make lineage lookup mirror the same legacy title fallback instead of hard-failing.\n   Rationale: The branch advertises continued support for legacy title-only plans, but that support currently breaks as soon as downstream milestone lineage/history code needs to re-resolve an explicit bead from the validated plan.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 5
+}
