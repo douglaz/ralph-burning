@@ -179,19 +179,35 @@ fn markdown_canonical_section_heading(line: &str) -> Option<(usize, usize)> {
     Some((section_index, leading_spaces))
 }
 
-fn consumer_guidance_body(scope_boundary_guidance: &str) -> String {
+fn consumer_guidance_body(scope_boundary_guidance: &str, section_titles: &[&str]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "The project prompt below uses `{}`.\n\n",
         contract_identifier()
     ));
     out.push_str("Treat these sections as authoritative:\n");
-    for section in BEAD_TASK_PROMPT_SECTION_TITLES {
+    for section in section_titles {
         out.push_str(&format!("- `{section}`\n"));
     }
     out.push('\n');
     out.push_str(scope_boundary_guidance);
     out
+}
+
+fn prompt_authoritative_section_titles(prompt: &str) -> Vec<&'static str> {
+    if validate_current_canonical_prompt_shape(prompt).is_ok() {
+        return BEAD_TASK_PROMPT_SECTION_TITLES.to_vec();
+    }
+
+    if validate_canonical_prompt_shape(prompt).is_ok() {
+        return BEAD_TASK_PROMPT_SECTION_TITLES
+            .iter()
+            .copied()
+            .filter(|section| *section != SECTION_NEARBY_WORK)
+            .collect();
+    }
+
+    BEAD_TASK_PROMPT_SECTION_TITLES.to_vec()
 }
 
 fn top_level_lines(prompt: &str) -> impl Iterator<Item = &str> {
@@ -232,9 +248,14 @@ pub fn prompt_uses_contract(prompt: &str) -> bool {
 /// Guidance injected into workflow stage prompts when the project prompt uses
 /// the canonical bead task prompt contract.
 pub fn stage_consumer_guidance() -> String {
+    stage_consumer_guidance_with_sections(BEAD_TASK_PROMPT_SECTION_TITLES)
+}
+
+fn stage_consumer_guidance_with_sections(section_titles: &[&str]) -> String {
     let mut out = String::from("## Task Prompt Contract\n\n");
     out.push_str(&consumer_guidance_body(
         "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` and `Already Planned Elsewhere` as out-of-scope unless the work is strictly required to satisfy the active bead.",
+        section_titles,
     ));
     out
 }
@@ -242,9 +263,14 @@ pub fn stage_consumer_guidance() -> String {
 /// Guidance injected into planning-oriented workflow stage prompts when the
 /// project prompt uses the canonical bead task prompt contract.
 pub fn planning_stage_consumer_guidance() -> String {
+    planning_stage_consumer_guidance_with_sections(BEAD_TASK_PROMPT_SECTION_TITLES)
+}
+
+fn planning_stage_consumer_guidance_with_sections(section_titles: &[&str]) -> String {
     let mut out = String::from("## Task Prompt Contract\n\n");
     out.push_str(&consumer_guidance_body(
         "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` as out-of-scope. Do not absorb work owned by `Already Planned Elsewhere`; leave it deferred or referenced as related follow-up instead of pulling it into the active bead.",
+        section_titles,
     ));
     out
 }
@@ -252,11 +278,23 @@ pub fn planning_stage_consumer_guidance() -> String {
 /// Guidance injected into prompt-review templates when the prompt uses the
 /// canonical bead task prompt contract.
 pub fn prompt_review_consumer_guidance() -> String {
-    let mut out = stage_consumer_guidance();
+    prompt_review_consumer_guidance_with_sections(BEAD_TASK_PROMPT_SECTION_TITLES, false)
+}
+
+fn prompt_review_consumer_guidance_with_sections(
+    section_titles: &[&str],
+    legacy_missing_nearby_work: bool,
+) -> String {
+    let mut out = stage_consumer_guidance_with_sections(section_titles);
     out.push_str(&format!(
         "\n\nIf you rewrite the prompt, preserve the exact contract marker line `{}` and keep the canonical section headings in the same order.",
         contract_marker()
     ));
+    if legacy_missing_nearby_work {
+        out.push_str(
+            " This prompt uses the legacy v1 shape without `Nearby work`; do not add that section unless explicitly modernizing the prompt.",
+        );
+    }
     out.push_str(
         "\n\nPreserve milestone-provided `AGENTS / Repo Guidance` verbatim instead of rewriting it into synthesized bullets.",
     );
@@ -266,7 +304,8 @@ pub fn prompt_review_consumer_guidance() -> String {
 /// Return stage-consumer guidance when the prompt uses the canonical contract.
 pub fn stage_consumer_guidance_for_prompt(prompt: &str) -> String {
     if prompt_uses_contract(prompt) {
-        stage_consumer_guidance()
+        let section_titles = prompt_authoritative_section_titles(prompt);
+        stage_consumer_guidance_with_sections(&section_titles)
     } else {
         String::new()
     }
@@ -280,15 +319,23 @@ pub fn stage_consumer_guidance_for_stage_prompt(stage_id: StageId, prompt: &str)
     }
 
     match stage_id {
-        StageId::Planning | StageId::PlanAndImplement => planning_stage_consumer_guidance(),
-        _ => stage_consumer_guidance(),
+        StageId::Planning | StageId::PlanAndImplement => {
+            let section_titles = prompt_authoritative_section_titles(prompt);
+            planning_stage_consumer_guidance_with_sections(&section_titles)
+        }
+        _ => {
+            let section_titles = prompt_authoritative_section_titles(prompt);
+            stage_consumer_guidance_with_sections(&section_titles)
+        }
     }
 }
 
 /// Return prompt-review guidance when the prompt uses the canonical contract.
 pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
     if prompt_uses_contract(prompt) {
-        prompt_review_consumer_guidance()
+        let section_titles = prompt_authoritative_section_titles(prompt);
+        let legacy_missing_nearby_work = !section_titles.contains(&SECTION_NEARBY_WORK);
+        prompt_review_consumer_guidance_with_sections(&section_titles, legacy_missing_nearby_work)
     } else {
         String::new()
     }
@@ -600,6 +647,32 @@ mod tests {
         let guidance = prompt_review_consumer_guidance();
         assert!(guidance.contains(&contract_marker()));
         assert!(guidance.contains("keep the canonical section headings in the same order"));
+    }
+
+    #[test]
+    fn stage_guidance_for_legacy_prompt_omits_nearby_work_section() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let guidance = stage_consumer_guidance_for_prompt(&prompt);
+
+        assert!(guidance.contains("`Milestone Summary`"));
+        assert!(!guidance.contains("`Nearby work`"));
+    }
+
+    #[test]
+    fn prompt_review_guidance_for_legacy_prompt_does_not_require_nearby_work() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let guidance = prompt_review_consumer_guidance_for_prompt(&prompt);
+
+        assert!(guidance.contains("legacy v1 shape without `Nearby work`"));
+        assert!(!guidance.contains("- `Nearby work`"));
     }
 
     #[test]

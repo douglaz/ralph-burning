@@ -63,6 +63,7 @@ const PLANNED_ELSEWHERE_MAX_BYTES: usize = 1536;
 const PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES: usize = 240;
 const NEARBY_SIBLING_LIMIT: usize = 5;
 const NEARBY_RELATED_WORK_LIMIT: usize = 3;
+const NEARBY_TITLE_MAX_BYTES: usize = 120;
 const NEARBY_SCOPE_SUMMARY_MAX_BYTES: usize = 180;
 
 #[derive(Debug, Args)]
@@ -2591,10 +2592,20 @@ fn nearby_entry(
 ) -> NearbyBeadEntry {
     NearbyBeadEntry {
         bead_id: bead_id.to_owned(),
-        title: title.to_owned(),
+        title: nearby_title(title, bead_id),
         scope_summary: nearby_scope_summary(description, title),
         status,
     }
+}
+
+fn nearby_title(title: &str, fallback_id: &str) -> String {
+    let compact = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = if compact.is_empty() {
+        fallback_id
+    } else {
+        compact.as_str()
+    };
+    truncate_with_ascii_ellipsis(title, NEARBY_TITLE_MAX_BYTES).unwrap_or_default()
 }
 
 fn nearby_scope_summary(description: Option<&str>, fallback_title: &str) -> String {
@@ -3582,8 +3593,8 @@ mod tests {
         map_br_list_error, planned_elsewhere_serialized_bytes,
         planned_elsewhere_serialized_bytes_without_summary, resolve_bead_plan,
         validate_milestone_plan_snapshot, warn_once_for_legacy_plan_lookup,
-        PlannedElsewhereCandidate, PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES,
-        PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
+        PlannedElsewhereCandidate, PlannedElsewherePriority, NEARBY_SCOPE_SUMMARY_MAX_BYTES,
+        NEARBY_TITLE_MAX_BYTES, PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -3898,6 +3909,28 @@ mod tests {
             .scope_summary
             .ends_with("..."));
         assert!(!context.direct_dependencies[0].scope_summary.contains('\n'));
+    }
+
+    #[test]
+    fn build_nearby_bead_context_truncates_long_entry_titles() {
+        let mut bead = sample_bead();
+        let long_title = "Very long nearby bead title ".repeat(40);
+        bead.dependencies = vec![DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some(long_title.clone()),
+            status: Some(BeadStatus::Open),
+        }];
+        let bead_summaries = BTreeMap::new();
+
+        let context = build_nearby_bead_context(&bead, &bead_summaries);
+
+        let entry = &context.direct_dependencies[0];
+        assert!(entry.title.len() <= NEARBY_TITLE_MAX_BYTES);
+        assert!(entry.title.ends_with("..."));
+        assert!(entry.scope_summary.len() <= NEARBY_SCOPE_SUMMARY_MAX_BYTES);
+        assert!(entry.scope_summary.ends_with("..."));
+        assert_ne!(entry.title, long_title);
     }
 
     #[test]

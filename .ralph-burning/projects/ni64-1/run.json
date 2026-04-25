@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 5
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-4-1e9269ce",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "`src/contexts/project_run_record/service.rs:427-430` explicitly accepts contract-marked prompt overrides that omit `## Nearby work`, and `src/contexts/workflow_composition/prompt_review.rs:333-340` also treats that legacy shape as valid. But `src/contexts/project_run_record/task_prompt_contract.rs:182-190` and `src/contexts/workflow_composition/prompt_review.rs:366-367` still inject guidance that says `Nearby work` is an authoritative canonical section whenever the marker is present. On a supported legacy override, prompt-review/completion/final-review agents are told to preserve and use a section that does not exist, which can create false contract-drift or scope complaints.",
-        "created_at": "2026-04-25T13:01:37.493767786Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "21df7a37fa778e4a5926ba75f46d65abaa82ad28798dd9c5db27718b0845cf7b"
-      },
-      {
-        "amendment_id": "fr-4-10480d9a",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 4,
-        "body": "`src/cli/project.rs:2586-2606` never truncates `NearbyBeadEntry.title` (and even falls back to the title for `scope_summary`), while `src/contexts/project_run_record/task_prompt_contract.rs:92-111` can only get back under budget by dropping whole entries and `src/contexts/project_run_record/task_prompt_contract.rs:140-148` renders the full title verbatim. A single long bead title can therefore blow the nearby-work byte budget or cause the highest-priority direct dependency to be removed entirely instead of being shortened, violating the per-entry and section-budget requirements.",
-        "created_at": "2026-04-25T13:01:37.493770862Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "7650247250bdab18da55a31cfa13d3e3d606fdb727609034f7984597ba960787"
-      }
-    ],
-    "processed_count": 5
+    "pending": [],
+    "processed_count": 7
   },
-  "status_summary": "running: final review restart round 5 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T12:50:29.983506135Z",
