@@ -1597,7 +1597,7 @@ mod tests {
     #[test]
     fn render_scope_guidance_includes_scope_rules_and_canonical_planned_elsewhere_ids() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- ms-alpha.zeta (Zeta) - later work\n- ms-alpha.alpha (Alpha) - adjacent work\n- ms-beta.alpha (Another Alpha) - parallel work\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- ms-alpha.zeta (Zeta) - later work\n- ms-alpha.alpha (Alpha) - adjacent work\n- ms-beta.alpha (Another Alpha) - parallel work\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
             task_prompt_contract::contract_marker()
         );
 

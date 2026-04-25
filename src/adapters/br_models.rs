@@ -259,6 +259,12 @@ pub struct BeadSummary {
     pub bead_type: BeadType,
     #[serde(default)]
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub dependencies: Vec<DependencyRef>,
+    #[serde(default)]
+    pub dependents: Vec<DependencyRef>,
 }
 
 // ── BeadDetail ──────────────────────────────────────────────────────────────
@@ -1003,6 +1009,9 @@ mod tests {
             priority: BeadPriority::new(2),
             bead_type: BeadType::Feature,
             labels: vec!["test".to_owned()],
+            description: None,
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
         };
 
         let json = serde_json::to_string(&summary)?;

@@ -151,6 +151,7 @@ fn sample_bead_context() -> BeadProjectContext {
                 outcome: Some("pending".to_owned()),
             },
         ],
+        nearby_bead_context: task_prompt_contract::NearbyBeadContext::default(),
         planned_elsewhere: vec![
             ralph_burning::contexts::project_run_record::service::PlannedElsewherePromptContext {
                 id: "ms-alpha.bead-4".to_owned(),

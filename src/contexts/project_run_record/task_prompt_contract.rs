@@ -8,6 +8,10 @@
 use super::fence_util::{closes_fence, opening_fence_delimiter};
 use crate::shared::domain::StageId;
 
+/// Approximate prompt budget for nearby bead context. Builders enforce this
+/// before rendering so the renderer can print the context without re-truncating.
+pub const NEARBY_BEAD_CONTEXT_BYTE_CAP: usize = 2_000;
+
 /// Stable contract identifier for bead-backed execution prompts.
 pub const BEAD_TASK_PROMPT_CONTRACT_NAME: &str = "bead_execution_prompt";
 
@@ -20,6 +24,8 @@ const CONTRACT_MARKER_PREFIX: &str = "<!-- ralph-task-prompt-contract:";
 pub const SECTION_MILESTONE_SUMMARY: &str = "Milestone Summary";
 /// Canonical section title for current bead metadata.
 pub const SECTION_CURRENT_BEAD_DETAILS: &str = "Current Bead Details";
+/// Canonical section title for nearby bead graph context.
+pub const SECTION_NEARBY_WORK: &str = "Nearby work";
 /// Canonical section title for required in-scope work.
 pub const SECTION_MUST_DO_SCOPE: &str = "Must-Do Scope";
 /// Canonical section title for explicit out-of-scope work.
@@ -37,6 +43,7 @@ pub const SECTION_AGENTS_REPO_GUIDANCE: &str = "AGENTS / Repo Guidance";
 pub const BEAD_TASK_PROMPT_SECTION_TITLES: &[&str] = &[
     SECTION_MILESTONE_SUMMARY,
     SECTION_CURRENT_BEAD_DETAILS,
+    SECTION_NEARBY_WORK,
     SECTION_MUST_DO_SCOPE,
     SECTION_EXPLICIT_NON_GOALS,
     SECTION_ACCEPTANCE_CRITERIA,
@@ -44,6 +51,94 @@ pub const BEAD_TASK_PROMPT_SECTION_TITLES: &[&str] = &[
     SECTION_REVIEW_POLICY,
     SECTION_AGENTS_REPO_GUIDANCE,
 ];
+
+/// Nearby bead graph context pre-truncated by the builder to
+/// [`NEARBY_BEAD_CONTEXT_BYTE_CAP`] before prompt rendering.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NearbyBeadContext {
+    pub direct_dependencies: Vec<NearbyBeadEntry>,
+    pub direct_dependents: Vec<NearbyBeadEntry>,
+    pub siblings: Vec<NearbyBeadEntry>,
+    pub related_work: Vec<NearbyBeadEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NearbyBeadEntry {
+    pub bead_id: String,
+    pub title: String,
+    pub scope_summary: String,
+    pub status: String,
+}
+
+impl NearbyBeadContext {
+    pub fn is_empty(&self) -> bool {
+        self.direct_dependencies.is_empty()
+            && self.direct_dependents.is_empty()
+            && self.siblings.is_empty()
+            && self.related_work.is_empty()
+    }
+}
+
+pub fn enforce_nearby_context_budget(
+    mut ctx: NearbyBeadContext,
+    byte_cap: usize,
+) -> NearbyBeadContext {
+    while nearby_context_rendered_bytes(&ctx) > byte_cap {
+        if ctx.related_work.pop().is_some() {
+            continue;
+        }
+        if ctx.siblings.pop().is_some() {
+            continue;
+        }
+        if ctx.direct_dependents.pop().is_some() {
+            continue;
+        }
+        if ctx.direct_dependencies.pop().is_some() {
+            continue;
+        }
+        break;
+    }
+    ctx
+}
+
+pub fn render_nearby_bead_context(ctx: &NearbyBeadContext) -> String {
+    if ctx.is_empty() {
+        return "No nearby open work was found.".to_owned();
+    }
+
+    let mut sections = Vec::new();
+    push_nearby_subsection(
+        &mut sections,
+        "Direct dependencies",
+        &ctx.direct_dependencies,
+    );
+    push_nearby_subsection(&mut sections, "Direct dependents", &ctx.direct_dependents);
+    push_nearby_subsection(&mut sections, "Siblings", &ctx.siblings);
+    push_nearby_subsection(&mut sections, "Related work", &ctx.related_work);
+    sections.join("\n\n")
+}
+
+fn nearby_context_rendered_bytes(ctx: &NearbyBeadContext) -> usize {
+    render_nearby_bead_context(ctx).len()
+}
+
+fn push_nearby_subsection(sections: &mut Vec<String>, title: &str, entries: &[NearbyBeadEntry]) {
+    if entries.is_empty() {
+        return;
+    }
+
+    let mut lines = vec![format!("### {title}")];
+    for entry in entries {
+        lines.push(format!(
+            "- `{}` [{}] {}",
+            entry.bead_id, entry.status, entry.title
+        ));
+        if !entry.scope_summary.is_empty() {
+            lines.push(format!("  Scope: {}", entry.scope_summary));
+        }
+    }
+    sections.push(lines.join("\n"));
+}
 
 /// Machine-readable marker embedded in canonical bead task prompts.
 pub fn contract_marker() -> String {
@@ -479,7 +574,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_requires_marker_and_all_sections() {
         let valid_prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
         assert!(validate_canonical_prompt_shape(&valid_prompt).is_ok());
@@ -498,7 +593,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_marker_after_canonical_section_block() {
         let prompt = format!(
-            "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n{}",
+            "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n{}",
             contract_marker()
         );
 
@@ -511,7 +606,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_duplicate_canonical_headings() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nGoal:\nShip the thing.\n\n## Acceptance Criteria\n\nEmbedded bead marker that should stay inside the body.\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nGoal:\nShip the thing.\n\n## Acceptance Criteria\n\nEmbedded bead marker that should stay inside the body.\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -524,7 +619,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_out_of_order_headings() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Explicit Non-Goals\n\nD\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Explicit Non-Goals\n\nD\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -540,7 +635,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_reports_missing_section_without_cascading_later_errors() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -573,7 +668,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_extra_canonical_headings_after_agents_guidance() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
             contract_marker()
         );
 
@@ -586,7 +681,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_allows_escaped_canonical_heading_lines_after_agents_guidance() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n    ## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n    ## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
             contract_marker()
         );
 
@@ -596,7 +691,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_ignores_canonical_headings_inside_fenced_examples() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\n```md\n## Acceptance Criteria\n```\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\n```md\n## Acceptance Criteria\n```\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -606,7 +701,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_keeps_longer_opening_fence_active_until_matching_close() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n  ````md\n  ## Acceptance Criteria\n  ```\n  ````\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n  ````md\n  ## Acceptance Criteria\n  ```\n  ````\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -616,7 +711,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_markdown_valid_indented_canonical_heading_lines() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -629,7 +724,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_allows_four_space_indented_heading_like_lines_in_section_bodies() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n    ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n    ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -639,7 +734,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_allows_trailing_whitespace_on_canonical_headings() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary \n\nA\n\n## Current Bead Details\t\n\nB\n\n## Must-Do Scope \n\nC\n\n## Explicit Non-Goals \n\nD\n\n## Acceptance Criteria \n\nE\n\n## Already Planned Elsewhere \n\nF\n\n## Review Policy \n\nG\n\n## AGENTS / Repo Guidance \n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary \n\nA\n\n## Current Bead Details\t\n\nB\n\n## Nearby work \n\nN\n\n## Must-Do Scope \n\nC\n\n## Explicit Non-Goals \n\nD\n\n## Acceptance Criteria \n\nE\n\n## Already Planned Elsewhere \n\nF\n\n## Review Policy \n\nG\n\n## AGENTS / Repo Guidance \n\nH",
             contract_marker()
         );
 

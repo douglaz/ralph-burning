@@ -282,6 +282,7 @@ pub struct BeadProjectContext {
     pub bead_acceptance_criteria: Vec<String>,
     pub upstream_dependencies: Vec<BeadDependencyPromptContext>,
     pub downstream_dependents: Vec<BeadDependencyPromptContext>,
+    pub nearby_bead_context: task_prompt_contract::NearbyBeadContext,
     pub planned_elsewhere: Vec<PlannedElsewherePromptContext>,
     pub review_policy: Vec<String>,
     pub parent_epic_id: Option<String>,
@@ -1161,6 +1162,8 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         )));
         lines.join("\n")
     };
+    let nearby_work =
+        task_prompt_contract::render_nearby_bead_context(&context.nearby_bead_context);
 
     let must_do_scope = if bead_must_do_scope.is_empty() {
         "No explicit scope description was supplied. Use the bead title and acceptance criteria as the required scope boundary.".to_owned()
@@ -1220,6 +1223,11 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             "## {}\n\n{}",
             task_prompt_contract::SECTION_CURRENT_BEAD_DETAILS,
             current_bead_details
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_NEARBY_WORK,
+            nearby_work
         ),
         format!(
             "## {}\n\n{}",
