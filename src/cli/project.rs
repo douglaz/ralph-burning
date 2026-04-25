@@ -2755,6 +2755,9 @@ fn nearby_related_work_entries(
     let selected = nearby_related_work_candidates(bead, bead_summaries)
         .into_iter()
         .filter(|(_, summary)| !included_ids.contains(&summary.id))
+        .filter(|(_, summary)| {
+            !nearby_candidate_status_is_omitted(&summary.id, Some(summary), None, bead_details)
+        })
         .take(NEARBY_RELATED_WORK_LIMIT)
         .collect::<Vec<_>>();
 
@@ -4766,6 +4769,73 @@ mod tests {
             "Use related detail description from br show fallback."
         );
         assert_eq!(context.related_work[0].status, "in_progress");
+    }
+
+    #[test]
+    fn build_nearby_bead_context_filters_related_work_closed_only_in_detail() {
+        let mut bead = sample_bead();
+        bead.labels = vec!["a".to_owned(), "b".to_owned()];
+        let bead_summaries = BTreeMap::from([
+            (
+                "ms-alpha.bead-1".to_owned(),
+                summary(
+                    "ms-alpha.bead-1",
+                    "One label",
+                    BeadStatus::Open,
+                    &["b"],
+                    Some("Scope: Shares one label."),
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.bead-3".to_owned(),
+                summary(
+                    "ms-alpha.bead-3",
+                    "Detail closed",
+                    BeadStatus::Open,
+                    &["a", "b", "c"],
+                    Some("Scope: Summary is stale."),
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.bead-4".to_owned(),
+                summary(
+                    "ms-alpha.bead-4",
+                    "Third label match",
+                    BeadStatus::Open,
+                    &["a"],
+                    Some("Scope: Also shares one label."),
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.bead-5".to_owned(),
+                summary(
+                    "ms-alpha.bead-5",
+                    "Fourth label match",
+                    BeadStatus::Open,
+                    &["b"],
+                    Some("Scope: Should fill the slot freed by the closed detail."),
+                    None,
+                ),
+            ),
+        ]);
+        let mut closed_detail = sample_bead();
+        closed_detail.id = "ms-alpha.bead-3".to_owned();
+        closed_detail.status = BeadStatus::Closed;
+        let bead_details = BTreeMap::from([("ms-alpha.bead-3".to_owned(), closed_detail)]);
+
+        let context = build_nearby_bead_context_with_details(&bead, &bead_summaries, &bead_details);
+
+        assert_eq!(
+            context
+                .related_work
+                .iter()
+                .map(|entry| entry.bead_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-1", "ms-alpha.bead-4", "ms-alpha.bead-5"]
+        );
     }
 
     fn write_bead_project(

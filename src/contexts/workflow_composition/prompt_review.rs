@@ -335,7 +335,16 @@ fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str
     let original_is_legacy_v1_contract = !original_uses_current_contract
         && task_prompt_contract::validate_canonical_prompt_shape(original_prompt).is_ok();
     let validation_result = if original_is_legacy_v1_contract {
-        task_prompt_contract::validate_canonical_prompt_shape(refined_prompt)
+        match task_prompt_contract::validate_canonical_prompt_shape(refined_prompt) {
+            Ok(()) if task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt)
+                .is_ok() =>
+            {
+                Err(vec![
+                    "legacy v1 prompt refinements must not add `## Nearby work`; that section is graph-derived builder output".to_owned(),
+                ])
+            }
+            other => other,
+        }
     } else {
         task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt)
     };
@@ -641,6 +650,17 @@ mod tests {
         let concerns = canonical_contract_drift_concerns(CANONICAL_PROMPT, CANONICAL_PROMPT);
 
         assert!(concerns.is_empty());
+    }
+
+    #[test]
+    fn canonical_contract_drift_rejects_legacy_v1_refinement_that_adds_nearby_work() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `ms-alpha.fake` [open] Fabricated nearby owner\n  Scope: Not graph-derived.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("must not add `## Nearby work`"));
     }
 
     #[test]

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 8
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-7-62e5e818",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: `Nearby work` can still surface closed/deferred beads under `Related work` when `br list` is stale. In `src/cli/project.rs:2755-2766`, related-work selection only filters on `BeadSummary.status`, even though `src/cli/project.rs:1956-1964` prefetches `br show` details for those same candidates. If the summary says a related bead is open but the detail says `closed` or `deferred`, the prompt still renders it (now with the closed status) and downstream review/final_review routing will treat that bead as a valid planned-elsewhere target.\nseverity: medium\naffected_files:\n- src/cli/project.rs:1956-1964\n- src/cli/project.rs:2755-2827\nremediation_hint: Filter related-work candidates with `nearby_candidate_status_is_omitted(...)` using `bead_details` before applying the top-3 limit, and add a regression test for summary-open/detail-closed related beads.",
-        "created_at": "2026-04-25T17:02:06.223030910Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "78b7218811c487ca4291d574c66d86030882724b494728903e3a04f9f4e4f833"
-      },
-      {
-        "amendment_id": "fr-7-3646e12e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 7,
-        "body": "finding_summary: Prompt-review drift validation does not preserve the legacy prompt shape. In `src/contexts/workflow_composition/prompt_review.rs:333-340`, when the original prompt is a legacy v1 prompt without `## Nearby work`, the refined prompt is checked with the compatibility validator, so a refiner can add a brand-new `## Nearby work` section and still pass validation. That section is supposed to be graph-derived builder output, not free-form prompt-review text; once accepted, any fabricated nearby bead IDs become valid planned-elsewhere routing targets in later review stages.\nseverity: low\naffected_files:\n- src/contexts/workflow_composition/prompt_review.rs:333-340\nremediation_hint: When the original prompt is legacy-without-nearby, require the refined prompt to stay on that same section shape unless there is an explicit migration path that rebuilds nearby-work content from bead data.",
-        "created_at": "2026-04-25T17:02:06.223035649Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "3dab636fd77658d47cb5edb227248007450eff6fb89439377381e9bc929fc83c"
-      }
-    ],
-    "processed_count": 10
+    "pending": [],
+    "processed_count": 12
   },
-  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T16:52:58.572007431Z",

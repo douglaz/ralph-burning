@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T17:44:18.753677663Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Related-work nearby context now filters candidates through fetched bead detail status before applying the top-3 related-work limit, so summary-open/detail-closed or detail-deferred beads are omitted and do not become planned-elsewhere routing targets. Prompt-review drift validation now preserves the legacy v1 prompt shape by rejecting refinements that add graph-derived `## Nearby work` to an original legacy prompt that lacked it. Added focused regression tests for stale related-work detail status and legacy prompt-review section-shape preservation.\n\n## Steps\n\n0. [Completed] Inspected the existing nearby-context selection, detail fallback status handling, prompt-review drift validation, and regression coverage for both pending amendments.\n1. [Completed] Applied the related-work filter so `nearby_candidate_status_is_omitted(...)` checks summary, relation, and fetched detail status before the related-work limit is consumed.\n2. [Completed] Updated prompt-review drift validation so legacy v1 prompts without `Nearby work` may remain legacy-compatible but cannot gain a fabricated `## Nearby work` section during refinement.\n3. [Completed] Added regression tests covering summary-open/detail-closed related beads and legacy prompt-review refinement that attempts to add `Nearby work`.\n4. [Completed] Ran focused tests and the repository validation gates, including the authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context_filters_related_work_closed_only_in_detail --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub canonical_contract_drift_rejects_legacy_v1_refinement_that_adds_nearby_work --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 8
+}
