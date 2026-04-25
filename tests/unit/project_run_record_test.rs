@@ -1,6 +1,12 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::env;
+use std::ffi::OsString;
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use chrono::{TimeZone, Utc};
 use sha2::{Digest, Sha256};
@@ -444,6 +450,27 @@ fn make_project_record(id: &str) -> ProjectRecord {
     }
 }
 
+fn make_milestone_record(id: &str, name: &str) -> MilestoneRecord {
+    MilestoneRecord::new(
+        MilestoneId::new(id).expect("milestone id"),
+        name.to_owned(),
+        format!("{name} description"),
+        test_timestamp(),
+    )
+}
+
+fn make_linked_project_record(
+    id: &str,
+    created_at: chrono::DateTime<Utc>,
+    milestone_id: &str,
+    bead_id: &str,
+) -> ProjectRecord {
+    let mut record = make_project_record(id);
+    record.created_at = created_at;
+    record.task_source = Some(milestone_task_source(milestone_id, bead_id));
+    record
+}
+
 fn make_milestone_plan_json(
     milestone_id: &str,
     milestone_name: &str,
@@ -619,6 +646,93 @@ fn dummy_base_dir() -> std::path::PathBuf {
     std::path::PathBuf::from("/tmp/test")
 }
 
+fn initialize_workspace_fixture() -> tempfile::TempDir {
+    let temp_dir = tempdir().expect("create temp workspace");
+    ralph_burning::contexts::workspace_governance::initialize_workspace(
+        temp_dir.path(),
+        test_timestamp(),
+    )
+    .expect("initialize workspace");
+    temp_dir
+}
+
+fn create_project_input(
+    id: &str,
+    name: &str,
+    flow: FlowPreset,
+    prompt: &str,
+    created_at: chrono::DateTime<Utc>,
+    task_source: Option<TaskSource>,
+) -> CreateProjectInput {
+    CreateProjectInput {
+        id: ProjectId::new(id).expect("project id"),
+        name: name.to_owned(),
+        flow,
+        prompt_path: "prompt.md".to_owned(),
+        prompt_contents: prompt.to_owned(),
+        prompt_hash: ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt),
+        created_at,
+        task_source,
+    }
+}
+
+fn milestone_task_source(milestone_id: &str, bead_id: &str) -> TaskSource {
+    TaskSource {
+        milestone_id: milestone_id.to_owned(),
+        bead_id: bead_id.to_owned(),
+        parent_epic_id: None,
+        origin: TaskOrigin::Milestone,
+        plan_hash: Some("plan-hash-123".to_owned()),
+        plan_version: Some(3),
+        plan_workstream_index: Some(0),
+        plan_bead_index: Some(0),
+    }
+}
+
+fn create_project_on_fs(
+    base_dir: &Path,
+    id: &str,
+    created_at: chrono::DateTime<Utc>,
+    task_source: Option<TaskSource>,
+) -> ProjectRecord {
+    create_project(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        &ralph_burning::adapters::fs::FsJournalStore,
+        base_dir,
+        create_project_input(
+            id,
+            &format!("Project {id}"),
+            FlowPreset::Standard,
+            "# Prompt\n",
+            created_at,
+            task_source,
+        ),
+    )
+    .expect("create project on filesystem")
+}
+
+fn binary() -> &'static str {
+    env!("CARGO_BIN_EXE_ralph-burning")
+}
+
+fn prepend_path(dir: &Path) -> OsString {
+    let mut value = OsString::from(dir.as_os_str());
+    value.push(":");
+    value.push(env::var_os("PATH").unwrap_or_default());
+    value
+}
+
+#[cfg(unix)]
+fn write_executable_script(dir: &Path, name: &str, contents: &str) -> PathBuf {
+    fs::create_dir_all(dir).expect("create script directory");
+    let path = dir.join(name);
+    fs::write(&path, contents).expect("write script");
+    let mut permissions = fs::metadata(&path).expect("script metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&path, permissions).expect("set script executable");
+    path
+}
+
 fn make_seed_handoff(
     project_id: &str,
     flow: FlowPreset,
@@ -749,6 +863,102 @@ fn journal_event_types_serialize_to_snake_case() {
     let event = make_project_created_event();
     let json = serde_json::to_string(&event).expect("serialize");
     assert!(json.contains("\"project_created\""));
+}
+
+#[test]
+fn task_mode_project_metadata_round_trips_through_project_toml() {
+    let temp_dir = initialize_workspace_fixture();
+    let record = create_project_on_fs(
+        temp_dir.path(),
+        "task-alpha-1",
+        test_timestamp(),
+        Some(milestone_task_source("ms-alpha", "ms-alpha.b-1")),
+    );
+
+    let loaded = ralph_burning::adapters::fs::FsProjectStore
+        .read_project_record(temp_dir.path(), &record.id)
+        .expect("load task project");
+
+    assert_eq!(loaded.milestone_id(), Some("ms-alpha"));
+    assert_eq!(loaded.bead_id(), Some("ms-alpha.b-1"));
+    assert_eq!(loaded.task_source, record.task_source);
+}
+
+#[test]
+fn legacy_project_without_task_metadata_still_loads_as_valid_project_record() {
+    let temp_dir = initialize_workspace_fixture();
+    let record = create_project_on_fs(temp_dir.path(), "legacy-alpha", test_timestamp(), None);
+
+    let loaded = ralph_burning::adapters::fs::FsProjectStore
+        .read_project_record(temp_dir.path(), &record.id)
+        .expect("load legacy project");
+
+    assert!(!loaded.is_milestone_task());
+    assert_eq!(loaded.id, record.id);
+    assert_eq!(loaded.name, "Project legacy-alpha");
+    assert_eq!(loaded.flow, FlowPreset::Standard);
+    assert_eq!(loaded.task_source, None);
+}
+
+#[test]
+fn task_mode_project_metadata_rejects_one_sided_empty_linkage() {
+    let temp_dir = initialize_workspace_fixture();
+    let invalid_create = create_project(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        &ralph_burning::adapters::fs::FsJournalStore,
+        temp_dir.path(),
+        create_project_input(
+            "invalid-empty-bead",
+            "Invalid empty bead",
+            FlowPreset::Standard,
+            "# Prompt\n",
+            test_timestamp(),
+            Some(milestone_task_source("ms-alpha", "")),
+        ),
+    )
+    .expect_err("empty bead_id should fail creation");
+
+    assert!(matches!(
+        invalid_create,
+        AppError::CorruptRecord { ref details, .. }
+            if details.contains("non-empty milestone_id")
+                && details.contains("non-empty bead_id")
+    ));
+    assert!(!ralph_burning::adapters::fs::FsProjectStore
+        .project_exists(
+            temp_dir.path(),
+            &ProjectId::new("invalid-empty-bead").expect("project id")
+        )
+        .expect("check invalid project"));
+
+    let valid = create_project_on_fs(
+        temp_dir.path(),
+        "invalid-empty-milestone-on-load",
+        test_timestamp(),
+        Some(milestone_task_source("ms-alpha", "ms-alpha.b-1")),
+    );
+    let project_toml_path =
+        ralph_burning::adapters::fs::FileSystem::live_workspace_root_path(temp_dir.path())
+            .join("projects")
+            .join(valid.id.as_str())
+            .join("project.toml");
+    let raw = fs::read_to_string(&project_toml_path).expect("read project.toml");
+    fs::write(
+        &project_toml_path,
+        raw.replace("milestone_id = \"ms-alpha\"", "milestone_id = \"\""),
+    )
+    .expect("write invalid project.toml");
+
+    let load_error = ralph_burning::adapters::fs::FsProjectStore
+        .read_project_record(temp_dir.path(), &valid.id)
+        .expect_err("empty milestone_id should fail load");
+    assert!(matches!(
+        load_error,
+        AppError::CorruptRecord { ref file, ref details }
+            if file == "projects/invalid-empty-milestone-on-load/project.toml"
+                && details.contains("non-empty milestone_id")
+                && details.contains("non-empty bead_id")
+    ));
 }
 
 // ── Service Tests with Fake Ports ──
@@ -1652,6 +1862,311 @@ fn create_project_from_bead_context_bootstraps_task_metadata_and_prompt() {
     assert_eq!(event.details["bead_id"], "ms-alpha.bead-2");
     assert_eq!(event.details["plan_hash"], "plan-hash-123");
     assert_eq!(event.details["plan_version"], 3);
+}
+
+#[test]
+fn create_project_from_bead_context_records_task_metadata_without_changing_normal_create_shape() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let context = sample_bead_context();
+
+    let record = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("synthetic-bead-task").unwrap()),
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context: context.clone(),
+        },
+    )
+    .expect("create bead-backed project from synthetic context");
+
+    let captured = store.captured();
+    let task_source = captured.record.task_source.expect("task source");
+    assert_eq!(record.id.as_str(), "synthetic-bead-task");
+    assert_eq!(task_source.milestone_id, context.milestone_id);
+    assert_eq!(task_source.bead_id, context.bead_id);
+    assert_eq!(captured.record.prompt_reference, "prompt.md");
+    assert_eq!(captured.run_snapshot.status, RunStatus::NotStarted);
+    assert!(captured.run_snapshot.active_run.is_none());
+    assert!(captured.run_snapshot.validate_semantics().is_ok());
+}
+
+#[cfg(feature = "test-stub")]
+#[tokio::test]
+async fn bead_backed_task_created_from_context_can_start_normal_run_with_stub_backend() {
+    let workspace = ralph_burning::test_support::fixtures::TempWorkspaceBuilder::new()
+        .with_milestone(
+            ralph_burning::test_support::fixtures::MilestoneFixtureBuilder::new("ms-alpha")
+                .add_bead("Bootstrap bead-backed task creation"),
+        )
+        .build()
+        .expect("workspace fixture");
+    let mut context = sample_bead_context();
+    context.flow = FlowPreset::Minimal;
+    context.plan_hash = None;
+    context.plan_version = None;
+    context.plan_workstream_index = None;
+    context.plan_bead_index = None;
+
+    let record = create_project_from_bead_context(
+        &ralph_burning::adapters::fs::FsProjectStore,
+        &ralph_burning::adapters::fs::FsJournalStore,
+        workspace.path(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("normal-run-bead-task").unwrap()),
+            prompt_override: None,
+            created_at: test_timestamp(),
+            context,
+        },
+    )
+    .expect("create bead-backed project on disk");
+
+    let loaded = ralph_burning::adapters::fs::FsProjectStore
+        .read_project_record(workspace.path(), &record.id)
+        .expect("load bead-backed task");
+    let initial_snapshot = ralph_burning::adapters::fs::FsRunSnapshotStore
+        .read_run_snapshot(workspace.path(), &record.id)
+        .expect("load run snapshot");
+    assert_eq!(initial_snapshot.status, RunStatus::NotStarted);
+    assert!(initial_snapshot.active_run.is_none());
+    assert!(initial_snapshot.validate_semantics().is_ok());
+
+    let agent_service =
+        ralph_burning::contexts::agent_execution::service::AgentExecutionService::new(
+            ralph_burning::adapters::stub_backend::StubBackendAdapter::default(),
+            ralph_burning::adapters::fs::FsRawOutputStore,
+            ralph_burning::adapters::fs::FsSessionStore,
+        );
+    let config = ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(
+        workspace.path(),
+    )
+    .expect("effective config");
+
+    let result = ralph_burning::contexts::workflow_composition::engine::execute_run(
+        &agent_service,
+        &ralph_burning::adapters::fs::FsRunSnapshotStore,
+        &ralph_burning::adapters::fs::FsRunSnapshotWriteStore,
+        &ralph_burning::adapters::fs::FsJournalStore,
+        &ralph_burning::adapters::fs::FsPayloadArtifactWriteStore,
+        &ralph_burning::adapters::fs::FsRuntimeLogWriteStore,
+        &ralph_burning::adapters::fs::FsAmendmentQueueStore,
+        workspace.path(),
+        &loaded.id,
+        loaded.flow,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn create_from_bead_fails_for_missing_milestone_without_creating_project() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-missing",
+            "--bead-id",
+            "ms-missing.b-1",
+            "--project-id",
+            "missing-milestone-task",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("milestone 'ms-missing' not found"),
+        "stderr: {stderr}"
+    );
+    assert!(!ralph_burning::adapters::fs::FsProjectStore
+        .project_exists(
+            temp_dir.path(),
+            &ProjectId::new("missing-milestone-task").expect("project id")
+        )
+        .expect("check missing milestone project"));
+}
+
+#[cfg(unix)]
+#[test]
+fn create_from_bead_fails_for_missing_bead_without_leaving_project_record() {
+    let workspace = ralph_burning::test_support::fixtures::TempWorkspaceBuilder::new()
+        .with_milestone(
+            ralph_burning::test_support::fixtures::MilestoneFixtureBuilder::new("ms-alpha"),
+        )
+        .build()
+        .expect("workspace fixture");
+    let fake_bin = workspace.path().join("fake-bin");
+    write_executable_script(
+        &fake_bin,
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ]; then
+  echo "Issue not found: $2" >&2
+  exit 1
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.missing",
+            "--project-id",
+            "missing-bead-task",
+        ])
+        .env("PATH", prepend_path(&fake_bin))
+        .current_dir(workspace.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to load bead 'ms-alpha.missing'")
+            && stderr.contains("no matching bead"),
+        "stderr: {stderr}"
+    );
+    assert!(!ralph_burning::adapters::fs::FsProjectStore
+        .project_exists(
+            workspace.path(),
+            &ProjectId::new("missing-bead-task").expect("project id")
+        )
+        .expect("check missing bead project"));
+}
+
+#[test]
+fn list_tasks_for_milestone_returns_only_matching_task_projects_in_stable_order() {
+    let milestone = make_milestone_record("ms-alpha", "Alpha");
+    let project_store = FakeProjectStore::with_records(vec![
+        make_linked_project_record(
+            "task-alpha-1",
+            test_timestamp() + chrono::Duration::seconds(20),
+            "ms-alpha",
+            "ms-alpha.b-1",
+        ),
+        make_linked_project_record(
+            "task-beta-1",
+            test_timestamp() + chrono::Duration::seconds(10),
+            "ms-beta",
+            "ms-beta.b-1",
+        ),
+        make_linked_project_record(
+            "task-alpha-2",
+            test_timestamp() + chrono::Duration::seconds(30),
+            "ms-alpha",
+            "ms-alpha.b-2",
+        ),
+        make_project_record("standalone"),
+    ]);
+    let listing = ralph_burning::contexts::milestone_record::service::list_tasks_for_milestone(
+        &FakeMilestoneStore {
+            record: milestone.clone(),
+        },
+        &FakeMilestonePlanStore {
+            plan_json: make_milestone_plan_json(
+                "ms-alpha",
+                "Alpha",
+                "ms-alpha.b-1",
+                "First alpha bead",
+            ),
+        },
+        &project_store,
+        &dummy_base_dir(),
+        &milestone.id,
+    )
+    .expect("list milestone tasks");
+
+    assert_eq!(listing.milestone_id, "ms-alpha");
+    assert_eq!(
+        listing
+            .tasks
+            .iter()
+            .map(|task| task.project_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["task-alpha-1", "task-alpha-2"]
+    );
+    assert_eq!(listing.tasks[0].bead_id, "ms-alpha.b-1");
+    assert_eq!(listing.tasks[1].bead_id, "ms-alpha.b-2");
+}
+
+#[test]
+fn list_tasks_for_milestone_can_identify_project_for_specific_bead() {
+    let milestone = make_milestone_record("ms-alpha", "Alpha");
+    let project_store = FakeProjectStore::with_records(vec![
+        make_linked_project_record(
+            "task-alpha-1",
+            test_timestamp() + chrono::Duration::seconds(20),
+            "ms-alpha",
+            "ms-alpha.b-1",
+        ),
+        make_linked_project_record(
+            "task-alpha-2",
+            test_timestamp() + chrono::Duration::seconds(30),
+            "ms-alpha",
+            "ms-alpha.b-2",
+        ),
+    ]);
+    let listing = ralph_burning::contexts::milestone_record::service::list_tasks_for_milestone(
+        &FakeMilestoneStore {
+            record: milestone.clone(),
+        },
+        &FakeMilestonePlanStore {
+            plan_json: make_milestone_plan_json(
+                "ms-alpha",
+                "Alpha",
+                "ms-alpha.b-1",
+                "First alpha bead",
+            ),
+        },
+        &project_store,
+        &dummy_base_dir(),
+        &milestone.id,
+    )
+    .expect("list milestone tasks");
+
+    let task = listing
+        .tasks
+        .iter()
+        .find(|task| task.bead_id == "ms-alpha.b-2")
+        .expect("task for bead ms-alpha.b-2");
+    assert_eq!(task.project_id, "task-alpha-2");
+}
+
+#[test]
+fn list_tasks_for_milestone_with_no_linked_tasks_returns_empty_list() {
+    let milestone = make_milestone_record("ms-gamma", "Gamma");
+    let listing = ralph_burning::contexts::milestone_record::service::list_tasks_for_milestone(
+        &FakeMilestoneStore {
+            record: milestone.clone(),
+        },
+        &FakeMilestonePlanStore {
+            plan_json: make_milestone_plan_json("ms-gamma", "Gamma", "ms-gamma.b-1", "Gamma bead"),
+        },
+        &FakeProjectStore::empty(),
+        &dummy_base_dir(),
+        &milestone.id,
+    )
+    .expect("list empty milestone tasks");
+
+    assert_eq!(listing.milestone_id, "ms-gamma");
+    assert!(listing.tasks.is_empty());
 }
 
 #[test]

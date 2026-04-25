@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425072224-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425072224-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T08:06:56.806600443Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccept fr-1-5d9f9080 because the new task-source invariant is still bypassed in several direct `project.toml` readers; reject fr-1-3917a066 because the supposedly uncovered bead-resolution helper is already exercised through existing production-path tests.\n\n## Votes\n\n- `fr-1-5d9f9080`: Accept\n  `FsProjectStore::read_project_record()` now enforces `validate_task_source()`, but `workspace_governance::active_project_milestone_id()` and `validate_project_exists()` still deserialize `ProjectRecord` directly and then trust fields like `milestone_id()` without re-validating, and `sync_project_prompt_hash()` likewise reads and rewrites `project.toml` without enforcing the invariant. That means a corrupt `[task_source]` with an empty `bead_id` or `milestone_id` can still pass active-project validation and influence milestone resolution instead of failing fast with `CorruptRecord`. This is a real correctness and consistency bug, so the amendment should be applied.\n- `fr-1-3917a066`: Reject\n  The criticism of `tests/unit/project_run_record_test.rs:2109-2149` is fair in isolation, but the amendment’s core claim is incorrect: `find_matching_task_source_for_bead()` is already exercised through the production `bead_execution_history()` path in `src/contexts/milestone_record/service.rs:3925-3958`. Existing tests at `src/contexts/milestone_record/service.rs:17173-17350` already cover the recorded-plan-location case and the ranking behavior that prefers the newer indexed task source for the same bead and plan hash. Because the helper is already covered by production-path tests, this does not identify a real coverage defect that warrants a required amendment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

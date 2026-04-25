@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425072224-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425072224-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T07:55:07.284081144Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented bead 9ni.5.6 coverage in tests/unit/project_run_record_test.rs and added a narrow production validation fix. ProjectRecord task_source now rejects task-mode records with an empty milestone_id or bead_id on both create and load. Tests cover metadata round-trip/backward compatibility/invalid one-sided linkage, bead-backed project creation metadata and normal run compatibility with the stub backend, missing milestone and missing bead failure paths without leaving project records, and lineage queries via the existing list_tasks_for_milestone helper.\n\n## Steps\n\n0. [Completed] Inspected the existing project record, create-from-bead, filesystem store, and milestone lineage query code before editing.\n1. [Completed] Added ProjectRecord task_source validation and wired it into project creation plus FsProjectStore read/create paths.\n2. [Completed] Added focused unit tests for task-mode metadata persistence, legacy compatibility, and invalid one-sided metadata.\n3. [Completed] Added bead-backed task creation tests using the existing pure create_project_from_bead_context service, plus a stub-backend run-start smoke test and CLI failure-path coverage.\n4. [Completed] Added lineage query tests using the existing milestone_record::service::list_tasks_for_milestone helper for matching milestone tasks, specific bead lookup, and empty results.\n5. [Completed] Ran formatting, clippy, targeted tests, full tests, and nix build validation.\n\n## Validation Evidence\n\n- nix develop -c cargo fmt --check passed.\n- nix develop -c cargo test --locked --features test-stub --test unit project_run_record_test -- --nocapture passed: 144 passed, 0 failed, 946 filtered out.\n- nix develop -c cargo clippy --locked -- -D warnings passed.\n- nix develop -c cargo test --locked --features test-stub passed: lib 1220 passed / 6 ignored, CLI 373 passed / 3 ignored, run_attach_tmux 1 passed, unit 1089 passed / 1 ignored, doctests 0 passed / 9 ignored.\n- nix build passed.\n- git diff --check passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

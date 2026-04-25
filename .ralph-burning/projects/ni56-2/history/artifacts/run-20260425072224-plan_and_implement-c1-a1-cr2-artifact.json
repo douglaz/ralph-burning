@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425072224-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260425072224-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T08:43:51.516775867Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCompleted the pending amendment by ensuring direct ProjectRecord deserialization sites outside FsProjectStore enforce validate_task_source immediately after toml::from_str. workspace_governance now rejects corrupt task_source metadata during project selection and active milestone lookup, and workflow_composition prompt-hash sync now fails before mutating project.toml when task_source has only one side populated. Added regression tests for the reproduced project selection, active milestone lookup, and prompt-hash sync corruption paths.\n\n## Steps\n\n0. [Completed] Inspected the pending-amendment sites in workspace_governance and workflow_composition drift, plus remaining toml::from_str call sites, to identify direct ProjectRecord readers.\n1. [Completed] Validated that active_project_milestone_id, validate_project_exists, and sync_project_prompt_hash now call ProjectRecord::validate_task_source immediately after deserialization and return CorruptRecord on invalid task metadata.\n2. [Completed] Added regression coverage in active_project_test for project selection and active milestone lookup rejecting one-sided task_source metadata.\n3. [Completed] Added regression coverage in workflow_composition drift tests for prompt-hash sync rejecting corrupt task_source metadata without rewriting the persisted prompt hash.\n4. [Completed] Ran focused tests and full repository verification gates required by the bead.\n\n## Validation Evidence\n\n- nix develop -c cargo fmt --check passed.\n- nix develop -c cargo test --locked --features test-stub --test unit active_project_test passed: 7 passed, 0 failed.\n- nix develop -c cargo test --locked --features test-stub workflow_composition::drift::tests::prompt_hash_sync_rejects_corrupt_task_source_metadata passed: 1 passed, 0 failed.\n- nix develop -c cargo clippy --locked -- -D warnings passed.\n- nix develop -c cargo test --locked --features test-stub passed: lib 1221 passed / 6 ignored, CLI 373 passed / 3 ignored, run_attach_tmux 1 passed, unit 1091 passed / 1 ignored, doctests 0 passed / 9 ignored.\n- nix build passed.\n- git diff --check passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,7 @@
+id = "ni56-2"
+name = "task-substrate-tests"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "b72d71194f0774e157071011da92cd6bef86126703f3fae458eb3f7e9afa7bea"
+created_at = "2026-04-25T07:22:19.315410270Z"
+status_summary = "created"

@@ -1013,6 +1013,13 @@ impl FileSystem {
                     });
                 }
             };
+        if let Err(details) = project_record.validate_task_source() {
+            let _ = Self::write_atomic(&prompt_path, original_prompt);
+            let _ = fs::remove_file(&original_path);
+            return Err(AppError::PromptReplacementFailed {
+                details: format!("invalid project.toml task metadata: {details}"),
+            });
+        }
         project_record.prompt_hash = new_hash.clone();
         let updated_toml = match toml::to_string_pretty(&project_record) {
             Ok(toml) => toml,
@@ -1070,10 +1077,17 @@ impl FileSystem {
                 crate::contexts::project_run_record::model::ProjectRecord,
             >(&content)
             {
-                record.prompt_hash = original_hash;
-                if let Ok(updated) = toml::to_string_pretty(&record) {
-                    let _ = Self::write_atomic(&project_toml_path, &updated);
-                    Self::mirror_project_file(base_dir, project_id, PROJECT_CONFIG_FILE, &updated);
+                if record.validate_task_source().is_ok() {
+                    record.prompt_hash = original_hash;
+                    if let Ok(updated) = toml::to_string_pretty(&record) {
+                        let _ = Self::write_atomic(&project_toml_path, &updated);
+                        Self::mirror_project_file(
+                            base_dir,
+                            project_id,
+                            PROJECT_CONFIG_FILE,
+                            &updated,
+                        );
+                    }
                 }
             }
         }
@@ -1527,10 +1541,17 @@ impl ProjectStorePort for FsProjectStore {
                 e.into()
             }
         })?;
-        toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+        let record: ProjectRecord = toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
             file: format!("projects/{}/project.toml", project_id),
             details: e.to_string(),
-        })
+        })?;
+        record
+            .validate_task_source()
+            .map_err(|details| AppError::CorruptRecord {
+                file: format!("projects/{}/project.toml", project_id),
+                details,
+            })?;
+        Ok(record)
     }
 
     fn list_project_ids(&self, base_dir: &Path) -> AppResult<Vec<ProjectId>> {
@@ -1674,6 +1695,13 @@ impl ProjectStorePort for FsProjectStore {
         initial_journal_line: &str,
         sessions: &SessionStore,
     ) -> AppResult<()> {
+        record
+            .validate_task_source()
+            .map_err(|details| AppError::CorruptRecord {
+                file: format!("projects/{}/project.toml", record.id),
+                details,
+            })?;
+
         let project_root = FileSystem::live_project_root(base_dir, &record.id);
 
         // Stage into a temporary directory alongside the final location

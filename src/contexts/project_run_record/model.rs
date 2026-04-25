@@ -62,6 +62,22 @@ impl ProjectRecord {
     pub fn bead_id(&self) -> Option<&str> {
         self.task_source.as_ref().map(|ts| ts.bead_id.as_str())
     }
+
+    pub(crate) fn validate_task_source(&self) -> Result<(), String> {
+        let Some(task_source) = &self.task_source else {
+            return Ok(());
+        };
+
+        let milestone_id_is_empty = task_source.milestone_id.trim().is_empty();
+        let bead_id_is_empty = task_source.bead_id.trim().is_empty();
+        if milestone_id_is_empty || bead_id_is_empty {
+            return Err(
+                "task_source requires both non-empty milestone_id and non-empty bead_id".to_owned(),
+            );
+        }
+
+        Ok(())
+    }
 }
 
 /// How a task-mode project was created.

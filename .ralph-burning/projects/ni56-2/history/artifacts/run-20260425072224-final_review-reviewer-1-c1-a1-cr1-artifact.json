@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425072224-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425072224-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T08:04:47.673080685Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch state against `a7e87bf1ea94d13d2b8594d76901dfbf7bdee466` and found 2 fix-now issues: one runtime validation gap around direct project-record loads, and one missing by-bead lineage coverage case.\n\n## Amendments\n\n1. Task-source validation is still bypassed in direct `project.toml` readers outside `FsProjectStore`. The branch now rejects empty `milestone_id`/`bead_id` pairs in `FsProjectStore::read_project_record()` and project creation, but `workspace_governance::active_project_milestone_id()` and `validate_project_exists()` still deserialize `ProjectRecord` directly without calling `validate_task_source()` (`src/contexts/workspace_governance/mod.rs:153-167`, `src/contexts/workspace_governance/mod.rs:195-221`), and `sync_project_prompt_hash()` does the same in `src/contexts/workflow_composition/drift.rs:307-318`. I reproduced this with the built binary: after appending `[task_source] milestone_id = \"ms-alpha\"; bead_id = \"\"` to a project, `ralph-burning project select test-proj` succeeded and `ralph-burning milestone next` proceeded against `ms-alpha` instead of failing on corrupt metadata. Route these reads through `FsProjectStore::read_project_record()` or call `validate_task_source()` immediately after `toml::from_str()` so the new invariant is enforced consistently.\n   Rationale: The bead’s A3 invariant says malformed task linkage must fail to construct or load. Right now only some load paths enforce that, so corrupt records can still be accepted by real CLI workflows.\n2. The new C2 coverage does not actually test the existing by-bead resolution logic. `list_tasks_for_milestone_can_identify_project_for_specific_bead()` in `tests/unit/project_run_record_test.rs:2109-2149` just calls `list_tasks_for_milestone()` and then filters the returned vector in test code. That leaves the real bead-to-project selection helper (`find_matching_task_source_for_bead()` in `src/contexts/milestone_record/service.rs:4004-4050`) unexercised, even though it has non-trivial ranking behavior based on recorded plan location and creation time. Add a test that goes through an existing production helper/path which resolves a single bead to its project, rather than reimplementing the query in the assertion.\n   Rationale: This bead is explicitly supposed to add lineage-query coverage by bead. As written, the branch only tests milestone listing and a local `iter().find(...)`, so regressions in the actual resolver would still slip through.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

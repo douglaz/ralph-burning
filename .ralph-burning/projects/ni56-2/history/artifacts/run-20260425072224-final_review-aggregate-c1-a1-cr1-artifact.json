@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425072224-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425072224-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T08:06:56.847739436Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-5d9f9080`\n\n## Rejected\n\n- `fr-1-3917a066`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-5d9f9080`\n\nTask-source validation is still bypassed in direct `project.toml` readers outside `FsProjectStore`. The branch now rejects empty `milestone_id`/`bead_id` pairs in `FsProjectStore::read_project_record()` and project creation, but `workspace_governance::active_project_milestone_id()` and `validate_project_exists()` still deserialize `ProjectRecord` directly without calling `validate_task_source()` (`src/contexts/workspace_governance/mod.rs:153-167`, `src/contexts/workspace_governance/mod.rs:195-221`), and `sync_project_prompt_hash()` does the same in `src/contexts/workflow_composition/drift.rs:307-318`. I reproduced this with the built binary: after appending `[task_source] milestone_id = \"ms-alpha\"; bead_id = \"\"` to a project, `ralph-burning project select test-proj` succeeded and `ralph-burning milestone next` proceeded against `ms-alpha` instead of failing on corrupt metadata. Route these reads through `FsProjectStore::read_project_record()` or call `validate_task_source()` immediately after `toml::from_str()` so the new invariant is enforced consistently.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
