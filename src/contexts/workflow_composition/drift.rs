@@ -314,6 +314,12 @@ fn sync_project_prompt_hash(
             file: project_toml.display().to_string(),
             details: format!("failed to parse project metadata for prompt-hash update: {error}"),
         })?;
+    record
+        .validate_task_source()
+        .map_err(|details| AppError::CorruptRecord {
+            file: project_toml.display().to_string(),
+            details,
+        })?;
     record.prompt_hash = prompt_hash.to_owned();
     let updated = toml::to_string_pretty(&record)?;
     FileSystem::write_atomic(&project_toml, &updated).map_err(|error| {
@@ -632,6 +638,39 @@ mod tests {
             read_audit_project_record(base_dir, &project_id).prompt_hash,
             FileSystem::prompt_hash("# Prompt\n\nChanged prompt.\n")
         );
+    }
+
+    #[test]
+    fn prompt_hash_sync_rejects_corrupt_task_source_metadata() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, _run_id, original_prompt_hash) =
+            setup_project(base_dir, "sync-rejects-corrupt-task-source").expect("project setup");
+        let project_toml = FileSystem::project_root(base_dir, &project_id).join("project.toml");
+        let mut raw = fs::read_to_string(&project_toml).expect("read project.toml");
+        raw.push_str(
+            r#"
+[task_source]
+created_from = "bead"
+milestone_id = "ms-alpha"
+bead_id = ""
+"#,
+        );
+        fs::write(&project_toml, raw).expect("write corrupt project.toml");
+
+        let error = sync_project_prompt_hash(base_dir, &project_id, "new-prompt-hash")
+            .expect_err("corrupt task-source metadata should fail prompt hash sync");
+
+        assert!(matches!(
+            error,
+            AppError::CorruptRecord { ref file, ref details }
+                if file == &project_toml.display().to_string()
+                    && details.contains("non-empty milestone_id")
+                    && details.contains("non-empty bead_id")
+        ));
+        let persisted =
+            fs::read_to_string(&project_toml).expect("read project.toml after failed sync");
+        assert!(persisted.contains(&format!("prompt_hash = \"{original_prompt_hash}\"")));
     }
 
     #[test]

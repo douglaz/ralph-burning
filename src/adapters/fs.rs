@@ -1013,6 +1013,13 @@ impl FileSystem {
                     });
                 }
             };
+        if let Err(details) = project_record.validate_task_source() {
+            let _ = Self::write_atomic(&prompt_path, original_prompt);
+            let _ = fs::remove_file(&original_path);
+            return Err(AppError::PromptReplacementFailed {
+                details: format!("invalid project.toml task metadata: {details}"),
+            });
+        }
         project_record.prompt_hash = new_hash.clone();
         let updated_toml = match toml::to_string_pretty(&project_record) {
             Ok(toml) => toml,
@@ -1070,10 +1077,17 @@ impl FileSystem {
                 crate::contexts::project_run_record::model::ProjectRecord,
             >(&content)
             {
-                record.prompt_hash = original_hash;
-                if let Ok(updated) = toml::to_string_pretty(&record) {
-                    let _ = Self::write_atomic(&project_toml_path, &updated);
-                    Self::mirror_project_file(base_dir, project_id, PROJECT_CONFIG_FILE, &updated);
+                if record.validate_task_source().is_ok() {
+                    record.prompt_hash = original_hash;
+                    if let Ok(updated) = toml::to_string_pretty(&record) {
+                        let _ = Self::write_atomic(&project_toml_path, &updated);
+                        Self::mirror_project_file(
+                            base_dir,
+                            project_id,
+                            PROJECT_CONFIG_FILE,
+                            &updated,
+                        );
+                    }
                 }
             }
         }

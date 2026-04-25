@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425072224",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 2
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-1-5d9f9080",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 1,
-        "body": "Task-source validation is still bypassed in direct `project.toml` readers outside `FsProjectStore`. The branch now rejects empty `milestone_id`/`bead_id` pairs in `FsProjectStore::read_project_record()` and project creation, but `workspace_governance::active_project_milestone_id()` and `validate_project_exists()` still deserialize `ProjectRecord` directly without calling `validate_task_source()` (`src/contexts/workspace_governance/mod.rs:153-167`, `src/contexts/workspace_governance/mod.rs:195-221`), and `sync_project_prompt_hash()` does the same in `src/contexts/workflow_composition/drift.rs:307-318`. I reproduced this with the built binary: after appending `[task_source] milestone_id = \"ms-alpha\"; bead_id = \"\"` to a project, `ralph-burning project select test-proj` succeeded and `ralph-burning milestone next` proceeded against `ms-alpha` instead of failing on corrupt metadata. Route these reads through `FsProjectStore::read_project_record()` or call `validate_task_source()` immediately after `toml::from_str()` so the new invariant is enforced consistently.",
-        "created_at": "2026-04-25T08:06:56.847729397Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "371dab631b92c4f4e37fe7d0e7651174f485db8abe7c130bd5d0bf34e7433c41"
-      }
-    ],
-    "processed_count": 0
+    "pending": [],
+    "processed_count": 1
   },
-  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T07:55:07.544380506Z",
