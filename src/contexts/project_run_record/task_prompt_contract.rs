@@ -557,7 +557,15 @@ pub fn extract_planned_elsewhere_routing_bead_ids(
     prompt: &str,
 ) -> std::collections::HashSet<String> {
     let mut ids = extract_pe_bead_ids_internal(prompt, true);
-    ids.extend(extract_nearby_bead_ids_internal(prompt, true));
+    let prompt_milestone_id = extract_prompt_milestone_id(prompt);
+    for id in extract_nearby_bead_ids_internal(prompt, false) {
+        if nearby_short_alias_is_safe(prompt_milestone_id.as_deref(), &id) {
+            if let Some(short) = strip_milestone_prefix(&id) {
+                ids.insert(short.to_owned());
+            }
+        }
+        ids.insert(id);
+    }
     ids
 }
 
@@ -601,6 +609,24 @@ pub fn milestone_prefix_of(canonical_id: &str) -> Option<&str> {
     } else {
         Some(prefix)
     }
+}
+
+fn extract_prompt_milestone_id(prompt: &str) -> Option<String> {
+    prompt.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let rest = trimmed
+            .strip_prefix("- Milestone ID: ")
+            .or_else(|| trimmed.strip_prefix("- Milestone: "))?;
+        let milestone_id = rest.trim().trim_matches('`').trim();
+        (!milestone_id.is_empty()).then(|| milestone_id.to_owned())
+    })
+}
+
+fn nearby_short_alias_is_safe(prompt_milestone_id: Option<&str>, bead_id: &str) -> bool {
+    let Some(prompt_milestone_id) = prompt_milestone_id else {
+        return false;
+    };
+    milestone_prefix_of(bead_id) == Some(prompt_milestone_id)
 }
 
 /// Default review policy for canonical bead execution prompts.
@@ -981,7 +1007,7 @@ mod tests {
 
     #[test]
     fn extract_planned_elsewhere_routing_bead_ids_includes_nearby_work() {
-        let prompt = "## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby IDs\n  Scope: Route findings to the dependent.\n\n### Related work\n- `plain-related` [in_progress] Related item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- 9ni.7.1 (Later work) - planned\n";
+        let prompt = "- Milestone: `9ni`\n\n## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby IDs\n  Scope: Route findings to the dependent.\n\n### Related work\n- `plain-related` [in_progress] Related item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- 9ni.7.1 (Later work) - planned\n";
 
         let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
 
@@ -991,6 +1017,18 @@ mod tests {
         assert!(ids.contains("9ni.7.1"));
         assert!(ids.contains("7.1"));
         assert_eq!(ids.len(), 5);
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_omits_foreign_nearby_short_aliases() {
+        let prompt = "- Milestone ID: `current-ms`\n\n## Nearby work\n\n### Related work\n- `other-ms.bead-4` [open] Foreign related item\n- `current-ms.bead-5` [open] Same milestone related item\n\n## Must-Do Scope\n\nCurrent bead only.\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("other-ms.bead-4"));
+        assert!(!ids.contains("bead-4"));
+        assert!(ids.contains("current-ms.bead-5"));
+        assert!(ids.contains("bead-5"));
     }
 
     #[test]

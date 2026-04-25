@@ -3412,7 +3412,7 @@ mod tests {
     fn build_reviewer_prompt_allows_nearby_work_ids_for_planned_elsewhere_mapping() {
         let tmp = tempdir().expect("tempdir");
         let project_prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Siblings\n- `9ni.6.5` [open] Adjacent prompt routing\n  Scope: Owns review routing for adjacent findings.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n- Milestone: `9ni`\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Siblings\n- `9ni.6.5` [open] Adjacent prompt routing\n  Scope: Owns review routing for adjacent findings.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             task_prompt_contract::contract_marker()
         );
 
@@ -3437,7 +3437,7 @@ mod tests {
     #[test]
     fn final_review_mapping_allowlist_accepts_nearby_work_ids() {
         let project_prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby routing\n  Scope: Owns adjacent review finding routing.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n- Milestone: `9ni`\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby routing\n  Scope: Owns adjacent review finding routing.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             task_prompt_contract::contract_marker()
         );
         let allowed =
@@ -3447,6 +3447,21 @@ mod tests {
         assert!(mapped_to_bead_id_is_allowed(&allowed, "6.5"));
         assert!(mapped_to_bead_id_is_allowed(&allowed, " 9ni.6.5 "));
         assert!(!mapped_to_bead_id_is_allowed(&allowed, "9ni.6.7"));
+    }
+
+    #[test]
+    fn final_review_mapping_allowlist_rejects_foreign_nearby_short_alias() {
+        let project_prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n- Milestone: `current-ms`\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `other-ms.bead-4` [open] Foreign related routing\n  Scope: Owns adjacent review finding routing.\n- `current-ms.bead-5` [open] Local related routing\n  Scope: Owns adjacent review finding routing.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            task_prompt_contract::contract_marker()
+        );
+        let allowed =
+            task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(&project_prompt);
+
+        assert!(mapped_to_bead_id_is_allowed(&allowed, "other-ms.bead-4"));
+        assert!(!mapped_to_bead_id_is_allowed(&allowed, "bead-4"));
+        assert!(mapped_to_bead_id_is_allowed(&allowed, "current-ms.bead-5"));
+        assert!(mapped_to_bead_id_is_allowed(&allowed, "bead-5"));
     }
 
     #[test]
