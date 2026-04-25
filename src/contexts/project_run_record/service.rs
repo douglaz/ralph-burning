@@ -1303,6 +1303,12 @@ fn create_project_with_initial_details(
         status_summary: ProjectStatusSummary::Created,
         task_source: input.task_source,
     };
+    record
+        .validate_task_source()
+        .map_err(|details| AppError::CorruptRecord {
+            file: format!("projects/{}/project.toml", record.id),
+            details,
+        })?;
 
     let max_completion_rounds = EffectiveConfig::load(base_dir)
         .map(|cfg| cfg.run_policy().max_completion_rounds)

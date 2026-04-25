@@ -1527,10 +1527,17 @@ impl ProjectStorePort for FsProjectStore {
                 e.into()
             }
         })?;
-        toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+        let record: ProjectRecord = toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
             file: format!("projects/{}/project.toml", project_id),
             details: e.to_string(),
-        })
+        })?;
+        record
+            .validate_task_source()
+            .map_err(|details| AppError::CorruptRecord {
+                file: format!("projects/{}/project.toml", project_id),
+                details,
+            })?;
+        Ok(record)
     }
 
     fn list_project_ids(&self, base_dir: &Path) -> AppResult<Vec<ProjectId>> {
@@ -1674,6 +1681,13 @@ impl ProjectStorePort for FsProjectStore {
         initial_journal_line: &str,
         sessions: &SessionStore,
     ) -> AppResult<()> {
+        record
+            .validate_task_source()
+            .map_err(|details| AppError::CorruptRecord {
+                file: format!("projects/{}/project.toml", record.id),
+                details,
+            })?;
+
         let project_root = FileSystem::live_project_root(base_dir, &record.id);
 
         // Stage into a temporary directory alongside the final location
