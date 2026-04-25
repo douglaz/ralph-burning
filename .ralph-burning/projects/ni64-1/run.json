@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 9
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-8-7afbda5d",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "src/cli/project.rs:1912-1928 and 2788-2800 cap summary-inferred sibling detail prefetch at five IDs before detail filtering. When the parent epic detail cannot be loaded and one of those first five summaries is stale-open but actually closed, that sibling is dropped without promoting the sixth open sibling, so the `Nearby work` section can under-report available siblings and hide legitimate planned-elsewhere ownership.",
-        "created_at": "2026-04-25T17:55:38.368000837Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "2857dbe37cf7b995402ca48559f1c123c07c465e831c966966b592d7297a4cd0"
-      },
-      {
-        "amendment_id": "fr-8-dfa984f2",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 8,
-        "body": "src/cli/project.rs:1863-1966 and 2773-2785 now eagerly and sequentially run `br show` for every dependency/dependent, the parent epic, up to 20 sibling candidates, and a bounded related-work set before rendering the prompt. On moderately connected beads this turns task creation into dozens of subprocesses, making prompt creation latency scale with graph degree and label density.",
-        "created_at": "2026-04-25T17:55:38.368003512Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "708f35b7b97be0a9d399272c82ea7097e702afaf9a73423ecf3fb5ad39e789fa"
-      }
-    ],
-    "processed_count": 12
+    "pending": [],
+    "processed_count": 14
   },
-  "status_summary": "running: final review restart round 9 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T17:44:19.020191672Z",

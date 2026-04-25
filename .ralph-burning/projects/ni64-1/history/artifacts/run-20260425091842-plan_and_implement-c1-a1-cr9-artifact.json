@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr9-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr9",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T18:42:52.720338753Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending nearby-context amendments in `src/cli/project.rs`. Nearby detail fallback loading now batches independent direct, parent, summary-sibling, and related-work candidates into one concurrent pass instead of sequentially issuing `br show` calls, and direct/related fallback candidate lists stay bounded. Summary-inferred sibling detail loading now starts one past the visible limit, then adaptively scans a small hard-capped window until five non-terminal siblings remain after detail-status filtering, so stale-open closed siblings no longer hide later legitimate sibling ownership. Also fixed the batch detail loader so one failed optional `br show` result does not stop processing later successful results, and added regression coverage for promoting later siblings after multiple detail-only closed siblings.\n\n## Steps\n\n0. [Completed] Inspected current nearby-context construction, detail fallback loading, sibling candidate selection, and existing nearby-work tests.\n1. [Completed] Implemented bounded concurrent nearby detail fallback loading and adaptive summary-sibling promotion after detail-status filtering.\n2. [Completed] Fixed optional detail batch processing so failed `br show` lookups are skipped without aborting the rest of the batch.\n3. [Completed] Added focused regression coverage for summary-inferred sibling promotion when earlier candidates are closed only in fetched detail.\n4. [Completed] Ran focused and full repository validation gates, including the authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details --lib` passed: 3 tests.\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context --lib` passed: 12 tests.\n- `nix develop -c cargo test --locked --features test-stub nearby_summary_sibling_detail_candidates --lib` passed: 2 tests.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 9
+}
