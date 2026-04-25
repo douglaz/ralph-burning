@@ -190,8 +190,9 @@ pub fn build_stage_prompt(
 
     let classification_guidance_block = match contract.stage_id {
         StageId::Review => {
-            let pe_bead_ids = task_prompt_contract::extract_pe_bead_ids(&project_prompt);
-            review_classification::render_classification_guidance(&pe_bead_ids, false)
+            let planned_elsewhere_ids =
+                task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(&project_prompt);
+            review_classification::render_classification_guidance(&planned_elsewhere_ids, false)
         }
         StageId::Planning | StageId::PlanAndImplement => {
             review_classification::render_scope_guidance(&project_prompt)

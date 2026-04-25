@@ -11,7 +11,7 @@
 //! 6. Ask the arbiter to resolve only disputed amendments.
 //! 7. Return the final accepted amendment set for either completion or restart.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -448,6 +448,10 @@ fn normalize_mapped_to_bead_id(id: Option<&String>) -> Option<String> {
             Some(trimmed.to_owned())
         }
     })
+}
+
+fn mapped_to_bead_id_is_allowed(allowed_planned_elsewhere_ids: &HashSet<String>, id: &str) -> bool {
+    !allowed_planned_elsewhere_ids.is_empty() && allowed_planned_elsewhere_ids.contains(id.trim())
 }
 
 fn normalize_optional_text(value: Option<&String>) -> Option<String> {
@@ -1109,14 +1113,14 @@ where
     }
 
     // Validate mapped_to_bead_id BEFORE building voter/arbiter prompts.
-    // Fail closed: if the allowed set is empty (no PE section in the prompt or
-    // prompt says "no explicit planned-elsewhere items"), strip ALL
-    // mapped_to_bead_id values so they cannot mislead the voting panel.
-    let allowed_pe_ids = task_prompt_contract::extract_pe_bead_ids(&project_prompt);
+    // Fail closed: if no adjacent planned-elsewhere IDs are present in the
+    // prompt, strip ALL mapped_to_bead_id values so they cannot mislead the
+    // voting panel.
+    let allowed_planned_elsewhere_ids =
+        task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(&project_prompt);
     for amendment in &mut amendments {
         if let Some(ref mapped_to) = amendment.mapped_to_bead_id {
-            let valid = !allowed_pe_ids.is_empty() && allowed_pe_ids.contains(mapped_to.trim());
-            if !valid {
+            if !mapped_to_bead_id_is_allowed(&allowed_planned_elsewhere_ids, mapped_to) {
                 amendment.mapped_to_bead_id = None;
             }
         }
@@ -1847,8 +1851,7 @@ where
     // code path that could re-introduce an invalid mapping.
     for amendment in &mut final_accepted_amendments {
         if let Some(ref mapped_to) = amendment.mapped_to_bead_id {
-            let valid = !allowed_pe_ids.is_empty() && allowed_pe_ids.contains(mapped_to.trim());
-            if !valid {
+            if !mapped_to_bead_id_is_allowed(&allowed_planned_elsewhere_ids, mapped_to) {
                 amendment.mapped_to_bead_id = None;
                 // If the mapped bead ID was invalid, downgrade to fix-now
                 // since we can't route a planned-elsewhere without a target.
@@ -2253,9 +2256,10 @@ fn build_reviewer_prompt(
     ))?;
     let task_prompt_contract_block =
         task_prompt_contract::stage_consumer_guidance_for_prompt(project_prompt);
-    let pe_bead_ids = task_prompt_contract::extract_pe_bead_ids(project_prompt);
+    let planned_elsewhere_ids =
+        task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(project_prompt);
     let classification_guidance_block =
-        review_classification::render_classification_guidance(&pe_bead_ids, true);
+        review_classification::render_classification_guidance(&planned_elsewhere_ids, true);
     let review_scope_guidance = build_review_scope_guidance(backend_working_dir, project_id);
     template_catalog::resolve_and_render(
         "final_review_reviewer",
@@ -3402,6 +3406,47 @@ mod tests {
         assert!(prompt.contains("## Task Prompt Contract"));
         assert!(prompt.contains("## Already Planned Elsewhere"));
         assert!(prompt.contains("## Review Scope"));
+    }
+
+    #[test]
+    fn build_reviewer_prompt_allows_nearby_work_ids_for_planned_elsewhere_mapping() {
+        let tmp = tempdir().expect("tempdir");
+        let project_prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Siblings\n- `9ni.6.5` [open] Adjacent prompt routing\n  Scope: Owns review routing for adjacent findings.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            task_prompt_contract::contract_marker()
+        );
+
+        let prompt = build_reviewer_prompt(
+            &project_prompt,
+            &ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-test",
+            ),
+            tmp.path(),
+            tmp.path(),
+            None,
+        )
+        .expect("reviewer prompt");
+
+        assert!(prompt.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
+        assert!(prompt.contains("- `9ni.6.5`"));
+        assert!(prompt.contains("- `6.5`"));
+        assert!(!prompt.contains("unlikely to apply"));
+    }
+
+    #[test]
+    fn final_review_mapping_allowlist_accepts_nearby_work_ids() {
+        let project_prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby routing\n  Scope: Owns adjacent review finding routing.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            task_prompt_contract::contract_marker()
+        );
+        let allowed =
+            task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(&project_prompt);
+
+        assert!(mapped_to_bead_id_is_allowed(&allowed, "9ni.6.5"));
+        assert!(mapped_to_bead_id_is_allowed(&allowed, "6.5"));
+        assert!(mapped_to_bead_id_is_allowed(&allowed, " 9ni.6.5 "));
+        assert!(!mapped_to_bead_id_is_allowed(&allowed, "9ni.6.7"));
     }
 
     #[test]

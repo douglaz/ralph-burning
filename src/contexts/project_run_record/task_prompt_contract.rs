@@ -470,8 +470,20 @@ fn extract_pe_bead_ids_internal(
     prompt: &str,
     include_short_form_aliases: bool,
 ) -> std::collections::HashSet<String> {
+    extract_bullet_bead_ids_from_section(
+        prompt,
+        SECTION_ALREADY_PLANNED_ELSEWHERE,
+        include_short_form_aliases,
+    )
+}
+
+fn extract_bullet_bead_ids_from_section(
+    prompt: &str,
+    section_title: &str,
+    include_short_form_aliases: bool,
+) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
-    let section_header = format!("## {SECTION_ALREADY_PLANNED_ELSEWHERE}");
+    let section_header = format!("## {section_title}");
     let mut in_section = false;
 
     for line in prompt.lines() {
@@ -487,7 +499,8 @@ fn extract_pe_bead_ids_internal(
                     .split(|c: char| c.is_whitespace() || c == '(')
                     .next()
                     .unwrap_or("")
-                    .trim();
+                    .trim()
+                    .trim_matches('`');
                 if !id.is_empty() {
                     result.insert(id.to_owned());
                     // Review-time matching accepts a short-form alias by
@@ -506,6 +519,13 @@ fn extract_pe_bead_ids_internal(
     }
 
     result
+}
+
+fn extract_nearby_bead_ids_internal(
+    prompt: &str,
+    include_short_form_aliases: bool,
+) -> std::collections::HashSet<String> {
+    extract_bullet_bead_ids_from_section(prompt, SECTION_NEARBY_WORK, include_short_form_aliases)
 }
 
 /// Extract the canonical bead IDs from the "Already Planned Elsewhere"
@@ -527,6 +547,29 @@ pub fn extract_pe_canonical_bead_ids(prompt: &str) -> std::collections::HashSet<
 /// `planned_bead_membership_refs` in bundle.rs.
 pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
     extract_pe_bead_ids_internal(prompt, true)
+}
+
+/// Extract bead IDs that review stages may route `planned-elsewhere`
+/// findings to. This includes explicit "Already Planned Elsewhere" items and
+/// focused "Nearby work" entries because both sections identify work owned by
+/// beads adjacent to the active task.
+pub fn extract_planned_elsewhere_routing_bead_ids(
+    prompt: &str,
+) -> std::collections::HashSet<String> {
+    let mut ids = extract_pe_bead_ids_internal(prompt, true);
+    ids.extend(extract_nearby_bead_ids_internal(prompt, true));
+    ids
+}
+
+/// Extract canonical bead IDs from the prompt sections that identify work
+/// outside the active bead. Unlike [`extract_planned_elsewhere_routing_bead_ids`],
+/// this omits short-form aliases because it is intended for human guidance.
+pub fn extract_planned_elsewhere_canonical_routing_bead_ids(
+    prompt: &str,
+) -> std::collections::HashSet<String> {
+    let mut ids = extract_pe_bead_ids_internal(prompt, false);
+    ids.extend(extract_nearby_bead_ids_internal(prompt, false));
+    ids
 }
 
 /// Strip the milestone-id prefix from a canonical bead ID.
@@ -934,6 +977,33 @@ mod tests {
         assert!(ids.contains("8.5.3"));
         assert!(ids.contains("plain-id"));
         assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_includes_nearby_work() {
+        let prompt = "## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby IDs\n  Scope: Route findings to the dependent.\n\n### Related work\n- `plain-related` [in_progress] Related item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- 9ni.7.1 (Later work) - planned\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("9ni.6.5"));
+        assert!(ids.contains("6.5"));
+        assert!(ids.contains("plain-related"));
+        assert!(ids.contains("9ni.7.1"));
+        assert!(ids.contains("7.1"));
+        assert_eq!(ids.len(), 5);
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_canonical_routing_bead_ids_omits_short_aliases() {
+        let prompt = "## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby IDs\n\n## Already Planned Elsewhere\n\n- 9ni.7.1 (Later work) - planned\n";
+
+        let ids = extract_planned_elsewhere_canonical_routing_bead_ids(prompt);
+
+        assert!(ids.contains("9ni.6.5"));
+        assert!(ids.contains("9ni.7.1"));
+        assert!(!ids.contains("6.5"));
+        assert!(!ids.contains("7.1"));
+        assert_eq!(ids.len(), 2);
     }
 
     #[test]

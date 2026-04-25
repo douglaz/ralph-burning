@@ -413,11 +413,18 @@ pub(crate) async fn execute_create_from_bead_in_dir(
                 Err(AppError::Io(_)) => BTreeMap::new(),
                 Err(other) => return Err(other),
             };
+            let nearby_dependency_details =
+                load_nearby_dependency_details(current_dir, &milestone_id, &bead, &bead_summaries)
+                    .await;
 
             (
                 build_dependency_prompt_context(&bead.dependencies, &bead_summaries),
                 build_dependent_prompt_context(&bead.dependents, &bead_summaries),
-                build_nearby_bead_context(&bead, &bead_summaries),
+                build_nearby_bead_context_with_details(
+                    &bead,
+                    &bead_summaries,
+                    &nearby_dependency_details,
+                ),
                 build_planned_elsewhere_context(
                     &milestone_bundle.bundle,
                     &milestone_id,
@@ -1852,6 +1859,94 @@ async fn load_bead_summaries(base_dir: &Path) -> AppResult<BTreeMap<String, Bead
     ))
 }
 
+async fn load_nearby_dependency_details(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead: &BeadDetail,
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> BTreeMap<String, BeadDetail> {
+    let mut details = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for relation in bead.dependencies.iter().chain(bead.dependents.iter()) {
+        load_nearby_detail_if_available(
+            base_dir,
+            milestone_id,
+            &relation.id,
+            &mut seen,
+            &mut details,
+        )
+        .await;
+    }
+
+    if let Some(parent_epic_id) = infer_parent_epic_id(bead) {
+        load_nearby_detail_if_available(
+            base_dir,
+            milestone_id,
+            &parent_epic_id,
+            &mut seen,
+            &mut details,
+        )
+        .await;
+
+        let mut sibling_ids = BTreeSet::new();
+        if let Some(parent_detail) = details.get(&parent_epic_id).cloned() {
+            sibling_ids.extend(
+                parent_detail
+                    .dependents
+                    .iter()
+                    .filter(|relation| {
+                        relation.kind == DependencyKind::ParentChild
+                            && relation.id != bead.id
+                            && !nearby_status_is_omitted(relation.status.as_ref())
+                    })
+                    .map(|relation| relation.id.clone()),
+            );
+        }
+        sibling_ids.extend(nearby_summary_sibling_detail_candidate_ids(
+            bead,
+            bead_summaries,
+            &parent_epic_id,
+        ));
+        for sibling_id in sibling_ids.into_iter().take(NEARBY_SIBLING_LIMIT) {
+            load_nearby_detail_if_available(
+                base_dir,
+                milestone_id,
+                &sibling_id,
+                &mut seen,
+                &mut details,
+            )
+            .await;
+        }
+    }
+
+    for related_id in nearby_related_work_detail_candidate_ids(bead, bead_summaries) {
+        load_nearby_detail_if_available(
+            base_dir,
+            milestone_id,
+            &related_id,
+            &mut seen,
+            &mut details,
+        )
+        .await;
+    }
+    details
+}
+
+async fn load_nearby_detail_if_available(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    seen: &mut BTreeSet<String>,
+    details: &mut BTreeMap<String, BeadDetail>,
+) {
+    if !seen.insert(bead_id.to_owned()) {
+        return;
+    }
+    if let Ok(detail) = load_bead_detail(base_dir, milestone_id, bead_id).await {
+        details.insert(bead_id.to_owned(), detail);
+    }
+}
+
 fn map_br_list_error(error: BrError) -> AppError {
     match error {
         BrError::BrExitError { stderr, .. } if br_list_exit_error_looks_corrupt(&stderr) => {
@@ -2426,18 +2521,36 @@ fn build_dependent_prompt_context(
     items
 }
 
+#[cfg(test)]
 fn build_nearby_bead_context(
     bead: &BeadDetail,
     bead_summaries: &BTreeMap<String, BeadSummary>,
 ) -> NearbyBeadContext {
+    build_nearby_bead_context_with_details(bead, bead_summaries, &BTreeMap::new())
+}
+
+fn build_nearby_bead_context_with_details(
+    bead: &BeadDetail,
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+    bead_details: &BTreeMap<String, BeadDetail>,
+) -> NearbyBeadContext {
     let mut included_ids = BTreeSet::from([bead.id.clone()]);
 
-    let direct_dependencies =
-        nearby_entries_from_relations(&bead.dependencies, bead_summaries, &mut included_ids);
-    let direct_dependents =
-        nearby_entries_from_relations(&bead.dependents, bead_summaries, &mut included_ids);
-    let siblings = nearby_sibling_entries(bead, bead_summaries, &mut included_ids);
-    let related_work = nearby_related_work_entries(bead, bead_summaries, &mut included_ids);
+    let direct_dependencies = nearby_entries_from_relations(
+        &bead.dependencies,
+        bead_summaries,
+        bead_details,
+        &mut included_ids,
+    );
+    let direct_dependents = nearby_entries_from_relations(
+        &bead.dependents,
+        bead_summaries,
+        bead_details,
+        &mut included_ids,
+    );
+    let siblings = nearby_sibling_entries(bead, bead_summaries, bead_details, &mut included_ids);
+    let related_work =
+        nearby_related_work_entries(bead, bead_summaries, bead_details, &mut included_ids);
 
     enforce_nearby_context_budget(
         NearbyBeadContext {
@@ -2453,6 +2566,7 @@ fn build_nearby_bead_context(
 fn nearby_entries_from_relations(
     relations: &[crate::adapters::br_models::DependencyRef],
     bead_summaries: &BTreeMap<String, BeadSummary>,
+    bead_details: &BTreeMap<String, BeadDetail>,
     included_ids: &mut BTreeSet<String>,
 ) -> Vec<NearbyBeadEntry> {
     let mut entries = relations
@@ -2462,22 +2576,28 @@ fn nearby_entries_from_relations(
                 return None;
             }
             let summary = bead_summaries.get(&relation.id);
-            if nearby_status_is_omitted(
-                summary
-                    .map(|entry| &entry.status)
-                    .or(relation.status.as_ref()),
-            ) {
+            let detail = bead_details.get(&relation.id);
+            let status = detail
+                .map(|entry| &entry.status)
+                .or_else(|| summary.map(|entry| &entry.status))
+                .or(relation.status.as_ref());
+            if nearby_status_is_omitted(status) {
                 return None;
             }
             included_ids.insert(relation.id.clone());
             Some(nearby_entry(
                 &relation.id,
-                summary
+                detail
                     .map(|entry| entry.title.as_str())
+                    .or_else(|| summary.map(|entry| entry.title.as_str()))
                     .or(relation.title.as_deref())
                     .unwrap_or(&relation.id),
-                summary.and_then(|entry| entry.description.as_deref()),
-                prompt_bead_status(summary, relation.status.as_ref()),
+                detail
+                    .and_then(|entry| entry.description.as_deref())
+                    .or_else(|| summary.and_then(|entry| entry.description.as_deref())),
+                status
+                    .map(|status| bead_status_label(status).to_owned())
+                    .unwrap_or_else(|| "unknown".to_owned()),
             ))
         })
         .collect::<Vec<_>>();
@@ -2489,20 +2609,63 @@ fn nearby_entries_from_relations(
     entries
 }
 
+fn nearby_entry_from_relation(
+    relation: &crate::adapters::br_models::DependencyRef,
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+    bead_details: &BTreeMap<String, BeadDetail>,
+) -> NearbyBeadEntry {
+    let summary = bead_summaries.get(&relation.id);
+    let detail = bead_details.get(&relation.id);
+    let status = detail
+        .map(|entry| &entry.status)
+        .or_else(|| summary.map(|entry| &entry.status))
+        .or(relation.status.as_ref());
+    nearby_entry(
+        &relation.id,
+        detail
+            .map(|entry| entry.title.as_str())
+            .or_else(|| summary.map(|entry| entry.title.as_str()))
+            .or(relation.title.as_deref())
+            .unwrap_or(&relation.id),
+        detail
+            .and_then(|entry| entry.description.as_deref())
+            .or_else(|| summary.and_then(|entry| entry.description.as_deref())),
+        status
+            .map(|status| bead_status_label(status).to_owned())
+            .unwrap_or_else(|| "unknown".to_owned()),
+    )
+}
+
+fn nearby_entry_from_summary(
+    summary: &BeadSummary,
+    bead_details: &BTreeMap<String, BeadDetail>,
+) -> NearbyBeadEntry {
+    let detail = bead_details.get(&summary.id);
+    let status = detail.map(|entry| &entry.status).unwrap_or(&summary.status);
+    nearby_entry(
+        &summary.id,
+        detail
+            .map(|entry| entry.title.as_str())
+            .unwrap_or(summary.title.as_str()),
+        detail
+            .and_then(|entry| entry.description.as_deref())
+            .or(summary.description.as_deref()),
+        bead_status_label(status).to_owned(),
+    )
+}
+
 fn nearby_sibling_entries(
     bead: &BeadDetail,
     bead_summaries: &BTreeMap<String, BeadSummary>,
+    bead_details: &BTreeMap<String, BeadDetail>,
     included_ids: &mut BTreeSet<String>,
 ) -> Vec<NearbyBeadEntry> {
     let Some(parent_epic_id) = infer_parent_epic_id(bead) else {
         return Vec::new();
     };
 
-    let mut entries = Vec::new();
+    let mut candidates = BTreeMap::new();
     for summary in bead_summaries.values() {
-        if entries.len() >= NEARBY_SIBLING_LIMIT {
-            break;
-        }
         if included_ids.contains(&summary.id)
             || nearby_status_is_omitted(Some(&summary.status))
             || infer_parent_epic_id_from_summary(summary).as_deref()
@@ -2510,22 +2673,101 @@ fn nearby_sibling_entries(
         {
             continue;
         }
-        included_ids.insert(summary.id.clone());
-        entries.push(nearby_entry(
-            &summary.id,
-            &summary.title,
-            summary.description.as_deref(),
-            bead_status_label(&summary.status).to_owned(),
-        ));
+        candidates.insert(
+            summary.id.clone(),
+            nearby_entry_from_summary(summary, bead_details),
+        );
     }
-    entries
+
+    if let Some(parent_detail) = bead_details.get(&parent_epic_id) {
+        for relation in &parent_detail.dependents {
+            if relation.kind != DependencyKind::ParentChild
+                || relation.id == bead.id
+                || included_ids.contains(&relation.id)
+            {
+                continue;
+            }
+            let summary = bead_summaries.get(&relation.id);
+            if nearby_status_is_omitted(
+                summary
+                    .map(|entry| &entry.status)
+                    .or(relation.status.as_ref()),
+            ) {
+                continue;
+            }
+            candidates.entry(relation.id.clone()).or_insert_with(|| {
+                nearby_entry_from_relation(relation, bead_summaries, bead_details)
+            });
+        }
+    }
+
+    candidates
+        .into_iter()
+        .take(NEARBY_SIBLING_LIMIT)
+        .map(|(id, entry)| {
+            included_ids.insert(id);
+            entry
+        })
+        .collect()
 }
 
 fn nearby_related_work_entries(
     bead: &BeadDetail,
     bead_summaries: &BTreeMap<String, BeadSummary>,
+    bead_details: &BTreeMap<String, BeadDetail>,
     included_ids: &mut BTreeSet<String>,
 ) -> Vec<NearbyBeadEntry> {
+    let selected = nearby_related_work_candidates(bead, bead_summaries)
+        .into_iter()
+        .filter(|(_, summary)| !included_ids.contains(&summary.id))
+        .take(NEARBY_RELATED_WORK_LIMIT)
+        .collect::<Vec<_>>();
+
+    selected
+        .into_iter()
+        .map(|(_, summary)| {
+            included_ids.insert(summary.id.clone());
+            nearby_entry_from_summary(summary, bead_details)
+        })
+        .collect()
+}
+
+fn nearby_related_work_detail_candidate_ids(
+    bead: &BeadDetail,
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+) -> Vec<String> {
+    let bounded_candidate_limit = NEARBY_RELATED_WORK_LIMIT
+        .saturating_add(bead.dependencies.len())
+        .saturating_add(bead.dependents.len())
+        .saturating_add(NEARBY_SIBLING_LIMIT);
+    nearby_related_work_candidates(bead, bead_summaries)
+        .into_iter()
+        .take(bounded_candidate_limit)
+        .map(|(_, summary)| summary.id.clone())
+        .collect()
+}
+
+fn nearby_summary_sibling_detail_candidate_ids(
+    bead: &BeadDetail,
+    bead_summaries: &BTreeMap<String, BeadSummary>,
+    parent_epic_id: &str,
+) -> Vec<String> {
+    bead_summaries
+        .values()
+        .filter(|summary| {
+            summary.id != bead.id
+                && !nearby_status_is_omitted(Some(&summary.status))
+                && infer_parent_epic_id_from_summary(summary).as_deref() == Some(parent_epic_id)
+        })
+        .take(NEARBY_SIBLING_LIMIT)
+        .map(|summary| summary.id.clone())
+        .collect()
+}
+
+fn nearby_related_work_candidates<'a>(
+    bead: &BeadDetail,
+    bead_summaries: &'a BTreeMap<String, BeadSummary>,
+) -> Vec<(usize, &'a BeadSummary)> {
     let focal_labels = bead
         .labels
         .iter()
@@ -2538,8 +2780,7 @@ fn nearby_related_work_entries(
     let mut candidates = bead_summaries
         .values()
         .filter_map(|summary| {
-            if included_ids.contains(&summary.id) || nearby_status_is_omitted(Some(&summary.status))
-            {
+            if summary.id == bead.id || nearby_status_is_omitted(Some(&summary.status)) {
                 return None;
             }
             let overlap = summary
@@ -2556,20 +2797,7 @@ fn nearby_related_work_entries(
             .then_with(|| left.id.cmp(&right.id))
             .then_with(|| left.title.cmp(&right.title))
     });
-
     candidates
-        .into_iter()
-        .take(NEARBY_RELATED_WORK_LIMIT)
-        .map(|(_, summary)| {
-            included_ids.insert(summary.id.clone());
-            nearby_entry(
-                &summary.id,
-                &summary.title,
-                summary.description.as_deref(),
-                bead_status_label(&summary.status).to_owned(),
-            )
-        })
-        .collect()
 }
 
 fn nearby_status_is_omitted(status: Option<&BeadStatus>) -> bool {
@@ -3587,10 +3815,11 @@ mod tests {
     use super::{
         apply_planned_elsewhere_budget, backfill_legacy_explicit_bead_flags,
         build_dependency_prompt_context, build_dependent_prompt_context, build_nearby_bead_context,
-        build_planned_elsewhere_context, compact_planned_elsewhere_summary,
-        ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
-        infer_parent_epic_id, legacy_plan_warning_marker_path, load_milestone_bundle,
-        map_br_list_error, planned_elsewhere_serialized_bytes,
+        build_nearby_bead_context_with_details, build_planned_elsewhere_context,
+        compact_planned_elsewhere_summary, ensure_bead_belongs_to_milestone,
+        ensure_bead_creation_targets_are_actionable, infer_parent_epic_id,
+        legacy_plan_warning_marker_path, load_milestone_bundle, map_br_list_error,
+        nearby_summary_sibling_detail_candidate_ids, planned_elsewhere_serialized_bytes,
         planned_elsewhere_serialized_bytes_without_summary, resolve_bead_plan,
         validate_milestone_plan_snapshot, warn_once_for_legacy_plan_lookup,
         PlannedElsewhereCandidate, PlannedElsewherePriority, NEARBY_SCOPE_SUMMARY_MAX_BYTES,
@@ -3934,6 +4163,44 @@ mod tests {
     }
 
     #[test]
+    fn build_nearby_bead_context_uses_dependency_detail_description_when_summary_is_sparse() {
+        let mut bead = sample_bead();
+        bead.dependencies = vec![DependencyRef {
+            id: "ms-alpha.bead-1".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Sparse dependency title".to_owned()),
+            status: Some(BeadStatus::Open),
+        }];
+        let mut dependency_detail = sample_bead();
+        dependency_detail.id = "ms-alpha.bead-1".to_owned();
+        dependency_detail.title = "Detailed dependency title".to_owned();
+        dependency_detail.description =
+            Some("Scope: Use detailed description from br show fallback.".to_owned());
+        dependency_detail.status = BeadStatus::InProgress;
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-1".to_owned(),
+            summary(
+                "ms-alpha.bead-1",
+                "Sparse dependency title",
+                BeadStatus::Open,
+                &[],
+                None,
+                None,
+            ),
+        )]);
+        let bead_details = BTreeMap::from([("ms-alpha.bead-1".to_owned(), dependency_detail)]);
+
+        let context = build_nearby_bead_context_with_details(&bead, &bead_summaries, &bead_details);
+
+        let entry = &context.direct_dependencies[0];
+        assert_eq!(entry.title, "Detailed dependency title");
+        assert_eq!(
+            entry.scope_summary,
+            "Use detailed description from br show fallback."
+        );
+    }
+
+    #[test]
     fn build_nearby_bead_context_includes_parent_child_direct_relations() {
         let mut bead = sample_bead();
         bead.dependencies = vec![
@@ -4072,6 +4339,136 @@ mod tests {
     }
 
     #[test]
+    fn build_nearby_bead_context_infers_siblings_from_parent_detail_when_summaries_are_sparse() {
+        let bead = sample_bead();
+        let bead_summaries = BTreeMap::from([
+            (
+                "ms-alpha.bead-1".to_owned(),
+                summary(
+                    "ms-alpha.bead-1",
+                    "Sparse sibling one",
+                    BeadStatus::Open,
+                    &[],
+                    None,
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.bead-3".to_owned(),
+                summary(
+                    "ms-alpha.bead-3",
+                    "Sparse sibling two",
+                    BeadStatus::InProgress,
+                    &[],
+                    None,
+                    None,
+                ),
+            ),
+        ]);
+        let mut parent_detail = sample_bead();
+        parent_detail.id = "ms-alpha.epic-1".to_owned();
+        parent_detail.title = "Parent epic".to_owned();
+        parent_detail.dependents = vec![
+            DependencyRef {
+                id: "ms-alpha.bead-2".to_owned(),
+                kind: DependencyKind::ParentChild,
+                title: Some("Current bead".to_owned()),
+                status: Some(BeadStatus::Open),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-1".to_owned(),
+                kind: DependencyKind::ParentChild,
+                title: Some("Sibling one from parent".to_owned()),
+                status: Some(BeadStatus::Open),
+            },
+            DependencyRef {
+                id: "ms-alpha.bead-3".to_owned(),
+                kind: DependencyKind::ParentChild,
+                title: Some("Sibling two from parent".to_owned()),
+                status: Some(BeadStatus::InProgress),
+            },
+        ];
+        let mut sibling_one_detail = sample_bead();
+        sibling_one_detail.id = "ms-alpha.bead-1".to_owned();
+        sibling_one_detail.title = "Detailed sibling one".to_owned();
+        sibling_one_detail.description =
+            Some("Scope: Use sibling detail description fallback.".to_owned());
+        sibling_one_detail.status = BeadStatus::Open;
+        let mut sibling_two_detail = sample_bead();
+        sibling_two_detail.id = "ms-alpha.bead-3".to_owned();
+        sibling_two_detail.title = "Detailed sibling two".to_owned();
+        sibling_two_detail.description =
+            Some("Goal: Use second sibling detail description fallback.".to_owned());
+        sibling_two_detail.status = BeadStatus::InProgress;
+        let bead_details = BTreeMap::from([
+            ("ms-alpha.epic-1".to_owned(), parent_detail),
+            ("ms-alpha.bead-1".to_owned(), sibling_one_detail),
+            ("ms-alpha.bead-3".to_owned(), sibling_two_detail),
+        ]);
+
+        let context = build_nearby_bead_context_with_details(&bead, &bead_summaries, &bead_details);
+
+        assert_eq!(
+            context
+                .siblings
+                .iter()
+                .map(|entry| entry.bead_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-1", "ms-alpha.bead-3"]
+        );
+        assert_eq!(context.siblings[0].title, "Detailed sibling one");
+        assert_eq!(
+            context.siblings[0].scope_summary,
+            "Use sibling detail description fallback."
+        );
+    }
+
+    #[test]
+    fn nearby_summary_sibling_detail_candidates_include_summary_inferred_siblings() {
+        let bead = sample_bead();
+        let bead_summaries = BTreeMap::from([
+            (
+                "ms-alpha.bead-1".to_owned(),
+                summary(
+                    "ms-alpha.bead-1",
+                    "Sibling one",
+                    BeadStatus::Open,
+                    &[],
+                    None,
+                    Some("ms-alpha.epic-1"),
+                ),
+            ),
+            (
+                "ms-alpha.bead-3".to_owned(),
+                summary(
+                    "ms-alpha.bead-3",
+                    "Closed sibling",
+                    BeadStatus::Closed,
+                    &[],
+                    None,
+                    Some("ms-alpha.epic-1"),
+                ),
+            ),
+            (
+                "ms-alpha.other".to_owned(),
+                summary(
+                    "ms-alpha.other",
+                    "Other epic bead",
+                    BeadStatus::Open,
+                    &[],
+                    None,
+                    Some("ms-alpha.epic-2"),
+                ),
+            ),
+        ]);
+
+        let candidates =
+            nearby_summary_sibling_detail_candidate_ids(&bead, &bead_summaries, "ms-alpha.epic-1");
+
+        assert_eq!(candidates, vec!["ms-alpha.bead-1"]);
+    }
+
+    #[test]
     fn build_nearby_bead_context_filters_closed_siblings() {
         let bead = sample_bead();
         let bead_summaries = BTreeMap::from([
@@ -4166,6 +4563,40 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["ms-alpha.bead-3", "ms-alpha.bead-1", "ms-alpha.bead-4"]
         );
+    }
+
+    #[test]
+    fn build_nearby_bead_context_uses_related_detail_description_when_summary_is_sparse() {
+        let mut bead = sample_bead();
+        bead.labels = vec!["a".to_owned(), "b".to_owned()];
+        let bead_summaries = BTreeMap::from([(
+            "ms-alpha.bead-3".to_owned(),
+            summary(
+                "ms-alpha.bead-3",
+                "Sparse related title",
+                BeadStatus::Open,
+                &["a", "b"],
+                None,
+                None,
+            ),
+        )]);
+        let mut related_detail = sample_bead();
+        related_detail.id = "ms-alpha.bead-3".to_owned();
+        related_detail.title = "Detailed related title".to_owned();
+        related_detail.description =
+            Some("Scope: Use related detail description from br show fallback.".to_owned());
+        related_detail.status = BeadStatus::InProgress;
+        let bead_details = BTreeMap::from([("ms-alpha.bead-3".to_owned(), related_detail)]);
+
+        let context = build_nearby_bead_context_with_details(&bead, &bead_summaries, &bead_details);
+
+        assert_eq!(context.related_work.len(), 1);
+        assert_eq!(context.related_work[0].title, "Detailed related title");
+        assert_eq!(
+            context.related_work[0].scope_summary,
+            "Use related detail description from br show fallback."
+        );
+        assert_eq!(context.related_work[0].status, "in_progress");
     }
 
     fn write_bead_project(
