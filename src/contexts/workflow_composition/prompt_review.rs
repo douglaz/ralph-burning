@@ -330,7 +330,17 @@ fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str
         return Vec::new();
     }
 
-    match task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt) {
+    let original_uses_current_contract =
+        task_prompt_contract::validate_current_canonical_prompt_shape(original_prompt).is_ok();
+    let original_is_legacy_v1_contract = !original_uses_current_contract
+        && task_prompt_contract::validate_canonical_prompt_shape(original_prompt).is_ok();
+    let validation_result = if original_is_legacy_v1_contract {
+        task_prompt_contract::validate_canonical_prompt_shape(refined_prompt)
+    } else {
+        task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt)
+    };
+
+    match validation_result {
         Ok(()) => Vec::new(),
         Err(errors) => vec![format!(
             "Preserve the canonical bead task prompt contract exactly: {}",
@@ -624,6 +634,13 @@ mod tests {
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("Preserve the canonical bead task prompt contract exactly"));
         assert!(concerns[0].contains("missing exact contract marker"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_allows_legacy_v1_refinement_without_nearby_work() {
+        let concerns = canonical_contract_drift_concerns(CANONICAL_PROMPT, CANONICAL_PROMPT);
+
+        assert!(concerns.is_empty());
     }
 
     #[test]

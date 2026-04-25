@@ -2456,7 +2456,6 @@ fn nearby_entries_from_relations(
 ) -> Vec<NearbyBeadEntry> {
     let mut entries = relations
         .iter()
-        .filter(|relation| relation.kind == DependencyKind::Blocks)
         .filter_map(|relation| {
             if included_ids.contains(&relation.id) {
                 return None;
@@ -3902,7 +3901,7 @@ mod tests {
     }
 
     #[test]
-    fn build_nearby_bead_context_excludes_parent_child_relations_from_direct_lists() {
+    fn build_nearby_bead_context_includes_parent_child_direct_relations() {
         let mut bead = sample_bead();
         bead.dependencies = vec![
             DependencyRef {
@@ -3981,10 +3980,22 @@ mod tests {
 
         let context = build_nearby_bead_context(&bead, &bead_summaries);
 
-        assert_eq!(context.direct_dependencies.len(), 1);
-        assert_eq!(context.direct_dependencies[0].bead_id, "ms-alpha.bead-1");
-        assert_eq!(context.direct_dependents.len(), 1);
-        assert_eq!(context.direct_dependents[0].bead_id, "ms-alpha.bead-4");
+        assert_eq!(
+            context
+                .direct_dependencies
+                .iter()
+                .map(|entry| entry.bead_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-1", "ms-alpha.epic"]
+        );
+        assert_eq!(
+            context
+                .direct_dependents
+                .iter()
+                .map(|entry| entry.bead_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ms-alpha.bead-4", "ms-alpha.child"]
+        );
     }
 
     #[test]

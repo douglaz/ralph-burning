@@ -416,6 +416,7 @@ pub fn create_project_from_bead_context(
         &context.milestone_id,
         &context.bead_id,
     )?);
+    let prompt_is_override = prompt_override.is_some();
     let (prompt_contents, prompt_path) = match prompt_override {
         Some(prompt) => (prompt, "<prompt override>".to_owned()),
         None => (
@@ -424,15 +425,18 @@ pub fn create_project_from_bead_context(
         ),
     };
     if task_prompt_contract::prompt_declares_contract(&prompt_contents) {
-        task_prompt_contract::validate_current_canonical_prompt_shape(&prompt_contents).map_err(
-            |errors| AppError::InvalidPrompt {
-                path: prompt_path.clone(),
-                reason: format!(
-                    "canonical bead task contract violated: {}",
-                    errors.join("; ")
-                ),
-            },
-        )?;
+        let validation_result = if prompt_is_override {
+            task_prompt_contract::validate_canonical_prompt_shape(&prompt_contents)
+        } else {
+            task_prompt_contract::validate_current_canonical_prompt_shape(&prompt_contents)
+        };
+        validation_result.map_err(|errors| AppError::InvalidPrompt {
+            path: prompt_path.clone(),
+            reason: format!(
+                "canonical bead task contract violated: {}",
+                errors.join("; ")
+            ),
+        })?;
     }
     let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
 
