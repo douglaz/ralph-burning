@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 13
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-12-ad7777c8",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 12,
-        "body": "finding_summary: `project create-from-bead` silently degrades the new Nearby work feature when `br list` cannot be loaded. In `src/cli/project.rs:419-423` an `AppError::Io` from `load_bead_summaries` is converted into an empty `BTreeMap`, and the new nearby-context builder in `src/cli/project.rs:2747-3009` depends on that map for sibling and related-work discovery. A transient `br list` failure therefore still creates a canonical bead task prompt, but without the sibling/related context reviewers are supposed to use for planned-elsewhere routing, with no indication to the operator that the prompt is incomplete.\naffected_files:\n- src/cli/project.rs\nremediation_hint: Treat summary-load I/O failures as create-from-bead failures for canonical bead prompts, or surface an explicit degraded-state path instead of silently emitting an incomplete Nearby work section.",
-        "created_at": "2026-04-25T22:27:47.913469720Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e3f094d42d60b72ecfddd5515287f75633a41b509f1ec93753e0b9d38c13efd7"
-      }
-    ],
-    "processed_count": 19
+    "pending": [],
+    "processed_count": 20
   },
-  "status_summary": "running: final review restart round 13 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T22:13:13.899251009Z",

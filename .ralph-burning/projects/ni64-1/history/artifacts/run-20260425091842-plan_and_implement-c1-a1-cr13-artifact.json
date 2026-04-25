@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr13-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T23:06:01.636146936Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending Nearby work degradation issue. Canonical `project create-from-bead` prompt hydration now treats `br list`/bead summary load failures as hard errors instead of substituting an empty summary map, preventing incomplete sibling/related Nearby work and unknown relation status prompts from being created silently. Updated CLI regression tests to assert the command fails with a clear bead-summary load error and does not create the project when `br list` is unavailable, while prompt-file overrides still skip bead summary hydration.\n\n## Steps\n\n0. [Completed] Inspected the create-from-bead prompt hydration path, existing `load_bead_summaries` error mapping, and CLI tests around unavailable `br list` behavior.\n1. [Completed] Changed `execute_create_from_bead_in_dir` to propagate `load_bead_summaries` failures for canonical bead prompts instead of degrading to an empty `BTreeMap`.\n2. [Completed] Updated CLI coverage so unavailable `br list` now fails create-from-bead without creating a degraded project, and preserved the prompt override behavior that avoids `br list` hydration.\n3. [Completed] Ran focused regression tests, formatting, linting, full test suite, Nix build, and whitespace validation.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_fails_when_br_list_is_unavailable --test cli` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_rejects_unknown_relation_status_fallback_when_br_list_is_unavailable --test cli` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_with_prompt_file_skips_br_list_prompt_hydration --test cli` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 13
+}
