@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 6
+      "completion_round": 7
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 5
+    "final_review_restart_count": 6
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 6,
+  "completion_rounds": 7,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-6-29bf0570",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 6,
+        "body": "finding_summary: `Nearby work` can still include closed/deferred siblings when the builder is relying on parent-detail fallback rather than `br list` summaries. In `load_nearby_dependency_details`, sibling prefetching only filters `parent_detail.dependents` by `relation.status` at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:1897), and `nearby_sibling_entries` repeats the same summary/relation-only check at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:2690). But `nearby_entry_from_relation` later prefers the fetched bead detail status at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:2619). If the parent relation omits status and the sibling summary is missing/sparse, a closed sibling loaded via `br show` is still admitted, rendered as closed in `## Nearby work`, and can even consume one of the 5 sibling slots ahead of an open sibling. That violates the requirement to omit closed/deferred nearby beads entirely and can mislead planned-elsewhere routing.\nremediation_hint: Filter sibling candidates using detail status when it is available, both before the prefetch `take(NEARBY_SIBLING_LIMIT)` and before inserting the rendered sibling entry, and add a regression test where only the fetched sibling detail carries `status=closed`.",
+        "created_at": "2026-04-25T16:07:15.973226938Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "b7b836e28500a8a9bb67d92440d3535d28961241a6b10252ea1eb1ee2b926c9f"
+      }
+    ],
     "processed_count": 9
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 7 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-25T13:44:47.053215458Z",
+    "resolved_at": "2026-04-25T15:53:47.172040262Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",

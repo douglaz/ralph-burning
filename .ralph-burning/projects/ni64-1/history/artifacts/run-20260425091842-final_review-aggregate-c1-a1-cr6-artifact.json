@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T16:07:15.973236085Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 6/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-6-29bf0570`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-29bf0570`\n\nfinding_summary: `Nearby work` can still include closed/deferred siblings when the builder is relying on parent-detail fallback rather than `br list` summaries. In `load_nearby_dependency_details`, sibling prefetching only filters `parent_detail.dependents` by `relation.status` at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:1897), and `nearby_sibling_entries` repeats the same summary/relation-only check at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:2690). But `nearby_entry_from_relation` later prefers the fetched bead detail status at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:2619). If the parent relation omits status and the sibling summary is missing/sparse, a closed sibling loaded via `br show` is still admitted, rendered as closed in `## Nearby work`, and can even consume one of the 5 sibling slots ahead of an open sibling. That violates the requirement to omit closed/deferred nearby beads entirely and can mislead planned-elsewhere routing.\nremediation_hint: Filter sibling candidates using detail status when it is available, both before the prefetch `take(NEARBY_SIBLING_LIMIT)` and before inserting the rendered sibling entry, and add a regression test where only the fetched sibling detail carries `status=closed`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}
