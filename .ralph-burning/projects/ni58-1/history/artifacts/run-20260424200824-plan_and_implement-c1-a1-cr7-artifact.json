@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260424200824-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T04:02:23.601441829Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nUpdated `src/contexts/milestone_record/service.rs` so `find_matching_task_source_for_bead` no longer returns the first lexicographically listed matching project. It now deterministically ranks candidates for the same milestone/bead/plan hash, preferring task sources with recorded `plan_workstream_index`/`plan_bead_index`, then newer `created_at`, then project id as a stable tie-breaker. That keeps `bead_execution_history` and lineage reconstruction bound to the best available indexed task source when multiple terminal projects exist for the same bead and shared plan hash, instead of falling back to a stale legacy title-only path. Added a regression test covering an older unindexed project and a newer indexed project for the same bead/plan hash.\n\n## Steps\n\n1. [Completed] Inspect the current `bead_execution_history` lookup path and confirm that `find_matching_task_source_for_bead` was returning the first matching project from `list_project_ids()`, which is lexicographically sorted rather than freshness- or metadata-aware.\n2. [Completed] Change task-source selection to scan all matching projects and choose the strongest candidate by recorded plan location first, then newer project creation time, with project id as a deterministic final tie-breaker.\n3. [Completed] Add a regression test proving history reconstruction prefers a newer indexed task source over an older unindexed project when both reference the same bead and plan hash.\n4. [Completed] Run the targeted regression and the required repository validation gates, including formatting, clippy, full test suite, and `nix build`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub bead_execution_history_prefers_newer_indexed_task_source_for_same_bead_and_plan_hash -- --nocapture` succeeded.\n- `nix develop -c cargo fmt --check` succeeded.\n- `nix develop -c cargo clippy --locked -- -D warnings` succeeded.\n- `nix develop -c cargo test --locked --features test-stub` succeeded: lib tests `1219 passed` with `6 ignored`, CLI tests `372 passed` with `3 ignored`, `run_attach_tmux` tests `1 passed`, unit tests `1079 passed` with `1 ignored`, doc tests clean with `9 ignored`.\n- `nix build` succeeded.\n\n## Outstanding Risks\n\n- The worktree still contains live orchestration-state changes under `.ralph-burning/` from existing state and validation runs; those files were left untouched and excluded from review per instructions.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 7
+}

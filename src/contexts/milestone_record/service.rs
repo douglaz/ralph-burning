@@ -4008,6 +4008,8 @@ fn find_matching_task_source_for_bead(
     bead_id: &str,
     expected_plan_hash: Option<&str>,
 ) -> AppResult<Option<TaskSource>> {
+    let mut best_match: Option<(TaskSource, bool, DateTime<Utc>, String)> = None;
+
     for project_id in project_store.list_project_ids(base_dir)? {
         let record = project_store.read_project_record(base_dir, &project_id)?;
         let Some(task_source) = record.task_source else {
@@ -4022,10 +4024,34 @@ fn find_matching_task_source_for_bead(
         if expected_plan_hash.is_some() && task_source.plan_hash.as_deref() != expected_plan_hash {
             continue;
         }
-        return Ok(Some(task_source));
+
+        let candidate_has_plan_location = task_source_has_recorded_plan_location(&task_source);
+        let candidate_rank = (
+            candidate_has_plan_location,
+            record.created_at,
+            record.id.as_str().to_owned(),
+        );
+        let should_replace = best_match
+            .as_ref()
+            .map(|(_, has_plan_location, created_at, project_id)| {
+                candidate_rank > (*has_plan_location, *created_at, project_id.clone())
+            })
+            .unwrap_or(true);
+        if should_replace {
+            best_match = Some((
+                task_source,
+                candidate_has_plan_location,
+                record.created_at,
+                record.id.to_string(),
+            ));
+        }
     }
 
-    Ok(None)
+    Ok(best_match.map(|(task_source, _, _, _)| task_source))
+}
+
+fn task_source_has_recorded_plan_location(task_source: &TaskSource) -> bool {
+    task_source.plan_workstream_index.is_some() && task_source.plan_bead_index.is_some()
 }
 
 /// List Ralph tasks linked to a milestone.
@@ -17202,6 +17228,104 @@ mod tests {
                 }),
             },
         )?;
+
+        let history = bead_execution_history(
+            &FsMilestoneStore,
+            &FsMilestonePlanStore,
+            &FsProjectStore,
+            &FsTaskRunLineageStore,
+            base,
+            &record.id,
+            "api-1",
+        )?;
+
+        assert!(history.runs.is_empty());
+        assert_eq!(history.lineage.bead_id, "api-1");
+        assert_eq!(
+            history.lineage.bead_title.as_deref(),
+            Some("Implement feature")
+        );
+        assert_eq!(
+            history.lineage.acceptance_criteria,
+            vec!["Tests pass".to_owned()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bead_execution_history_prefers_newer_indexed_task_source_for_same_bead_and_plan_hash(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 15, 14, 18, 0)
+            .single()
+            .unwrap();
+        let record = create_milestone_with_plan(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            "ms-alpha",
+            "Alpha",
+            now,
+        )?;
+        let plan_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("plan.json");
+        let mut bundle: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&plan_path)?).expect("parse plan json");
+        let bead = bundle["workstreams"][0]["beads"][0]
+            .as_object_mut()
+            .expect("bead object");
+        bead.remove("bead_id");
+        bead.remove("explicit_id");
+        let raw = serde_json::to_string_pretty(&bundle)?;
+        let plan_hash = hash_text(&raw);
+        std::fs::write(&plan_path, raw)?;
+
+        for (project_id, created_at, plan_workstream_index, plan_bead_index) in [
+            (
+                "legacy-explicit-older",
+                now + chrono::Duration::seconds(10),
+                None,
+                None,
+            ),
+            (
+                "legacy-explicit-newer",
+                now + chrono::Duration::seconds(20),
+                Some(0),
+                Some(0),
+            ),
+        ] {
+            crate::contexts::project_run_record::service::create_project(
+                &crate::adapters::fs::FsProjectStore,
+                &crate::adapters::fs::FsJournalStore,
+                base,
+                crate::contexts::project_run_record::service::CreateProjectInput {
+                    id: crate::shared::domain::ProjectId::new(project_id)?,
+                    name: format!("Project {project_id}"),
+                    flow: crate::shared::domain::FlowPreset::Standard,
+                    prompt_path: "prompt.md".to_owned(),
+                    prompt_contents: "# Prompt".to_owned(),
+                    prompt_hash: "hash".to_owned(),
+                    created_at,
+                    task_source: Some(crate::contexts::project_run_record::model::TaskSource {
+                        milestone_id: record.id.to_string(),
+                        bead_id: "api-1".to_owned(),
+                        parent_epic_id: None,
+                        origin: crate::contexts::project_run_record::model::TaskOrigin::Milestone,
+                        plan_hash: Some(plan_hash.clone()),
+                        plan_version: Some(1),
+                        plan_workstream_index,
+                        plan_bead_index,
+                    }),
+                },
+            )?;
+        }
 
         let history = bead_execution_history(
             &FsMilestoneStore,
