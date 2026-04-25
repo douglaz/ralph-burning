@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424200824-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T00:48:26.130258665Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the amendment: it identifies a real cross-milestone bead-resolution bug in the numeric short-alias path.\n\n## Votes\n\n- `fr-4-7c7a6204`: Accept\n  `milestone_bead_refs_match` explicitly equates `8.5.3` with `10.8.5.3` for numeric milestone `10`, and `load_bead_detail` probes the raw `8.5.3` before the canonical `10.8.5.3`. If `br show 8.5.3` returns a real foreign bead, `select_matching_bead_from_show_response`, `ensure_bead_belongs_to_milestone`, and `proposal_matches_bead_id` all currently accept that result, so `project create-from-bead --milestone-id 10 --bead-id 8.5.3` can bind the wrong bead. That is a correctness and safety issue, and the remediation direction is sound.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

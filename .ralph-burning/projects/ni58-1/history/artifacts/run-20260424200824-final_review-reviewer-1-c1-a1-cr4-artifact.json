@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T00:46:50.963143993Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch against 88f4f42a39bdb4b0e468b17277f4415f176e31f3 and found 1 fix-now issue in the new short dotted bead-alias path. I did not run cargo/nix validation here because `cargo` is not available in this shell.\n\n## Amendments\n\n1. finding_summary: Short dotted alias resolution can select a bead from the wrong milestone. `milestone_bead_refs_match` treats `8.5.3` as equivalent to `9ni.8.5.3` / `10.8.5.3` (`src/contexts/milestone_record/bead_refs.rs:3-49`), and `load_bead_detail`, `ensure_bead_belongs_to_milestone`, and `proposal_matches_bead_id` all trust that comparison (`src/cli/project.rs:1665-1755`, `src/cli/project.rs:1928-1937`, `src/cli/project.rs:2105-2113`). Another milestone with numeric id `8` can legitimately own bead `8.5.3`, so `project create-from-bead --milestone-id 10 --bead-id 8.5.3` can bind/claim the foreign bead instead of the planned `10.8.5.3`. remediation_hint: Do not treat arbitrary dotted ids as local aliases. Only accept a short dotted alias after resolving a bead that is proven to belong to the requested milestone (for example via the canonical `{milestone}.{alias}` form), and when the short-form lookup returns a foreign bead, continue to the canonical candidate instead of accepting or hard-failing immediately.\n   Rationale: This is a correctness and safety issue: the command can create a task from, and potentially claim, the wrong bead across milestones.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}
