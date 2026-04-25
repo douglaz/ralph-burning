@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T22:23:42.048936729Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch diff against `88f4f42a39bdb4b0e468b17277f4415f176e31f3..HEAD` and the changed implementation files. I found 1 fix-now correctness gap in the new bead-ID alias handling. Static review only; `cargo` was not available in the shell, so I did not run the Rust test suite.\n\n## Amendments\n\n1. Affected: `src/cli/project.rs:1664-1725,1869-1872`. The branch adds alias-aware stable-ID matching (`milestone_bead_refs_match` / `canonicalize_milestone_bead_ref`), but the actual `project create-from-bead` entry path still treats any dotted bead ref as an exact string. `load_bead_detail` only retries `br show --no-db` for refs without dots, and `select_matching_bead_from_show_response` requires `bead.id == bead_id` whenever the query contains a dot. That means a valid short dotted alias like `8.5.3` will still be rejected if `br show` returns `9ni.8.5.3` (or vice versa), so the new alias support is not reachable end-to-end from the CLI. On top of that, `ensure_bead_belongs_to_milestone` still hard-checks `canonical_bead_id.starts_with(\"<milestone>.\")`, which rejects the numeric-milestone alias case that `milestone_bead_refs_match` explicitly accepts. The lookup and membership checks need to use the same milestone-aware alias matcher for dotted refs, not the old exact-string gate.\n   Rationale: This is a real correctness gap in the changed behavior: the new ID-first alias handling works in helper/unit-level code, but `project create-from-bead` can still reject valid bead references before resolution ever runs.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 2
+}

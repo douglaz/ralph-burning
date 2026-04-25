@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424200824-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260424200824-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T23:38:06.442481755Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-91373a14`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-91373a14`\n\nfinding_summary: `resolve_bead_plan` now marks every legacy title-only match as `membership_confirmed = false`, and `execute_create_from_bead_in_dir` uses that flag to skip `validate_milestone_plan_snapshot` and to drop `plan_hash`/`plan_version` from the created project. That means a supported pre-change plan with no `bead_id` can silently bypass stale `status.json` detection and lose plan lineage metadata even when the title fallback resolved a unique bead successfully.\naffected_files:\n- src/cli/project.rs:373-392\n- src/cli/project.rs:2055-2072\nremediation_hint: keep the legacy warning path, but decouple it from snapshot/lineage validation. A unique successful legacy fallback should still validate the current plan snapshot and persist `plan_hash`/`plan_version`, or the code should introduce a separate flag for \"used legacy fallback\" instead of reusing `membership_confirmed` to disable those checks.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

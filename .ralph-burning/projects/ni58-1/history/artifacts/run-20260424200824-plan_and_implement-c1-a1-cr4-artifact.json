@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424200824-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T00:39:53.878655925Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCompleted the pending remediation for bead 9ni.5.8 by separating milestone-plan membership confidence from snapshot/lineage validation. In `src/cli/project.rs`, successful legacy title-only fallback matches now still run `validate_milestone_plan_snapshot` and preserve `plan_hash`/`plan_version` in the created project via the dedicated `plan_snapshot_validated` flag instead of reusing `membership_confirmed`. Regression coverage in `tests/cli.rs` now explicitly proves that a legacy title-only plan still rejects stale `status.json` metadata, while the existing legacy-plan invocation test continues to assert that successful fallback writes plan lineage metadata. The related milestone lookup/service changes for stable bead-id and alias-aware matching remain intact.\n\n## Steps\n\n1. [Completed] Inspect the `create-from-bead` plan-resolution path and confirm whether legacy title-only fallback was incorrectly tied to `membership_confirmed` for snapshot and lineage handling.\n2. [Completed] Keep legacy fallback support but route snapshot validation and persisted `plan_hash`/`plan_version` through a separate `plan_snapshot_validated` flag so unique legacy matches still honor current milestone plan metadata.\n3. [Completed] Add and run regression coverage for stale legacy snapshot rejection, then rerun the required repository validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_warns_once_per_legacy_milestone_across_invocations -- --nocapture` succeeded.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_rejects_stale_status_hash_for_legacy_title_only_plan -- --nocapture` succeeded.\n- `nix develop -c cargo test --locked --features test-stub resolve_bead_plan_rejects_legacy_plan_when_title_drifted -- --nocapture` succeeded.\n- `nix develop -c cargo fmt --check` succeeded.\n- `nix develop -c cargo clippy --locked -- -D warnings` succeeded.\n- `nix develop -c cargo test --locked --features test-stub` succeeded: lib tests `1220 passed`, CLI tests `371 passed` with `3 ignored`, `run_attach_tmux` tests `1 passed`, unit tests `1079 passed` with `1 ignored`, doc tests clean with `9 ignored`.\n- `nix build` succeeded.\n\n## Outstanding Risks\n\n- The worktree still contains unrelated pre-existing changes in `.beads/issues.jsonl` and live orchestration state under `.ralph-burning/`; they were left untouched and excluded from review per instructions.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 4
+}

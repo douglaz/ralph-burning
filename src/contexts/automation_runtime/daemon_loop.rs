@@ -8805,6 +8805,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("missing-run-binding-project").expect("project id");
         create_project(
@@ -9068,6 +9070,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("authoritative-run-binding-project").expect("project id");
         create_project(
@@ -9206,6 +9210,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("daemon-failure-project").expect("project id");
         create_project(
@@ -9382,6 +9388,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("daemon-failure-durable-fallback").expect("project id");
         create_project(
@@ -9546,6 +9554,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("daemon-failure-snapshot-fallback").expect("project id");
         create_project(
@@ -9732,6 +9742,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("daemon-failure-resumed-same-run").expect("project id");
         create_project(
@@ -9947,6 +9959,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id =
             ProjectId::new("daemon-failure-missing-same-run-lineage").expect("project id");
@@ -10188,6 +10202,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("daemon-failure-stale-run-failed").expect("project id");
         create_project(
@@ -10415,6 +10431,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("daemon-failure-stale-bound-attempt").expect("project id");
         create_project(
@@ -10649,6 +10667,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id = ProjectId::new("daemon-failure-missing-binding").expect("project id");
         create_project(
@@ -10810,6 +10830,8 @@ mod tests {
             origin: TaskOrigin::Milestone,
             plan_hash: Some("plan-v1".to_owned()),
             plan_version: Some(1),
+            plan_workstream_index: None,
+            plan_bead_index: None,
         };
         let project_id =
             ProjectId::new("daemon-failure-stale-snapshot-fallback").expect("project id");

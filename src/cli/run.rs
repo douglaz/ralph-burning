@@ -2572,12 +2572,13 @@ fn load_run_lineage_summary(
         Err(_) => return Ok(summary),
     };
 
-    if let Ok(lineage) = milestone_service::read_bead_lineage(
+    if let Ok(lineage) = milestone_service::read_bead_lineage_with_task_source(
         &FsMilestoneStore,
         &FsMilestonePlanStore,
         base_dir,
         &milestone_id,
         &task_source.bead_id,
+        Some(task_source),
         task_source.plan_hash.as_deref(),
     ) {
         summary.milestone_label = Some(
@@ -4940,6 +4941,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
 
@@ -4995,6 +4998,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
 
@@ -5067,6 +5072,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
 
@@ -5362,6 +5369,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: Some("plan-v1".to_owned()),
                     plan_version: Some(2),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )
@@ -5433,6 +5442,8 @@ mod tests {
                     origin: TaskOrigin::Milestone,
                     plan_hash: Some("plan-v1".to_owned()),
                     plan_version: Some(2),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
                 }),
             },
         )
@@ -6142,6 +6153,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -6262,6 +6275,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -6401,6 +6416,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -6518,6 +6535,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -6659,6 +6678,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
 
@@ -6783,6 +6804,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -6880,6 +6903,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -6938,6 +6963,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7053,6 +7080,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7199,6 +7228,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7344,6 +7375,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7453,6 +7486,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7518,6 +7553,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7624,6 +7661,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7760,6 +7799,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7888,6 +7929,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -7973,6 +8016,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -8065,6 +8110,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -8150,6 +8197,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -8238,6 +8287,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -8345,6 +8396,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -8440,6 +8493,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -8533,6 +8588,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -8640,6 +8697,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -9291,6 +9350,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -9425,6 +9486,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -9549,6 +9612,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {
@@ -9640,6 +9705,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: Some("plan-v1".to_owned()),
                 plan_version: Some(2),
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
         let final_snapshot = RunSnapshot {

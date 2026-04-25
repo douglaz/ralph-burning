@@ -1,0 +1,7 @@
+id = "ni58-1"
+name = "stable-bead-plan-binding"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "9a82948aa2e5afa45d304f8fd06f2e3552bcc18b52e7ba3d93c0a4e788968a53"
+created_at = "2026-04-24T20:08:19.844046025Z"
+status_summary = "created"

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260424200824-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T23:38:06.409766814Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real regression: legacy title-only bead resolution now disables milestone snapshot validation and strips plan lineage metadata, conflating a warning/fallback condition with correctness checks that should still apply after a unique match.\n\n## Votes\n\n- `fr-3-91373a14`: Accept\n  `execute_create_from_bead_in_dir` now gates both `validate_milestone_plan_snapshot` and `plan_hash`/`plan_version` propagation on `membership_confirmed` (`src/cli/project.rs:373-392`). But `resolve_bead_plan` sets `membership_confirmed = false` for every legacy title-only resolution, including unique successful matches (`src/cli/project.rs:2055-2072`). That means a milestone with stale `status.json` plan metadata can slip through without the existing stale-hash check, and the created project loses plan lineage metadata even though it was resolved against the current plan bundle. Losing that metadata is not harmless: downstream code only preserves rich bead lineage when `plan_hash` is present, and otherwise omits titles/criteria from views. The fallback warning should be tracked separately from whether snapshot validation and lineage persistence still apply.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

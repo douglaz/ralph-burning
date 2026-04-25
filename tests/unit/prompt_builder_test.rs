@@ -165,6 +165,8 @@ fn sample_bead_context() -> BeadProjectContext {
         flow: FlowPreset::QuickDev,
         plan_hash: Some("plan-hash-123".to_owned()),
         plan_version: Some(3),
+        plan_workstream_index: Some(0),
+        plan_bead_index: Some(1),
     }
 }
 

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424200824-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260424200824-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T21:13:52.606284548Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-505cdc61`\n- `fr-1-5709abda`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-505cdc61`\n\n`resolve_bead_plan` still breaks valid membership checks when the live bead ID and the stored plan ID use different milestone aliases. In [src/cli/project.rs:1914-1918](/home/user/ralph-burning/src/cli/project.rs:1914) and [src/cli/project.rs:2013-2025](/home/user/ralph-burning/src/cli/project.rs:2013), any entry with `bead_id` goes through raw string comparison only, and the `Some(_)` branch no longer reaches the title-fallback path. A live bead returned as `bead-2` / `8.5.3` will therefore fail against a plan entry stored as `ms-alpha.bead-2` / `9ni.8.5.3`, even though the codebase already treats those forms as equivalent elsewhere ([src/contexts/milestone_record/bead_refs.rs:3-17](/home/user/ralph-burning/src/contexts/milestone_record/bead_refs.rs:3), [src/contexts/milestone_record/service.rs:3654-3670](/home/user/ralph-burning/src/contexts/milestone_record/service.rs:3654)). `project create-from-bead` can now reject a valid milestone/bead pair solely because `br show` returned the short form. Normalize both sides or reuse `milestone_bead_refs_match`, and add a regression test for short live IDs against qualified plan IDs.\n\n### `fr-1-5709abda`\n\nThe legacy-plan warning is only deduplicated per process, not per milestone across CLI invocations. [src/cli/project.rs:1880-1893](/home/user/ralph-burning/src/cli/project.rs:1880) stores warned milestones in a process-local `OnceLock<Mutex<BTreeSet<String>>>`, and [src/cli/project.rs:1967-1980](/home/user/ralph-burning/src/cli/project.rs:1967) calls it from `project create-from-bead`. Because each CLI invocation starts a fresh process, operators will see the same warning every time they run the command for the same legacy milestone. The bead explicitly requires a one-time warning per milestone, not per invocation, so this needs a persisted marker or another cross-invocation mechanism.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

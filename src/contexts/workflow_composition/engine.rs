@@ -12815,6 +12815,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: None,
                 plan_version: None,
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
 
@@ -12876,6 +12878,8 @@ mod tests {
                 origin: TaskOrigin::Milestone,
                 plan_hash: None,
                 plan_version: None,
+                plan_workstream_index: None,
+                plan_bead_index: None,
             }),
         };
 

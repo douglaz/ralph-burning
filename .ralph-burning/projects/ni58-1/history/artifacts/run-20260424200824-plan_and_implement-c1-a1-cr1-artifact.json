@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260424200824-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-24T21:04:21.464721207Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented stable bead-plan binding for `project create-from-bead` by resolving milestone plan entries via stable `bead_id` before any legacy title fallback, logging debug on title drift, warning once per milestone for legacy title-only plans, and returning an actionable regeneration error when a legacy plan can no longer match. The create-from-bead path now keeps membership validation separate from `--flow` selection so a flow override cannot bypass plan membership, while valid overrides still win over the plan default. Coverage was updated in `src/cli/project.rs`, `src/contexts/milestone_record/service.rs`, and `tests/cli.rs` to exercise ID-first resolution, legacy fallback behavior, title drift handling, and flow-override membership enforcement.\n\n## Steps\n\n1. [Completed] Inspect the create-from-bead path, milestone bundle/service helpers, and existing tests to locate current bead-plan resolution and flow override behavior.\n2. [Completed] Update bead-plan resolution to prefer stable `bead_id`, retain legacy title fallback with one-time milestone warnings, emit debug logs for title drift, and reject stale legacy title drift with an actionable regeneration error.\n3. [Completed] Ensure `--flow` only affects flow selection while plan membership validation always runs for milestone-backed bead creation, and preserve plan metadata attachment for confirmed ID matches.\n4. [Completed] Add and run targeted and full validation for the new lookup and flow-override behavior, then verify repository-wide build/test gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` succeeded.\n- `nix develop -c cargo clippy --locked -- -D warnings` succeeded.\n- `nix develop -c cargo test --locked --features test-stub` succeeded: lib tests `1209 passed`, CLI tests `367 passed`, unit tests `1079 passed`, doc tests clean/ignored as expected.\n- Targeted regression: `nix develop -c cargo test --locked --features test-stub resolve_bead_plan_matches_stable_bead_id_when_title_drifted_and_logs_debug -- --nocapture` succeeded.\n- Targeted regression: `nix develop -c cargo test --locked --features test-stub project_create_from_bead_rejects_invalid_plan_membership_even_with_flow_override -- --nocapture` succeeded.\n- `nix build` succeeded.\n\n## Outstanding Risks\n\n- The worktree still contains unrelated pre-existing changes outside this bead's scope (`.beads/issues.jsonl`, `src/contexts/conformance_spec/scenarios.rs`, `.ralph-burning/...`); they were left untouched and not reviewed as part of this task.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-high"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260424200824-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T21:13:52.567671808Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nfr-1-505cdc61 identifies a real asymmetric bead-ID matching bug in the new ID-first lookup. fr-1-5709abda also identifies a real gap: the legacy-plan warning dedupe is process-local, so it does not achieve a user-visible once-per-milestone warning across normal CLI invocations.\n\n## Votes\n\n- `fr-1-505cdc61`: Accept\n  `proposal_matches_bead_id` only checks raw equality against `bead.id` or the current-milestone-stripped suffix of `bead.id`. That makes matching asymmetric: a stored qualified ref like `ms-alpha.bead-2` will not match a live short ref like `bead-2`, and entries with `Some(bead_id)` never reach the title-fallback path. Since the codebase already has `milestone_bead_refs_match` to treat short and qualified milestone refs as equivalent, this is a real correctness regression and should be fixed with regression coverage.\n- `fr-1-5709abda`: Accept\n  The warning cache lives in a process-local `OnceLock<Mutex<BTreeSet<_>>>`, while `project create-from-bead` resolves the plan once per CLI process. In real usage that means the warning is emitted again on every separate command invocation for the same legacy milestone, so the current implementation does not provide a meaningful once-per-milestone operator experience. If that is the intended contract, it needs durable cross-invocation deduplication rather than an in-memory per-process set.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

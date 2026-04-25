@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424200824-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260424200824-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T00:48:26.165936641Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-7c7a6204`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-7c7a6204`\n\nfinding_summary: Short dotted alias resolution can select a bead from the wrong milestone. `milestone_bead_refs_match` treats `8.5.3` as equivalent to `9ni.8.5.3` / `10.8.5.3` (`src/contexts/milestone_record/bead_refs.rs:3-49`), and `load_bead_detail`, `ensure_bead_belongs_to_milestone`, and `proposal_matches_bead_id` all trust that comparison (`src/cli/project.rs:1665-1755`, `src/cli/project.rs:1928-1937`, `src/cli/project.rs:2105-2113`). Another milestone with numeric id `8` can legitimately own bead `8.5.3`, so `project create-from-bead --milestone-id 10 --bead-id 8.5.3` can bind/claim the foreign bead instead of the planned `10.8.5.3`. remediation_hint: Do not treat arbitrary dotted ids as local aliases. Only accept a short dotted alias after resolving a bead that is proven to belong to the requested milestone (for example via the canonical `{milestone}.{alias}` form), and when the short-form lookup returns a foreign bead, continue to the canonical candidate instead of accepting or hard-failing immediately.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

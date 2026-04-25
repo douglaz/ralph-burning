@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424200824-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260424200824-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T01:43:06.637592779Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-e63924c7`\n- `fr-5-bd2a5840`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-e63924c7`\n\nfinding_summary: [src/cli/project.rs:1665-1763] `load_bead_detail()` now retries any qualified bead id with the stripped short form. That is required for canonicalized explicit ids such as `ms-explicit.ralph-burning-evi`, but it also applies to generated slot ids like `ms-alpha.bead-2`. If the exact bead is missing and an unrelated explicit bead `bead-2` exists, the fallback path accepts it via `milestone_bead_refs_match()`, so `project create-from-bead` can claim/bootstrap the wrong bead instead of failing. affected_files: src/cli/project.rs. remediation_hint: only strip-and-retry qualified ids that can represent authored explicit ids, or otherwise reject implicit-slot aliases like `bead-N` on the fallback path.\n\n### `fr-5-bd2a5840`\n\nfinding_summary: [src/contexts/milestone_record/service.rs:3650-3721] The new legacy title-only plan support is not durable for explicit beads. `resolve_bead_plan()` can now create a project from a legacy entry with no `bead_id`, but later lineage/history reads call `find_bead_plan_details()`, which only matches by stable `bead_id` or the implicit `bead-N` slot. For a legacy title-only entry that originally pointed at an explicit bead such as `api-1`, `read_bead_lineage()` / `bead_execution_history()` will fail with `bead 'api-1' was not found in the validated milestone plan` even when the stored `plan_hash` still matches. affected_files: src/contexts/milestone_record/service.rs. remediation_hint: persist enough metadata to re-identify legacy title-only matches, or make lineage lookup mirror the same legacy title fallback instead of hard-failing.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

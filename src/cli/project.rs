@@ -367,7 +367,10 @@ pub(crate) async fn execute_create_from_bead_in_dir(
     ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
     ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
     let bead_plan = resolve_bead_plan(&milestone_bundle.bundle, &milestone_id, &bead)?;
-    let confirmed_plan_version = if bead_plan.membership_confirmed {
+    if bead_plan.used_legacy_title_fallback {
+        warn_once_for_legacy_plan_lookup(current_dir, &milestone_id, &bead.id);
+    }
+    let confirmed_plan_version = if bead_plan.plan_snapshot_validated {
         validate_milestone_plan_snapshot(
             &milestone_id,
             milestone_snapshot.plan_hash.as_deref(),
@@ -382,10 +385,10 @@ pub(crate) async fn execute_create_from_bead_in_dir(
         .or(bead_plan.flow_override)
         .unwrap_or(milestone_bundle.bundle.default_flow);
     let plan_hash = bead_plan
-        .membership_confirmed
+        .plan_snapshot_validated
         .then(|| milestone_bundle.plan_hash.clone());
     let plan_version = bead_plan
-        .membership_confirmed
+        .plan_snapshot_validated
         .then_some(confirmed_plan_version)
         .flatten();
     let (upstream_dependencies, downstream_dependents, planned_elsewhere) =
@@ -436,6 +439,8 @@ pub(crate) async fn execute_create_from_bead_in_dir(
         flow,
         plan_hash,
         plan_version,
+        plan_workstream_index: bead_plan.matched_workstream_index,
+        plan_bead_index: bead_plan.matched_bead_index,
     };
 
     // Validate project_id before any external side effects so that a
@@ -1659,28 +1664,103 @@ async fn load_bead_detail(
     bead_id: &str,
 ) -> AppResult<BeadDetail> {
     let br = BrAdapter::new().with_working_dir(base_dir.to_path_buf());
-    let response: BrShowResponse = br
-        .exec_json(&BrCommand::show(bead_id))
-        .await
-        .map_err(|error| map_br_show_error(bead_id, error))?;
-
-    if let Some(bead) = select_matching_bead_from_show_response(milestone_id, bead_id, response)? {
-        return Ok(bead);
-    }
-
-    if !bead_id.contains('.') {
-        let response: BrShowResponse = br
-            .exec_json(&BrCommand::show_no_db(bead_id))
+    for query in bead_show_query_candidates(milestone_id, bead_id) {
+        let show_response = match br
+            .exec_json::<BrShowResponse>(&BrCommand::show(query.clone()))
             .await
-            .map_err(|error| map_br_show_error(bead_id, error))?;
-        if let Some(bead) =
-            select_matching_bead_from_show_response(milestone_id, bead_id, response)?
         {
-            return Ok(bead);
+            Ok(response) => Some(response),
+            Err(BrError::BrExitError { stderr, stdout, .. })
+                if br_show_output_indicates_missing(&stderr, &stdout) =>
+            {
+                None
+            }
+            Err(error) => return Err(map_br_show_error(bead_id, error)),
+        };
+
+        if let Some(response) = show_response {
+            if let Some(bead) =
+                select_matching_bead_from_show_response(milestone_id, bead_id, &query, response)?
+            {
+                return Ok(bead);
+            }
+
+            if query.contains('.') && !is_short_dotted_alias_candidate(milestone_id, &query) {
+                return Err(unmatched_br_show_error(milestone_id, bead_id));
+            }
+        }
+
+        if query.contains('.') {
+            continue;
+        }
+
+        let show_no_db_response = match br
+            .exec_json::<BrShowResponse>(&BrCommand::show_no_db(query.clone()))
+            .await
+        {
+            Ok(response) => Some(response),
+            Err(BrError::BrExitError { stderr, stdout, .. })
+                if br_show_output_indicates_missing(&stderr, &stdout) =>
+            {
+                None
+            }
+            Err(error) => return Err(map_br_show_error(bead_id, error)),
+        };
+
+        if let Some(response) = show_no_db_response {
+            if let Some(bead) =
+                select_matching_bead_from_show_response(milestone_id, bead_id, &query, response)?
+            {
+                return Ok(bead);
+            }
+
+            return Err(unmatched_br_show_error(milestone_id, bead_id));
         }
     }
 
     Err(unmatched_br_show_error(milestone_id, bead_id))
+}
+
+fn bead_show_query_candidates(milestone_id: &MilestoneId, bead_id: &str) -> Vec<String> {
+    let qualified_prefix = format!("{}.", milestone_id.as_str());
+    let mut queries = vec![bead_id.to_owned()];
+
+    if bead_id.strip_prefix(&qualified_prefix).is_none()
+        && is_short_dotted_alias_candidate(milestone_id, bead_id)
+    {
+        queries.push(format!("{qualified_prefix}{bead_id}"));
+    }
+
+    queries.dedup();
+    queries
+}
+
+fn is_short_dotted_alias_candidate(milestone_id: &MilestoneId, bead_id: &str) -> bool {
+    let trimmed = bead_id.trim();
+    if !trimmed.contains('.') || trimmed.starts_with(&format!("{}.", milestone_id.as_str())) {
+        return false;
+    }
+
+    trimmed
+        .split('.')
+        .all(|segment| !segment.is_empty() && segment.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn bead_id_is_unambiguous_for_milestone(milestone_id: &MilestoneId, bead_id: &str) -> bool {
+    let trimmed = bead_id.trim();
+    !trimmed.is_empty()
+        && (!trimmed.contains('.') || trimmed.starts_with(&format!("{}.", milestone_id.as_str())))
+}
+
+fn bead_matches_show_query(
+    milestone_id: &MilestoneId,
+    requested_bead_id: &str,
+    query: &str,
+    bead: &BeadDetail,
+) -> bool {
+    milestone_bead_refs_match(milestone_id, &bead.id, requested_bead_id)
+        && (!is_short_dotted_alias_candidate(milestone_id, query)
+            || bead_id_is_unambiguous_for_milestone(milestone_id, &bead.id))
 }
 
 fn map_br_show_error(bead_id: &str, error: BrError) -> AppError {
@@ -1704,23 +1784,17 @@ fn map_br_show_error(bead_id: &str, error: BrError) -> AppError {
 fn select_matching_bead_from_show_response(
     milestone_id: &MilestoneId,
     bead_id: &str,
+    query: &str,
     response: BrShowResponse,
 ) -> AppResult<Option<BeadDetail>> {
     match response {
         BrShowResponse::Single(bead) => {
-            if bead_id.contains('.') {
-                return Ok((bead.id == bead_id).then_some(bead));
-            }
-            Ok(milestone_bead_refs_match(milestone_id, &bead.id, bead_id).then_some(bead))
+            Ok(bead_matches_show_query(milestone_id, bead_id, query, &bead).then_some(bead))
         }
         BrShowResponse::Many(beads) => {
-            let mut matches = beads.into_iter().filter(|bead| {
-                if bead_id.contains('.') {
-                    bead.id == bead_id
-                } else {
-                    milestone_bead_refs_match(milestone_id, &bead.id, bead_id)
-                }
-            });
+            let mut matches = beads
+                .into_iter()
+                .filter(|bead| bead_matches_show_query(milestone_id, bead_id, query, bead));
             let bead = matches.next();
             if matches.next().is_some() {
                 return Err(AppError::Io(std::io::Error::other(format!(
@@ -1840,6 +1914,8 @@ fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
 struct ResolvedBeadPlan {
     flow_override: Option<FlowPreset>,
     membership_confirmed: bool,
+    plan_snapshot_validated: bool,
+    used_legacy_title_fallback: bool,
     matched_workstream_index: Option<usize>,
     matched_bead_index: Option<usize>,
 }
@@ -1863,7 +1939,7 @@ fn ensure_bead_belongs_to_milestone(
     bead: &BeadDetail,
 ) -> AppResult<()> {
     let expected_prefix = format!("{}.", milestone_id.as_str());
-    if bead.id.starts_with(&expected_prefix) || !bead.id.contains('.') {
+    if bead_id_is_unambiguous_for_milestone(milestone_id, &bead.id) {
         return Ok(());
     }
 
@@ -1877,6 +1953,39 @@ fn ensure_bead_belongs_to_milestone(
     })
 }
 
+const LEGACY_PLAN_WARNING_MARKER_FILE: &str = ".legacy-title-only-plan-warning-emitted";
+
+fn legacy_plan_warning_marker_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+    FileSystem::milestone_root(base_dir, milestone_id).join(LEGACY_PLAN_WARNING_MARKER_FILE)
+}
+
+fn warn_once_for_legacy_plan_lookup(base_dir: &Path, milestone_id: &MilestoneId, bead_id: &str) {
+    let marker_path = legacy_plan_warning_marker_path(base_dir, milestone_id);
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker_path)
+    {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return,
+        Err(error) => {
+            tracing::warn!(
+                milestone_id = %milestone_id,
+                bead_id,
+                marker_path = %marker_path.display(),
+                error = %error,
+                "failed to persist legacy milestone-plan warning marker; the legacy fallback warning may repeat on future invocations"
+            );
+        }
+    }
+
+    tracing::warn!(
+        milestone_id = %milestone_id,
+        bead_id,
+        "milestone plan uses legacy title-only bead entries; regenerate the milestone plan to persist stable bead_id bindings before live bead titles drift"
+    );
+}
+
 fn resolve_bead_plan(
     bundle: &MilestoneBundle,
     milestone_id: &MilestoneId,
@@ -1884,35 +1993,56 @@ fn resolve_bead_plan(
 ) -> AppResult<ResolvedBeadPlan> {
     ensure_bead_belongs_to_milestone(milestone_id, bead)?;
 
-    let mut next_implicit_bead = 1usize;
     let mut matching_by_id = Vec::new();
     let mut matching_by_title = Vec::new();
     let mut authoritative_implicit_match = None;
+    let mut next_implicit_bead = 1usize;
+    let mut saw_legacy_title_only_entry = false;
 
     for (workstream_index, workstream) in bundle.workstreams.iter().enumerate() {
         for (bead_index, proposal) in workstream.beads.iter().enumerate() {
             let implicit_bead_id = format!("{}.bead-{}", milestone_id.as_str(), next_implicit_bead);
             next_implicit_bead += 1;
 
-            if proposal_matches_bead_id(proposal, milestone_id, bead) {
-                matching_by_id.push((workstream_index, bead_index, proposal));
-            }
-            if proposal_is_title_fallback_candidate(proposal, milestone_id, &implicit_bead_id)
-                && proposal.title == bead.title
-            {
-                if bead_matches_implicit_slot(&bead.id, milestone_id.as_str(), &implicit_bead_id) {
-                    authoritative_implicit_match = Some((workstream_index, bead_index, proposal));
+            match proposal.bead_id.as_deref() {
+                Some(_) if proposal_matches_bead_id(proposal, milestone_id, bead) => {
+                    matching_by_id.push((workstream_index, bead_index, proposal));
                 }
-                matching_by_title.push((workstream_index, bead_index, proposal));
+                Some(_) => {}
+                None => {
+                    saw_legacy_title_only_entry = true;
+                    if proposal.title == bead.title {
+                        if bead_matches_implicit_slot(
+                            &bead.id,
+                            milestone_id.as_str(),
+                            &implicit_bead_id,
+                        ) {
+                            authoritative_implicit_match =
+                                Some((workstream_index, bead_index, proposal));
+                        }
+                        matching_by_title.push((workstream_index, bead_index, proposal));
+                    }
+                }
             }
         }
     }
 
     match matching_by_id.as_slice() {
         [(workstream_index, bead_index, proposal)] => {
+            if proposal.title != bead.title {
+                tracing::debug!(
+                    milestone_id = %milestone_id,
+                    bead_id = %bead.id,
+                    planned_title = %proposal.title,
+                    current_title = %bead.title,
+                    "milestone plan title drift detected; resolved bead metadata via stable bead_id"
+                );
+            }
             return Ok(ResolvedBeadPlan {
                 flow_override: proposal.flow_override,
                 membership_confirmed: true,
+                plan_snapshot_validated: true,
+                used_legacy_title_fallback: false,
                 matched_workstream_index: Some(*workstream_index),
                 matched_bead_index: Some(*bead_index),
             });
@@ -1932,29 +2062,45 @@ fn resolve_bead_plan(
     if let Some((workstream_index, bead_index, proposal)) = authoritative_implicit_match {
         return Ok(ResolvedBeadPlan {
             flow_override: proposal.flow_override,
-            membership_confirmed: true,
+            membership_confirmed: false,
+            plan_snapshot_validated: true,
+            used_legacy_title_fallback: true,
             matched_workstream_index: Some(workstream_index),
             matched_bead_index: Some(bead_index),
         });
     }
 
     match matching_by_title.as_slice() {
-        [(workstream_index, bead_index, proposal)] => Ok(ResolvedBeadPlan {
-            flow_override: proposal.flow_override,
-            membership_confirmed: false,
-            matched_workstream_index: Some(*workstream_index),
-            matched_bead_index: Some(*bead_index),
+        [(workstream_index, bead_index, proposal)] => {
+            Ok(ResolvedBeadPlan {
+                flow_override: proposal.flow_override,
+                membership_confirmed: false,
+                plan_snapshot_validated: true,
+                used_legacy_title_fallback: true,
+                matched_workstream_index: Some(*workstream_index),
+                matched_bead_index: Some(*bead_index),
+            })
+        }
+        [] if saw_legacy_title_only_entry => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "create-from-bead".to_owned(),
+            details: format!(
+                "bead '{}' is not present in the current milestone plan. This milestone still uses legacy title-only plan entries, and the live bead title '{}' no longer matches the stored plan title. Regenerate the milestone plan with `ralph-burning milestone plan {}` and retry.",
+                bead.id, bead.title, milestone_id
+            ),
         }),
-        [] => Ok(ResolvedBeadPlan {
-            flow_override: None,
-            membership_confirmed: false,
-            matched_workstream_index: None,
-            matched_bead_index: None,
+        [] => Err(AppError::MilestoneOperationFailed {
+            milestone_id: milestone_id.to_string(),
+            action: "create-from-bead".to_owned(),
+            details: format!(
+                "bead '{}' is not present in the current milestone plan; verify the bead belongs to milestone '{}' and regenerate the plan if the milestone was replanned",
+                bead.id, milestone_id
+            ),
         }),
         _ => Err(AppError::CorruptRecord {
             file: format!("milestones/{}/plan.json", milestone_id),
             details: format!(
-                "multiple bead proposals named '{}' match bead '{}'; cannot resolve bead metadata",
+                "multiple legacy bead proposals named '{}' match bead '{}'; regenerate the milestone plan to assign stable bead_ids",
                 bead.title, bead.id
             ),
         }),
@@ -1966,37 +2112,18 @@ fn proposal_matches_bead_id(
     milestone_id: &MilestoneId,
     bead: &BeadDetail,
 ) -> bool {
-    if proposal.explicit_id != Some(true) {
-        return false;
-    }
     let Some(candidate) = proposal.bead_id.as_deref() else {
         return false;
     };
-    let expected_suffix = bead
-        .id
-        .strip_prefix(&format!("{}.", milestone_id.as_str()))
-        .unwrap_or(bead.id.as_str());
-    candidate == bead.id || candidate == expected_suffix
+    milestone_bead_refs_match(milestone_id, candidate, &bead.id)
 }
 
 fn proposal_is_title_fallback_candidate(
     proposal: &crate::contexts::milestone_record::bundle::BeadProposal,
-    milestone_id: &MilestoneId,
-    implicit_bead_id: &str,
+    _milestone_id: &MilestoneId,
+    _implicit_bead_id: &str,
 ) -> bool {
-    if proposal.explicit_id.is_none() {
-        return match proposal.bead_id.as_deref() {
-            None => true,
-            Some(candidate) => {
-                bead_matches_implicit_slot(candidate, milestone_id.as_str(), implicit_bead_id)
-            }
-        };
-    }
-
-    proposal.explicit_id == Some(false)
-        && proposal.bead_id.as_deref().is_some_and(|candidate| {
-            bead_matches_implicit_slot(candidate, milestone_id.as_str(), implicit_bead_id)
-        })
+    proposal.bead_id.is_none()
 }
 
 fn canonical_proposal_id(
@@ -3257,10 +3384,12 @@ mod tests {
         build_dependency_prompt_context, build_dependent_prompt_context,
         build_planned_elsewhere_context, compact_planned_elsewhere_summary,
         ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
-        infer_parent_epic_id, load_milestone_bundle, map_br_list_error,
-        planned_elsewhere_serialized_bytes, planned_elsewhere_serialized_bytes_without_summary,
-        resolve_bead_plan, validate_milestone_plan_snapshot, PlannedElsewhereCandidate,
-        PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
+        infer_parent_epic_id, legacy_plan_warning_marker_path, load_milestone_bundle,
+        map_br_list_error, planned_elsewhere_serialized_bytes,
+        planned_elsewhere_serialized_bytes_without_summary, resolve_bead_plan,
+        validate_milestone_plan_snapshot, warn_once_for_legacy_plan_lookup,
+        PlannedElsewhereCandidate, PlannedElsewherePriority, PLANNED_ELSEWHERE_MAX_BYTES,
+        PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
     };
     use std::collections::BTreeMap;
     use std::path::Path;
@@ -3279,6 +3408,7 @@ mod tests {
     use crate::contexts::project_run_record::service::PlannedElsewherePromptContext;
     use crate::shared::domain::FlowPreset;
     use crate::shared::error::AppError;
+    use crate::test_support::logging::log_capture;
     use sha2::{Digest, Sha256};
 
     fn setup_milestone_workspace(dir: &Path, milestone_id: &str) {
@@ -3411,6 +3541,11 @@ mod tests {
             flow_override: None,
         });
         bundle
+    }
+
+    fn canonical_bundle(bundle: &MilestoneBundle) -> MilestoneBundle {
+        serde_json::from_str(&render_plan_json(bundle).expect("render plan json"))
+            .expect("parse canonical plan json")
     }
 
     #[test]
@@ -3962,7 +4097,7 @@ status_summary = "{status_summary}"
 
     #[test]
     fn resolve_bead_plan_returns_per_bead_flow_override() {
-        let bundle = sample_two_bead_bundle();
+        let bundle = canonical_bundle(&sample_two_bead_bundle());
         let bead = sample_bead();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
 
@@ -3973,17 +4108,20 @@ status_summary = "{status_summary}"
     }
 
     #[test]
-    fn resolve_bead_plan_does_not_confirm_title_fallback_against_mismatched_explicit_bead_id() {
-        let mut bundle = sample_bundle();
-        bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-200".to_owned());
-        bundle.workstreams[0].beads[0].explicit_id = Some(true);
+    fn resolve_bead_plan_rejects_mismatched_stable_bead_id_even_when_titles_match() {
+        let mut bundle = canonical_bundle(&sample_two_bead_bundle());
+        bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
+        bundle.workstreams[0].beads[1].explicit_id = Some(true);
         let bead = sample_bead();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
 
-        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("mismatched stable bead id should fail membership validation");
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert!(matches!(error, AppError::MilestoneOperationFailed { .. }));
+        assert!(error
+            .to_string()
+            .contains("bead 'ms-alpha.bead-2' is not present in the current milestone plan"));
     }
 
     #[test]
@@ -4012,8 +4150,8 @@ status_summary = "{status_summary}"
 
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
     }
 
     #[test]
@@ -4028,21 +4166,92 @@ status_summary = "{status_summary}"
 
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
     }
 
     #[test]
-    fn resolve_bead_plan_falls_back_when_live_title_drifted() {
-        let bundle = sample_bundle();
+    fn resolve_bead_plan_matches_stable_bead_id_when_title_drifted_and_logs_debug() {
+        let bundle = canonical_bundle(&sample_two_bead_bundle());
         let mut bead = sample_bead();
         bead.title = "Renamed live bead".to_owned();
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let capture = log_capture();
 
-        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let resolved = capture
+            .in_scope(|| resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead"));
 
-        assert_eq!(resolved.flow_override, None);
-        assert!(!resolved.membership_confirmed);
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
+        capture.assert_event_has_fields(&[
+            ("level", "DEBUG"),
+            ("milestone_id", "ms-alpha"),
+            ("bead_id", "ms-alpha.bead-2"),
+            ("planned_title", "Bootstrap bead-backed task creation"),
+            ("current_title", "Renamed live bead"),
+        ]);
+    }
+
+    #[test]
+    fn resolve_bead_plan_rejects_ambiguous_short_live_bead_id_against_qualified_plan_bead_id() {
+        let milestone_id = MilestoneId::new("9ni").expect("milestone id");
+        let bundle = MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "9ni".to_owned(),
+                name: "Alias Match".to_owned(),
+            },
+            executive_summary: "Verify alias matching".to_owned(),
+            goals: vec!["Keep stable bead lookup tolerant of milestone aliases.".to_owned()],
+            non_goals: Vec::new(),
+            constraints: Vec::new(),
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Alias lookup works.".to_owned(),
+                covered_by: vec!["9ni.8.5.3".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Execution".to_owned(),
+                description: Some("Alias-sensitive bead metadata.".to_owned()),
+                beads: vec![BeadProposal {
+                    bead_id: Some("9ni.8.5.3".to_owned()),
+                    explicit_id: Some(true),
+                    title: "Stabilize alias-based lookup".to_owned(),
+                    description: Some(
+                        "Match short live bead ids to qualified plan ids.".to_owned(),
+                    ),
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["backend".to_owned()],
+                    depends_on: Vec::new(),
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: Some(FlowPreset::Minimal),
+                }],
+            }],
+            default_flow: FlowPreset::Standard,
+            agents_guidance: None,
+        };
+        let bead = BeadDetail {
+            id: "8.5.3".to_owned(),
+            title: "Stabilize alias-based lookup".to_owned(),
+            status: BeadStatus::Open,
+            priority: BeadPriority::new(1),
+            bead_type: BeadType::Task,
+            labels: Vec::new(),
+            description: Some("Match short live bead ids to qualified plan ids.".to_owned()),
+            acceptance_criteria: vec!["AC-1".to_owned()],
+            dependencies: Vec::new(),
+            dependents: Vec::new(),
+            comments: Vec::new(),
+            owner: None,
+            created_at: None,
+            updated_at: None,
+        };
+
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("ambiguous short dotted bead id should be rejected");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
     }
 
     #[test]
@@ -4059,6 +4268,60 @@ status_summary = "{status_summary}"
     }
 
     #[test]
+    fn legacy_plan_warning_marker_suppresses_repeat_logs_across_calls() {
+        let milestone_id = MilestoneId::new("ms-legacy-warn-once").expect("milestone id");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        setup_milestone_workspace(tmp.path(), milestone_id.as_str());
+        let capture = log_capture();
+
+        capture.in_scope(|| {
+            warn_once_for_legacy_plan_lookup(
+                tmp.path(),
+                &milestone_id,
+                "ms-legacy-warn-once.bead-2",
+            );
+            warn_once_for_legacy_plan_lookup(
+                tmp.path(),
+                &milestone_id,
+                "ms-legacy-warn-once.bead-2",
+            );
+        });
+
+        let warnings = capture
+            .snapshot()
+            .into_iter()
+            .filter(|event| {
+                event.level == "WARN"
+                    && event.field("milestone_id") == Some("ms-legacy-warn-once")
+                    && event
+                        .field("message")
+                        .is_some_and(|message| message.contains("legacy title-only bead entries"))
+            })
+            .count();
+        assert_eq!(
+            warnings, 1,
+            "legacy fallback should warn once per milestone"
+        );
+        assert!(legacy_plan_warning_marker_path(tmp.path(), &milestone_id).exists());
+    }
+
+    #[test]
+    fn resolve_bead_plan_rejects_legacy_plan_when_title_drifted() {
+        let bundle = sample_bundle();
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("legacy title drift should require plan regeneration");
+
+        assert!(matches!(error, AppError::MilestoneOperationFailed { .. }));
+        let message = error.to_string();
+        assert!(message.contains("legacy title-only plan entries"));
+        assert!(message.contains("ralph-burning milestone plan ms-alpha"));
+    }
+
+    #[test]
     fn resolve_bead_plan_uses_current_implicit_slot_to_break_duplicate_title_ties() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let mut bundle = sample_two_bead_bundle();
@@ -4070,7 +4333,7 @@ status_summary = "{status_summary}"
             resolve_bead_plan(&bundle, &milestone_id, &sample_bead()).expect("resolve bead");
 
         assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
-        assert!(resolved.membership_confirmed);
+        assert!(!resolved.membership_confirmed);
     }
 
     #[test]
@@ -4092,8 +4355,7 @@ status_summary = "{status_summary}"
         let mut bundle = sample_two_bead_bundle();
         bundle.workstreams[0].beads[0].description =
             Some("Define metadata before project creation.".to_owned());
-        let mut bead = sample_bead();
-        bead.title = "Renamed live bead".to_owned();
+        let bead = sample_bead();
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
 
         let planned_elsewhere = build_planned_elsewhere_context(
@@ -4132,8 +4394,7 @@ status_summary = "{status_summary}"
                 flow_override: None,
             }],
         });
-        let mut bead = sample_bead();
-        bead.title = "Renamed live bead".to_owned();
+        let bead = sample_bead();
         let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
         let bead_summaries = BTreeMap::from([(
             "ms-alpha.bead-4".to_owned(),
@@ -4184,21 +4445,14 @@ status_summary = "{status_summary}"
     #[test]
     fn build_planned_elsewhere_context_drops_implicit_slot_hint_when_slot_was_reassigned() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
-        let mut bundle = sample_three_bead_bundle();
+        let mut bundle = canonical_bundle(&sample_three_bead_bundle());
         bundle.workstreams[0].beads[1].bead_id = Some("ms-alpha.bead-200".to_owned());
         bundle.workstreams[0].beads[1].explicit_id = Some(true);
         let bead = sample_bead();
-        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("reassigned stable bead id should reject membership validation");
 
-        let planned_elsewhere = build_planned_elsewhere_context(
-            &bundle,
-            &milestone_id,
-            &bead,
-            &resolved,
-            &BTreeMap::new(),
-        );
-
-        assert!(planned_elsewhere.is_empty());
+        assert!(matches!(error, AppError::MilestoneOperationFailed { .. }));
     }
 
     #[test]
@@ -4311,7 +4565,7 @@ status_summary = "{status_summary}"
     #[test]
     fn build_planned_elsewhere_context_sorts_explicit_and_neighbor_items_by_id() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
-        let bundle = sample_three_bead_bundle();
+        let bundle = canonical_bundle(&sample_three_bead_bundle());
         let mut bead = sample_bead();
         bead.dependencies = vec![
             DependencyRef {
@@ -4368,7 +4622,7 @@ status_summary = "{status_summary}"
     #[test]
     fn build_planned_elsewhere_context_includes_shared_acceptance_owners_from_other_workstreams() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
-        let mut bundle = sample_two_bead_bundle();
+        let mut bundle = canonical_bundle(&sample_two_bead_bundle());
         bundle.acceptance_map[0].covered_by = vec![
             "bead-2".to_owned(),
             "bead-4".to_owned(),
@@ -4870,6 +5124,30 @@ status_summary = "{status_summary}"
     }
 
     #[test]
+    fn ensure_bead_belongs_to_milestone_rejects_short_dotted_aliases_until_canonicalized() {
+        let milestone_id = MilestoneId::new("9ni").expect("milestone id");
+        let mut bead = sample_bead();
+        bead.id = "8.5.3".to_owned();
+
+        let error = ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect_err("short dotted alias should stay ambiguous until canonicalized");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+    }
+
+    #[test]
+    fn ensure_bead_belongs_to_milestone_rejects_numeric_short_dotted_aliases_until_canonicalized() {
+        let milestone_id = MilestoneId::new("10").expect("milestone id");
+        let mut bead = sample_bead();
+        bead.id = "8.5.3".to_owned();
+
+        let error = ensure_bead_belongs_to_milestone(&milestone_id, &bead)
+            .expect_err("numeric short dotted alias should stay ambiguous until canonicalized");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+    }
+
+    #[test]
     fn ensure_bead_belongs_to_milestone_rejects_foreign_qualified_id() {
         let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
         let mut bead = sample_bead();
@@ -5004,6 +5282,172 @@ esac
                 .expect("chmod fake br");
         }
 
+        fn install_fake_br_show_short_alias_retry(
+            base_dir: &std::path::Path,
+            short_bead_id: &str,
+            canonical_bead_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    if [ "$2" = "{short_bead_id}" ] && [ "$3" = "--json" ]; then
+      echo "issue not found: {short_bead_id}" >&2
+      exit 1
+    fi
+    if [ "$2" = "{canonical_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{canonical_bead_id}","title":"Expected explicit bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        fn install_fake_br_show_short_alias_foreign_then_canonical(
+            base_dir: &std::path::Path,
+            short_bead_id: &str,
+            canonical_bead_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    if [ "$2" = "{short_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{short_bead_id}","title":"Foreign bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    if [ "$2" = "{canonical_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{canonical_bead_id}","title":"Expected explicit bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        fn install_fake_br_show_qualified_slot_missing_with_foreign_short_retry(
+            base_dir: &std::path::Path,
+            qualified_bead_id: &str,
+            short_bead_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    if [ "$2" = "{qualified_bead_id}" ] && [ "$3" = "--json" ]; then
+      echo "issue not found: {qualified_bead_id}" >&2
+      exit 1
+    fi
+    if [ "$2" = "{short_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{short_bead_id}","title":"Foreign authored bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
+        fn install_fake_br_show_qualified_explicit_missing_with_foreign_short_retry(
+            base_dir: &std::path::Path,
+            qualified_bead_id: &str,
+            short_bead_id: &str,
+        ) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = format!(
+                r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    if [ "$2" = "{qualified_bead_id}" ] && [ "$3" = "--json" ]; then
+      echo "issue not found: {qualified_bead_id}" >&2
+      exit 1
+    fi
+    if [ "$2" = "{short_bead_id}" ] && [ "$3" = "--json" ]; then
+      cat <<'BEAD_JSON'
+{{"id":"{short_bead_id}","title":"Foreign explicit bead","status":"in_progress","priority":1,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}}
+BEAD_JSON
+      exit 0
+    fi
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#
+            );
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         #[tokio::test]
         async fn load_bead_detail_retries_no_db_for_unqualified_explicit_ids(
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -5020,6 +5464,92 @@ esac
 
             assert_eq!(bead.id, "ralph-burning-evi");
             assert_eq!(bead.status, BeadStatus::InProgress);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_retries_canonical_show_for_short_dotted_aliases(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_short_alias_retry(base_dir, "8.5.3", "9ni.8.5.3");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("9ni")?;
+            let bead = super::super::load_bead_detail(base_dir, &milestone_id, "8.5.3").await?;
+
+            assert_eq!(bead.id, "9ni.8.5.3");
+            assert_eq!(bead.status, BeadStatus::InProgress);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_skips_foreign_short_dotted_result_and_retries_canonical_show(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_short_alias_foreign_then_canonical(base_dir, "8.5.3", "10.8.5.3");
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("10")?;
+            let bead = super::super::load_bead_detail(base_dir, &milestone_id, "8.5.3").await?;
+
+            assert_eq!(bead.id, "10.8.5.3");
+            assert_eq!(bead.status, BeadStatus::InProgress);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_does_not_retry_short_lookup_for_qualified_implicit_slot_ids(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_qualified_slot_missing_with_foreign_short_retry(
+                base_dir,
+                "ms-alpha.bead-2",
+                "bead-2",
+            );
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("ms-alpha")?;
+            let error = super::super::load_bead_detail(base_dir, &milestone_id, "ms-alpha.bead-2")
+                .await
+                .expect_err("qualified implicit slot ids must not retry the short alias");
+
+            assert!(error
+                .to_string()
+                .contains("br show returned no matching bead"));
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_bead_detail_does_not_retry_short_lookup_for_qualified_explicit_ids(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+
+            install_fake_br_show_qualified_explicit_missing_with_foreign_short_retry(
+                base_dir,
+                "ms-alpha.api-1",
+                "api-1",
+            );
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let milestone_id = MilestoneId::new("ms-alpha")?;
+            let error = super::super::load_bead_detail(base_dir, &milestone_id, "ms-alpha.api-1")
+                .await
+                .expect_err("qualified explicit ids must not retry the short alias");
+
+            assert!(error
+                .to_string()
+                .contains("br show returned no matching bead"));
             Ok(())
         }
     }

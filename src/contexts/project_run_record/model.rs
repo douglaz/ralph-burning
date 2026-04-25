@@ -39,6 +39,12 @@ pub struct TaskSource {
     /// Plan version at the time this task was created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_version: Option<u32>,
+    /// Matched workstream index in the validated milestone plan, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_workstream_index: Option<usize>,
+    /// Matched bead index within the validated workstream, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_bead_index: Option<usize>,
 }
 
 impl ProjectRecord {

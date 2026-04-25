@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424200824-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260424200824-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T03:23:54.621463139Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 6/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-6-723e7126`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-723e7126`\n\n`bead_execution_history` now tries to recover stable lineage metadata by calling `find_matching_task_source_for_bead`, but that helper returns the first matching project from `list_project_ids()` (`src/contexts/milestone_record/service.rs:3929-3949, 4004-4025`). `FsProjectStore::list_project_ids()` is lexicographically sorted, not ordered by recency or metadata quality (`src/adapters/fs.rs:1536-1575`), so when a bead has multiple terminal projects on the same `plan_hash`, an older project without `plan_workstream_index`/`plan_bead_index` can mask a newer indexed project. In that state, history/lineage reconstruction drops back to the legacy title-only path and can still lose bead title/acceptance data or fail on title drift even though a correct indexed task source exists. The helper needs deterministic selection that prefers indexed task sources (and ideally the newest matching project), plus a regression test with two same-bead projects sharing one plan hash.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

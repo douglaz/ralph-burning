@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260424200824-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-24T21:10:39.246824856Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now issues: the new ID-first lookup still rejects valid short-vs-qualified bead ID aliases, and the legacy-plan warning is deduplicated only within a single process instead of once per milestone across CLI invocations.\n\n## Amendments\n\n1. `resolve_bead_plan` still breaks valid membership checks when the live bead ID and the stored plan ID use different milestone aliases. In [src/cli/project.rs:1914-1918](/home/user/ralph-burning/src/cli/project.rs:1914) and [src/cli/project.rs:2013-2025](/home/user/ralph-burning/src/cli/project.rs:2013), any entry with `bead_id` goes through raw string comparison only, and the `Some(_)` branch no longer reaches the title-fallback path. A live bead returned as `bead-2` / `8.5.3` will therefore fail against a plan entry stored as `ms-alpha.bead-2` / `9ni.8.5.3`, even though the codebase already treats those forms as equivalent elsewhere ([src/contexts/milestone_record/bead_refs.rs:3-17](/home/user/ralph-burning/src/contexts/milestone_record/bead_refs.rs:3), [src/contexts/milestone_record/service.rs:3654-3670](/home/user/ralph-burning/src/contexts/milestone_record/service.rs:3654)). `project create-from-bead` can now reject a valid milestone/bead pair solely because `br show` returned the short form. Normalize both sides or reuse `milestone_bead_refs_match`, and add a regression test for short live IDs against qualified plan IDs.\n   Rationale: This is a user-visible correctness regression in the new ID-first lookup: supported alias forms are no longer symmetric, so valid invocations can fail with 'bead is not present in the current milestone plan'.\n2. The legacy-plan warning is only deduplicated per process, not per milestone across CLI invocations. [src/cli/project.rs:1880-1893](/home/user/ralph-burning/src/cli/project.rs:1880) stores warned milestones in a process-local `OnceLock<Mutex<BTreeSet<String>>>`, and [src/cli/project.rs:1967-1980](/home/user/ralph-burning/src/cli/project.rs:1967) calls it from `project create-from-bead`. Because each CLI invocation starts a fresh process, operators will see the same warning every time they run the command for the same legacy milestone. The bead explicitly requires a one-time warning per milestone, not per invocation, so this needs a persisted marker or another cross-invocation mechanism.\n   Rationale: The current implementation satisfies the unit test that calls the function twice in one process, but it does not satisfy the operator-facing acceptance criterion for the real CLI behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

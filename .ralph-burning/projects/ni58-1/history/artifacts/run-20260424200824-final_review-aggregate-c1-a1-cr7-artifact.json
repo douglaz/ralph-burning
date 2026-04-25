@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260424200824-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260424200824-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T04:12:05.084162670Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 7/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-7-0ee7c4c4`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-0ee7c4c4`\n\nfinding_summary: Fully-qualified explicit bead lookups can now bind the wrong bead after the new short-form retry path. In `src/cli/project.rs:1728-1731`, a request like `ms-alpha.api-1` falls back to `api-1` when the qualified `br show` misses. That retry result is accepted by `bead_matches_show_query` (`src/cli/project.rs:1775-1784`) and then treated as local by `ensure_bead_belongs_to_milestone` (`src/cli/project.rs:1957-1973`) if the returned bead id is the unqualified `api-1`. In a workspace where another bead already owns that short explicit id, `project create-from-bead` can create/claim work for the foreign bead even though the requested fully-qualified bead was not found.\n\naffected_files:\n- src/cli/project.rs:1728-1731\n- src/cli/project.rs:1775-1784\n- src/cli/project.rs:1957-1973\n\nremediation_hint: Do not short-retry fully-qualified explicit ids, or require the retry result to come back with an unambiguous same-milestone qualified id before accepting it.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}
