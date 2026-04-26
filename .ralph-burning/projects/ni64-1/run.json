@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 23
+      "completion_round": 24
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 22
+    "final_review_restart_count": 23
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 23,
+  "completion_rounds": 24,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-23-f9f3069a",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 23,
+        "body": "finding_summary: Contract-marked `--prompt-file` overrides with a non-empty `## Nearby work` section are now broken in the real CLI path. `execute_create_from_bead_in_dir` skips all dependency/nearby hydration whenever `prompt_override.is_some()` and fills the context with `NearbyBeadContext::default()` instead (`src/cli/project.rs:411-418`). `create_project_from_bead_context` then always compares an override's `## Nearby work` body against a freshly rendered prompt from that empty context (`src/contexts/project_run_record/service.rs:440-539`). As a result, any current canonical prompt file that preserves the actual nearby graph context will be rejected unless the nearby section happens to be empty. remediation_hint: Hydrate the graph context even when `--prompt-file` is used, or bypass the nearby-work equality check when the caller intentionally supplied a non-generated prompt context.",
+        "created_at": "2026-04-26T08:27:01.710783992Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "4541c28315ba6d63b44bafb16a1a1e0dc865ac0bbfe18f80f79c8497baeab6b5"
+      },
+      {
+        "amendment_id": "fr-23-45b2589f",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 23,
+        "body": "finding_summary: Nearby-work filtering can still surface closed/deferred direct dependencies or dependents when the relation metadata is stale. For direct relations, both omission and rendered status prefer `relation.status` over the target bead's summary status when no refreshed detail is available (`src/cli/project.rs:2969-2972`, `src/cli/project.rs:3351-3360`). If `br list` says a dependency is closed but the focal bead's embedded dependency ref still says open or omits status, the entry survives into `## Nearby work`, violating the bead requirement to filter closed/deferred work and giving reviewers a dead routing target. remediation_hint: For nearby direct relations, use detail status first, then summary status, and only fall back to the relation status when no authoritative target status is available.",
+        "created_at": "2026-04-26T08:27:01.710788480Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "7da6747ce8510c5a1c4da5312315896ca2f09edd00794ee198d94174793c12ec"
+      },
+      {
+        "amendment_id": "fr-23-c7ef5b17",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 23,
+        "body": "finding_summary: Reviewer guidance can advertise a short `mapped_to_bead_id` that the final-review merger later rejects. The reviewer prompt builds its allowlist from `extract_planned_elsewhere_routing_bead_ids`, which adds short aliases for already-planned-elsewhere items and same-milestone nearby items (`src/contexts/project_run_record/task_prompt_contract.rs:647-658`), and `render_classification_guidance` prints that raw set as 'Valid bead IDs' (`src/contexts/workflow_composition/review_classification.rs:434-441`). But `PlannedElsewhereIdCanonicalizer::from_prompt` marks any alias shared across candidate canonical IDs as ambiguous and refuses it during merge (`src/contexts/workflow_composition/final_review.rs:467-535`). In a prompt that has `other-ms.bead-4` under Already Planned Elsewhere and `current-ms.bead-4` under Nearby work, the reviewer prompt will still list `bead-4` as valid even though the merger drops it. remediation_hint: Derive the reviewer-facing allowlist from the canonicalizer's accepted IDs, or preserve the previous APE short-alias behavior when nearby work introduces a conflicting local alias.",
+        "created_at": "2026-04-26T08:27:01.710793490Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "52992bcd9f8530e8f8a95df369a1a08174e6b199774f437a53d0b089d4412f2b"
+      }
+    ],
     "processed_count": 39
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 24 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-26T07:19:24.737604064Z",
+    "resolved_at": "2026-04-26T08:14:42.136473974Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
