@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T06:24:25.461800005Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness defects. One allows non-canonical prompt content to expand the planned-elsewhere routing allowlist, and the other can spend the sibling detail scan budget on closed candidates and hide later open siblings.\n\n## Votes\n\n- `fr-21-70e017d4`: Accept\n  `extract_bullet_bead_ids_from_section` treats any line whose trimmed text equals `## Nearby work` or `## Already Planned Elsewhere` as a real section start, then keeps parsing `- ...` bullets until the next column-1 `## ` heading. It does not track fences and it does not require a top-level heading. `render_bead_task_prompt` meanwhile deliberately rewrites canonical-looking headings in AGENTS guidance to indented lines and leaves fenced examples intact. That mismatch means indented or fenced examples can be misparsed as authoritative nearby/planned-elsewhere sections, injecting arbitrary bead IDs into the allowlist later consumed by review/final_review. Restricting extraction to top-level canonical sections outside fenced blocks is the correct fix.\n- `fr-21-e45be213`: Accept\n  The sibling prefetch path passes summary and relation status into `nearby_candidate_status_is_omitted_for_prefetch`, but that helper ignores both parameters and only filters out unavailable IDs or siblings whose detail is already loaded as closed/deferred. For siblings discovered only via `parent_detail.dependents`, render mode later requires a loaded detail when no summary exists, and the render filter does honor summary/relation/detail status. With the current `take(...)` and `max_detail_loads` caps, a run of closed parent-child siblings can consume the prefetch budget before later open siblings are loaded, so the final nearby section can omit valid open siblings. Using summary/relation status during prefetch, or continuing to scan until five non-closed candidates are retained, is technically warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 21
+}
