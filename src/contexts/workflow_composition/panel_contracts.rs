@@ -178,9 +178,12 @@ pub struct FinalReviewProposal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub covered_by_bead_id: Option<String>,
     /// Classification for this amendment. Missing classifications default to
-    /// `fix_current_bead` for backward compatibility.
+    /// `fix_current_bead` for backward compatibility. The `#[schemars(default
+    /// = ...)]` attribute is intentionally omitted — gpt-5.5 strict-mode
+    /// structured outputs reject the `allOf` schemars emits when an enum is
+    /// paired with a `default` function. Serde still applies the default at
+    /// deserialize time.
     #[serde(default = "default_review_finding_class")]
-    #[schemars(default = "default_review_finding_class")]
     pub classification: AmendmentClassification,
     /// Title to use when an accepted `propose-new-bead` amendment creates
     /// follow-up work.
@@ -313,9 +316,9 @@ pub struct FinalReviewCanonicalAmendment {
     /// Bead ID when `classification` is `covered_by_existing_bead`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub covered_by_bead_id: Option<String>,
-    /// Classification for routing and inspectability.
+    /// Classification for routing and inspectability. `#[schemars(default =
+    /// ...)]` intentionally omitted — see field above for context.
     #[serde(default = "default_review_finding_class")]
-    #[schemars(default = "default_review_finding_class")]
     pub classification: AmendmentClassification,
     /// Reviewer-provided rationale preserved for downstream routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
