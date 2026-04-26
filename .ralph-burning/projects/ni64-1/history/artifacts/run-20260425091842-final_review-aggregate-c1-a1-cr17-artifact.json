@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr17-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T03:00:42.513223368Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 17/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-17-4f24006f`\n\n## Rejected\n\n- `fr-17-4812ebf7`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-17-4f24006f`\n\n`src/cli/project.rs:2892-2912` drops a direct dependency/dependent from `## Nearby work` whenever its fresh `br show` detail is missing, even if the focal bead already carries that relation's id/title/status and `br list` supplied a summary. In the degraded paths this branch explicitly tries to support (`br list` unavailable, transient `br show` failure), the prompt can therefore render `No nearby open work was found.` while the old dependency block still lists those beads. Because final-review planned-elsewhere routing only allowlists IDs extracted from `Nearby work` / `Already Planned Elsewhere` (`src/contexts/workflow_composition/final_review.rs:467-470`), those omitted direct relations can no longer be mapped as planned-elsewhere. Fall back to relation/summary data for direct nearby entries when detail refresh is unavailable, and use fresh detail only to override stale status/description when it exists.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}
