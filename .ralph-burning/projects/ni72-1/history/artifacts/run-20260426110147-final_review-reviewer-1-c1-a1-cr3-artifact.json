@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260426110147-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260426110147-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T15:41:32.747238964Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound 2 fix-now correctness issues. Verification run: `nix build`, `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, and `cargo test --locked --features test-stub` passed.\n\n## Amendments\n\n1. Finding summary: Review payloads that use only the new classified findings are rejected before the engine can queue them. In `src/contexts/workflow_composition/contracts.rs:230`, semantic validation still requires `follow_up_or_amendments` to be non-empty for every non-approved validation outcome. A `review` response with `classified_findings` populated, but the legacy string array empty, fails domain validation even though `src/contexts/workflow_composition/payloads.rs:163` defines `classified_findings` as the new classified finding channel and `src/contexts/workflow_composition/engine.rs:8193` can queue those entries. Remediation hint: for `StageId::Review`, treat non-empty `classified_findings` as satisfying the non-approved follow-up requirement, and add a regression test with empty `follow_up_or_amendments` plus one classified finding.\n   Rationale: This is within the current contract-addition scope and can make a correctly classified review payload fail validation.\n2. Finding summary: The final-review classification enum is no longer backward compatible with persisted or in-flight payloads that use the previous kebab-case values. `src/contexts/workflow_composition/panel_contracts.rs:139` aliases final-review classifications to `ReviewFindingClass`, whose serde form in `src/contexts/workflow_composition/review_classification.rs:18` only accepts snake_case values. Existing final-review aggregates can contain `fix-now`, `planned-elsewhere`, or `propose-new-bead`; those now fail parsing in `src/contexts/automation_runtime/success_reconciliation.rs:1088`, or are silently skipped in the reconstruction path at `src/contexts/automation_runtime/success_reconciliation.rs:1259`. Remediation hint: add serde aliases or a migration deserializer for the old values, and cover legacy aggregate/proposal parsing in tests, including legacy planned-elsewhere mappings.\n   Rationale: The bead explicitly requires backward-compatible contract parsing, and this can break reconciliation of historical final-review records.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

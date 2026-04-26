@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260426110147-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260426110147-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T15:42:28.584167488Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth proposed amendments identify real compatibility/validation defects that can block or lose review findings before remediation routing runs.\n\n## Votes\n\n- `fr-3-36ae3fd9`: Accept\n  The validation contract rejects any non-approved validation payload with an empty `follow_up_or_amendments` list, regardless of `classified_findings`. Since review-stage classified findings are a supported input channel and the engine already consumes them for queued amendments, this can incorrectly reject valid review responses before routing. Treating non-empty review `classified_findings` as satisfying the requirement is technically correct.\n- `fr-3-4319474e`: Accept\n  `ReviewFindingClass` currently deserializes only snake_case values, while persisted or in-flight final-review data may still contain legacy kebab-case classification values. That can make aggregate parsing fail in reconciliation or cause reconstruction to skip payloads, which is a backward-compatibility and durability bug. Serde aliases or migration handling with regression coverage is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}
