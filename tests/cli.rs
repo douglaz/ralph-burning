@@ -5033,6 +5033,122 @@ exit 1
 }
 
 #[test]
+fn project_create_from_bead_with_canonical_prompt_file_validates_nearby_work_against_graph() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let prompt_path = temp_dir.path().join("canonical-override-prompt.md");
+    fs::write(
+        &prompt_path,
+        "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Direct dependents\n- `ms-alpha.bead-3` [open] Document task bootstrap follow-up\n  Scope: Document task bootstrap follow-up\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n",
+    )
+    .expect("write canonical prompt override");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "update" ]; then
+echo "Updated"
+exit 0
+fi
+if [ "$1" = "sync" ]; then
+echo "Synced"
+exit 0
+fi
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": [
+      {
+        "id": "ms-alpha.bead-1",
+        "dependency_type": "blocks",
+        "title": "Define task-source metadata",
+        "status": "closed"
+      }
+    ],
+    "dependents": [
+      {
+        "id": "ms-alpha.bead-3",
+        "dependency_type": "blocks",
+        "title": "Document task bootstrap follow-up",
+        "status": "open"
+      }
+    ]
+  }
+]
+EOF
+exit 0
+fi
+if [ "$1" = "list" ] && [ "$2" = "--all" ] && [ "$3" = "--deferred" ] && [ "$4" = "--limit=0" ] && [ "$5" = "--json" ]; then
+cat <<'EOF'
+{
+  "issues": [
+    {
+      "id": "ms-alpha.bead-1",
+      "title": "Define task-source metadata",
+      "status": "closed",
+      "priority": "P1",
+      "issue_type": "task",
+      "labels": []
+    },
+    {
+      "id": "ms-alpha.bead-3",
+      "title": "Document task bootstrap follow-up",
+      "status": "open",
+      "priority": "P2",
+      "issue_type": "docs",
+      "labels": []
+    }
+  ]
+}
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "canonical-prompt-override-project",
+            "--prompt-file",
+            prompt_path.to_str().expect("prompt path"),
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "canonical prompt override should validate against hydrated nearby graph context: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "canonical-prompt-override-project").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(prompt.contains("## Nearby work"));
+    assert!(prompt.contains("ms-alpha.bead-3"));
+}
+
+#[test]
 fn project_create_from_bead_allows_unknown_relation_status_fallback_when_br_list_is_unavailable() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");

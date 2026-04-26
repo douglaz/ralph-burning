@@ -4066,6 +4066,22 @@ mod tests {
     }
 
     #[test]
+    fn reviewer_allowlist_omits_alias_rejected_by_final_review_canonicalizer() {
+        let project_prompt = "- Milestone: `current-ms`\n\n## Nearby work\n\n### Related work\n- `current-ms.bead-4` [open] Local nearby owner\n  Scope: Owns local adjacent findings.\n\n## Already Planned Elsewhere\n\n- other-ms.bead-4 (Foreign planned owner) - Owns cross-milestone adjacent findings.\n";
+        let reviewer_ids =
+            task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(project_prompt);
+        let canonicalizer = PlannedElsewhereIdCanonicalizer::from_prompt(project_prompt);
+
+        assert!(reviewer_ids.contains("current-ms.bead-4"));
+        assert!(reviewer_ids.contains("other-ms.bead-4"));
+        assert!(
+            !reviewer_ids.contains("bead-4"),
+            "review guidance should not list aliases that final review rejects"
+        );
+        assert_eq!(canonicalizer.canonicalize_allowed("bead-4"), None);
+    }
+
+    #[test]
     fn ambiguous_planned_elsewhere_short_alias_is_rejected() {
         let project_prompt = "## Already Planned Elsewhere\n- `first.alpha` (P2 task): First alpha owner\n- `second.alpha` (P2 task): Second alpha owner\n";
         let canonicalizer = PlannedElsewhereIdCanonicalizer::from_prompt(project_prompt);

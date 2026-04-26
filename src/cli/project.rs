@@ -44,7 +44,8 @@ use crate::contexts::project_run_record::service::{
     ProjectStorePort, RunSnapshotPort,
 };
 use crate::contexts::project_run_record::task_prompt_contract::{
-    enforce_nearby_context_budget, NearbyBeadContext, NearbyBeadEntry, NEARBY_BEAD_CONTEXT_BYTE_CAP,
+    enforce_nearby_context_budget, prompt_declares_contract, NearbyBeadContext, NearbyBeadEntry,
+    NEARBY_BEAD_CONTEXT_BYTE_CAP,
 };
 use crate::contexts::requirements_drafting::model::{
     ProjectSeedPayload, RequirementsOutputKind, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
@@ -408,8 +409,12 @@ pub(crate) async fn execute_create_from_bead_in_dir(
         .plan_snapshot_validated
         .then_some(confirmed_plan_version)
         .flatten();
+    let hydrate_bead_prompt_context = prompt_override
+        .as_deref()
+        .map(prompt_declares_contract)
+        .unwrap_or(true);
     let (upstream_dependencies, downstream_dependents, nearby_bead_context, planned_elsewhere) =
-        if prompt_override.is_some() {
+        if !hydrate_bead_prompt_context {
             (
                 Vec::new(),
                 Vec::new(),
@@ -2968,8 +2973,8 @@ fn nearby_entry_from_relation(
     let detail = bead_details.get(&relation.id);
     let status = detail
         .map(|entry| &entry.status)
-        .or(relation.status.as_ref())
-        .or_else(|| summary.map(|entry| &entry.status));
+        .or_else(|| summary.map(|entry| &entry.status))
+        .or(relation.status.as_ref());
     nearby_entry(
         &relation.id,
         detail
@@ -3356,8 +3361,8 @@ fn nearby_direct_relation_status_is_omitted(
     nearby_status_is_omitted(
         detail
             .map(|entry| &entry.status)
-            .or(relation.status.as_ref())
-            .or_else(|| summary.map(|entry| &entry.status)),
+            .or_else(|| summary.map(|entry| &entry.status))
+            .or(relation.status.as_ref()),
     )
 }
 
@@ -4988,7 +4993,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_relation_fallback_prefers_relation_status_over_stale_summary() {
+    fn direct_relation_fallback_prefers_summary_status_over_stale_relation() {
         let mut bead = sample_bead();
         bead.dependencies = vec![DependencyRef {
             id: "ms-alpha.dep-stale-summary".to_owned(),
@@ -5035,18 +5040,14 @@ mod tests {
         let context =
             build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &refresh);
 
-        assert_eq!(context.direct_dependencies.len(), 1);
-        assert_eq!(
-            context.direct_dependencies[0].bead_id,
-            "ms-alpha.dep-stale-summary"
+        assert!(
+            context.direct_dependencies.is_empty(),
+            "closed summary status should suppress stale-open direct dependency relations"
         );
-        assert_eq!(context.direct_dependencies[0].status, "open");
-        assert_eq!(context.direct_dependents.len(), 1);
-        assert_eq!(
-            context.direct_dependents[0].bead_id,
-            "ms-alpha.dependent-stale-summary"
+        assert!(
+            context.direct_dependents.is_empty(),
+            "deferred summary status should suppress stale-active direct dependent relations"
         );
-        assert_eq!(context.direct_dependents[0].status, "in_progress");
     }
 
     #[test]

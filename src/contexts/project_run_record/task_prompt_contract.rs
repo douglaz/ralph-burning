@@ -647,16 +647,18 @@ pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
 pub fn extract_planned_elsewhere_routing_bead_ids(
     prompt: &str,
 ) -> std::collections::HashSet<String> {
-    let mut ids = extract_pe_bead_ids_internal(prompt, true);
+    let mut ids = extract_pe_bead_ids_internal(prompt, false);
     let prompt_milestone_id = extract_prompt_milestone_id(prompt);
-    for id in extract_nearby_bead_ids_internal(prompt, false) {
-        if nearby_short_alias_is_safe(prompt_milestone_id.as_deref(), &id) {
-            if let Some(short) = strip_milestone_prefix(&id) {
-                ids.insert(short.to_owned());
-            }
-        }
-        ids.insert(id);
-    }
+    let nearby_ids = extract_nearby_bead_ids_internal(prompt, false);
+    ids.extend(nearby_ids.iter().cloned());
+
+    let mut alias_target_ids = extract_pe_bead_ids_internal(prompt, false);
+    alias_target_ids.extend(
+        nearby_ids
+            .into_iter()
+            .filter(|id| nearby_short_alias_is_safe(prompt_milestone_id.as_deref(), id)),
+    );
+    insert_unambiguous_short_aliases(&mut ids, alias_target_ids);
     ids
 }
 
@@ -688,6 +690,32 @@ pub fn extract_planned_elsewhere_alias_target_canonical_bead_ids(
             .filter(|id| nearby_short_alias_is_safe(prompt_milestone_id.as_deref(), id)),
     );
     ids
+}
+
+fn insert_unambiguous_short_aliases(
+    ids: &mut std::collections::HashSet<String>,
+    canonical_ids: std::collections::HashSet<String>,
+) {
+    let mut alias_targets: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    for canonical_id in canonical_ids {
+        let Some(short_id) = strip_milestone_prefix(&canonical_id) else {
+            continue;
+        };
+        alias_targets
+            .entry(short_id.to_owned())
+            .and_modify(|target| {
+                if target.as_deref() != Some(canonical_id.as_str()) {
+                    *target = None;
+                }
+            })
+            .or_insert_with(|| Some(canonical_id));
+    }
+    for (alias, target) in alias_targets {
+        if target.is_some() {
+            ids.insert(alias);
+        }
+    }
 }
 
 /// Strip the milestone-id prefix from a canonical bead ID.
@@ -1153,6 +1181,20 @@ mod tests {
         assert!(!ids.contains("bead-4"));
         assert!(ids.contains("current-ms.bead-5"));
         assert!(ids.contains("bead-5"));
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_omits_ambiguous_short_aliases() {
+        let prompt = "- Milestone ID: `current-ms`\n\n## Nearby work\n\n### Related work\n- `current-ms.bead-4` [open] Same milestone related item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- other-ms.bead-4 (Foreign planned item) - downstream\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("current-ms.bead-4"));
+        assert!(ids.contains("other-ms.bead-4"));
+        assert!(
+            !ids.contains("bead-4"),
+            "reviewer guidance should not advertise a short alias that final review rejects"
+        );
     }
 
     #[test]
