@@ -2139,6 +2139,9 @@ pub fn add_manual_amendment(
         batch_sequence: 0,
         source,
         dedup_key: dedup_key.clone(),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
 
     // Prepare the journal line BEFORE any mutations so that fallible

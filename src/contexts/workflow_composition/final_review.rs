@@ -63,7 +63,9 @@ pub struct CanonicalAmendment {
     pub sources: Vec<FinalReviewAmendmentSource>,
     /// When set, this amendment is a planned-elsewhere finding.
     pub mapped_to_bead_id: Option<String>,
-    /// Three-way classification for routing.
+    /// Bead ID when classification is covered-by-existing-bead.
+    pub covered_by_bead_id: Option<String>,
+    /// Classification for downstream routing.
     pub classification: AmendmentClassification,
     /// Reviewer-provided rationale preserved for downstream routing.
     pub rationale: Option<String>,
@@ -71,6 +73,8 @@ pub struct CanonicalAmendment {
     pub proposed_title: Option<String>,
     /// Scope summary to use when routing an accepted propose-new-bead amendment.
     pub proposed_scope: Option<String>,
+    /// One-line summary to use when routing an accepted propose-new-bead amendment.
+    pub proposed_bead_summary: Option<String>,
     /// Severity used to derive bead priority for accepted propose-new-bead amendments.
     pub severity: Option<review_classification::Severity>,
 }
@@ -97,7 +101,9 @@ pub struct FinalReviewAcceptedAmendment {
     pub sources: Vec<FinalReviewAmendmentSource>,
     /// When set, this amendment is classified as "planned-elsewhere".
     pub mapped_to_bead_id: Option<String>,
-    /// Three-way classification for routing.
+    /// Bead ID when classification is covered-by-existing-bead.
+    pub covered_by_bead_id: Option<String>,
+    /// Classification for downstream routing.
     pub classification: AmendmentClassification,
     /// Reviewer-provided rationale preserved for downstream routing.
     pub rationale: Option<String>,
@@ -105,6 +111,8 @@ pub struct FinalReviewAcceptedAmendment {
     pub proposed_title: Option<String>,
     /// Scope summary to use when routing an accepted propose-new-bead amendment.
     pub proposed_scope: Option<String>,
+    /// One-line summary to use when routing an accepted propose-new-bead amendment.
+    pub proposed_bead_summary: Option<String>,
     /// Severity used to derive bead priority for accepted propose-new-bead amendments.
     pub severity: Option<review_classification::Severity>,
 }
@@ -559,56 +567,61 @@ fn normalize_optional_text(value: Option<&String>) -> Option<String> {
     })
 }
 
+struct NormalizedProposeNewBeadFields {
+    classification: AmendmentClassification,
+    proposed_title: Option<String>,
+    proposed_scope: Option<String>,
+    proposed_bead_summary: Option<String>,
+    severity: Option<review_classification::Severity>,
+    rationale: Option<String>,
+}
+
 fn normalize_propose_new_bead_fields(
     proposal: &super::panel_contracts::FinalReviewProposal,
     classification: AmendmentClassification,
-) -> (
-    AmendmentClassification,
-    Option<String>,
-    Option<String>,
-    Option<review_classification::Severity>,
-    Option<String>,
-) {
+) -> NormalizedProposeNewBeadFields {
     if classification != AmendmentClassification::ProposeNewBead {
-        return (classification, None, None, None, None);
+        return NormalizedProposeNewBeadFields {
+            classification,
+            proposed_title: None,
+            proposed_scope: None,
+            proposed_bead_summary: None,
+            severity: None,
+            rationale: None,
+        };
     }
 
     let proposed_title = normalize_optional_text(proposal.proposed_title.as_ref());
     let proposed_scope = normalize_optional_text(proposal.proposed_scope.as_ref());
+    let proposed_bead_summary = normalize_optional_text(proposal.proposed_bead_summary.as_ref());
     let rationale = normalize_optional_text(proposal.rationale.as_ref());
     let severity = proposal.severity;
 
-    if proposed_title.is_some()
-        && proposed_scope.is_some()
-        && severity.is_some()
-        && rationale.is_some()
-    {
-        (
+    if proposed_bead_summary.is_some() {
+        NormalizedProposeNewBeadFields {
             classification,
             proposed_title,
             proposed_scope,
+            proposed_bead_summary,
             severity,
             rationale,
-        )
+        }
     } else {
-        (AmendmentClassification::FixNow, None, None, None, None)
+        NormalizedProposeNewBeadFields {
+            classification: AmendmentClassification::FixCurrentBead,
+            proposed_title: None,
+            proposed_scope: None,
+            proposed_bead_summary: None,
+            severity: None,
+            rationale: None,
+        }
     }
 }
 
-/// Infer classification from proposal fields. When an explicit `classification`
-/// is set, use it. Otherwise fall back to the legacy `mapped_to_bead_id`
-/// heuristic: present → planned-elsewhere, absent → fix-now.
 fn infer_classification(
     proposal: &super::panel_contracts::FinalReviewProposal,
 ) -> AmendmentClassification {
-    if let Some(c) = proposal.classification {
-        return c;
-    }
-    if proposal.mapped_to_bead_id.is_some() {
-        AmendmentClassification::PlannedElsewhere
-    } else {
-        AmendmentClassification::FixNow
-    }
+    proposal.classification
 }
 
 #[cfg(test)]
@@ -645,20 +658,24 @@ fn merge_final_review_amendments_with_canonicalizer(
                 model_id: proposal.model_id.clone(),
             };
 
-            let incoming_mapped =
-                mapped_id_canonicalizer.canonicalize_optional(amendment.mapped_to_bead_id.as_ref());
+            let incoming_mapped = mapped_id_canonicalizer
+                .canonicalize_optional(amendment.covered_by_bead_id.as_ref());
             let inferred_classification = infer_classification(amendment);
-            let (
-                mut incoming_classification,
-                incoming_proposed_title,
-                incoming_proposed_scope,
-                incoming_severity,
-                incoming_rationale,
-            ) = normalize_propose_new_bead_fields(amendment, inferred_classification);
-            if incoming_classification == AmendmentClassification::PlannedElsewhere
+            let normalized_proposal =
+                normalize_propose_new_bead_fields(amendment, inferred_classification);
+            let mut incoming_classification = normalized_proposal.classification;
+            if incoming_classification == AmendmentClassification::CoveredByExistingBead
                 && incoming_mapped.is_none()
             {
-                incoming_classification = AmendmentClassification::FixNow;
+                incoming_classification = AmendmentClassification::FixCurrentBead;
+            }
+            if incoming_classification != AmendmentClassification::FixCurrentBead {
+                tracing::info!(
+                    classification = %incoming_classification,
+                    covered_by_bead_id = ?incoming_mapped,
+                    proposed_bead_summary = ?normalized_proposal.proposed_bead_summary,
+                    "final-review amendment classification surfaced"
+                );
             }
 
             match by_body.get_mut(&normalized_body) {
@@ -670,11 +687,13 @@ fn merge_final_review_amendments_with_canonicalizer(
                     // - If reviewers disagree on classification, fall back to
                     //   fix-now (the most conservative option).
                     if existing.classification != incoming_classification {
-                        existing.classification = AmendmentClassification::FixNow;
+                        existing.classification = AmendmentClassification::FixCurrentBead;
                         existing.mapped_to_bead_id = None;
+                        existing.covered_by_bead_id = None;
                         existing.rationale = None;
                         existing.proposed_title = None;
                         existing.proposed_scope = None;
+                        existing.proposed_bead_summary = None;
                         existing.severity = None;
                     }
                     // Conservative merge for planned-elsewhere target:
@@ -685,20 +704,24 @@ fn merge_final_review_amendments_with_canonicalizer(
                     match (&existing.mapped_to_bead_id, &incoming_mapped) {
                         (Some(_), None) | (None, Some(_)) => {
                             existing.mapped_to_bead_id = None;
-                            existing.classification = AmendmentClassification::FixNow;
+                            existing.covered_by_bead_id = None;
+                            existing.classification = AmendmentClassification::FixCurrentBead;
                             existing.rationale = None;
                             existing.proposed_title = None;
                             existing.proposed_scope = None;
+                            existing.proposed_bead_summary = None;
                             existing.severity = None;
                         }
                         (Some(existing_target), Some(new_target))
                             if existing_target != new_target =>
                         {
                             existing.mapped_to_bead_id = None;
-                            existing.classification = AmendmentClassification::FixNow;
+                            existing.covered_by_bead_id = None;
+                            existing.classification = AmendmentClassification::FixCurrentBead;
                             existing.rationale = None;
                             existing.proposed_title = None;
                             existing.proposed_scope = None;
+                            existing.proposed_bead_summary = None;
                             existing.severity = None;
                         }
                         _ => {
@@ -707,16 +730,23 @@ fn merge_final_review_amendments_with_canonicalizer(
                     }
 
                     if existing.classification == AmendmentClassification::ProposeNewBead
-                        && (existing.proposed_title.as_ref() != incoming_proposed_title.as_ref()
-                            || existing.proposed_scope.as_ref() != incoming_proposed_scope.as_ref()
-                            || existing.severity != incoming_severity
-                            || existing.rationale.as_ref() != incoming_rationale.as_ref())
+                        && (existing.proposed_title.as_ref()
+                            != normalized_proposal.proposed_title.as_ref()
+                            || existing.proposed_scope.as_ref()
+                                != normalized_proposal.proposed_scope.as_ref()
+                            || existing.proposed_bead_summary.as_ref()
+                                != normalized_proposal.proposed_bead_summary.as_ref()
+                            || existing.severity != normalized_proposal.severity
+                            || existing.rationale.as_ref()
+                                != normalized_proposal.rationale.as_ref())
                     {
-                        existing.classification = AmendmentClassification::FixNow;
+                        existing.classification = AmendmentClassification::FixCurrentBead;
                         existing.mapped_to_bead_id = None;
+                        existing.covered_by_bead_id = None;
                         existing.rationale = None;
                         existing.proposed_title = None;
                         existing.proposed_scope = None;
+                        existing.proposed_bead_summary = None;
                         existing.severity = None;
                     }
                 }
@@ -728,12 +758,14 @@ fn merge_final_review_amendments_with_canonicalizer(
                             amendment_id,
                             normalized_body,
                             sources: vec![source],
-                            mapped_to_bead_id: incoming_mapped,
+                            mapped_to_bead_id: incoming_mapped.clone(),
+                            covered_by_bead_id: incoming_mapped,
                             classification: incoming_classification,
-                            rationale: incoming_rationale,
-                            proposed_title: incoming_proposed_title,
-                            proposed_scope: incoming_proposed_scope,
-                            severity: incoming_severity,
+                            rationale: normalized_proposal.rationale,
+                            proposed_title: normalized_proposal.proposed_title,
+                            proposed_scope: normalized_proposal.proposed_scope,
+                            proposed_bead_summary: normalized_proposal.proposed_bead_summary,
+                            severity: normalized_proposal.severity,
                         },
                     );
                 }
@@ -1235,13 +1267,15 @@ where
     // prompt, strip ALL mapped_to_bead_id values so they cannot mislead the
     // voting panel.
     for amendment in &mut amendments {
-        if let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() {
+        if let Some(mapped_to) = amendment.covered_by_bead_id.as_deref() {
             if let Some(canonical_id) = mapped_id_canonicalizer.canonicalize_allowed(mapped_to) {
-                amendment.mapped_to_bead_id = Some(canonical_id);
+                amendment.mapped_to_bead_id = Some(canonical_id.clone());
+                amendment.covered_by_bead_id = Some(canonical_id);
             } else {
                 amendment.mapped_to_bead_id = None;
-                if amendment.classification == AmendmentClassification::PlannedElsewhere {
-                    amendment.classification = AmendmentClassification::FixNow;
+                amendment.covered_by_bead_id = None;
+                if amendment.classification == AmendmentClassification::CoveredByExistingBead {
+                    amendment.classification = AmendmentClassification::FixCurrentBead;
                 }
             }
         }
@@ -1971,15 +2005,17 @@ where
     // `amendments` before voter/arbiter prompts, but this guards against any
     // code path that could re-introduce an invalid mapping.
     for amendment in &mut final_accepted_amendments {
-        if let Some(mapped_to) = amendment.mapped_to_bead_id.as_deref() {
+        if let Some(mapped_to) = amendment.covered_by_bead_id.as_deref() {
             if let Some(canonical_id) = mapped_id_canonicalizer.canonicalize_allowed(mapped_to) {
-                amendment.mapped_to_bead_id = Some(canonical_id);
+                amendment.mapped_to_bead_id = Some(canonical_id.clone());
+                amendment.covered_by_bead_id = Some(canonical_id);
             } else {
                 amendment.mapped_to_bead_id = None;
+                amendment.covered_by_bead_id = None;
                 // If the mapped bead ID was invalid, downgrade to fix-now
                 // since we can't route a planned-elsewhere without a target.
-                if amendment.classification == AmendmentClassification::PlannedElsewhere {
-                    amendment.classification = AmendmentClassification::FixNow;
+                if amendment.classification == AmendmentClassification::CoveredByExistingBead {
+                    amendment.classification = AmendmentClassification::FixCurrentBead;
                 }
             }
         }
@@ -2035,10 +2071,12 @@ where
                     normalized_body: amendment.normalized_body,
                     sources: amendment.sources,
                     mapped_to_bead_id: amendment.mapped_to_bead_id,
+                    covered_by_bead_id: amendment.covered_by_bead_id,
                     classification: amendment.classification,
                     rationale: amendment.rationale,
                     proposed_title: amendment.proposed_title,
                     proposed_scope: amendment.proposed_scope,
+                    proposed_bead_summary: amendment.proposed_bead_summary,
                     severity: amendment.severity,
                 })
                 .collect(),
@@ -2103,10 +2141,12 @@ where
                 normalized_body: amendment.normalized_body,
                 sources: amendment.sources,
                 mapped_to_bead_id: amendment.mapped_to_bead_id,
+                covered_by_bead_id: amendment.covered_by_bead_id,
                 classification: amendment.classification,
                 rationale: amendment.rationale,
                 proposed_title: amendment.proposed_title,
                 proposed_scope: amendment.proposed_scope,
+                proposed_bead_summary: amendment.proposed_bead_summary,
                 severity: amendment.severity,
             })
             .collect(),
@@ -2355,10 +2395,12 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
         normalized_body: amendment.normalized_body.clone(),
         sources: amendment.sources.clone(),
         mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
+        covered_by_bead_id: amendment.covered_by_bead_id.clone(),
         classification: amendment.classification,
         rationale: amendment.rationale.clone(),
         proposed_title: amendment.proposed_title.clone(),
         proposed_scope: amendment.proposed_scope.clone(),
+        proposed_bead_summary: amendment.proposed_bead_summary.clone(),
         severity: amendment.severity,
     }
 }
@@ -3551,10 +3593,9 @@ mod tests {
         )
         .expect("reviewer prompt");
 
-        assert!(prompt.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
-        assert!(prompt.contains("- `9ni.6.5`"));
-        assert!(prompt.contains("- `6.5`"));
-        assert!(!prompt.contains("unlikely to apply"));
+        assert!(prompt.contains("covered_by_existing_bead"));
+        assert!(prompt.contains("covered_by_bead_id"));
+        assert!(prompt.contains("Default to fix_current_bead"));
     }
 
     #[test]
@@ -3746,9 +3787,11 @@ mod tests {
                     body: body.to_owned(),
                     rationale: None,
                     mapped_to_bead_id: None,
-                    classification: None,
+                    covered_by_bead_id: None,
+                    classification: Default::default(),
                     proposed_title: None,
                     proposed_scope: None,
+                    proposed_bead_summary: None,
                     severity: None,
                 }],
             },
@@ -3839,9 +3882,11 @@ mod tests {
                             body: " tighten wording ".to_owned(),
                             rationale: None,
                             mapped_to_bead_id: None,
-                            classification: None,
+                            covered_by_bead_id: None,
+                            classification: Default::default(),
                             proposed_title: None,
                             proposed_scope: None,
+                            proposed_bead_summary: None,
                             severity: None,
                         }],
                     },
@@ -3862,9 +3907,11 @@ mod tests {
                             body: "tighten wording".to_owned(),
                             rationale: None,
                             mapped_to_bead_id: None,
-                            classification: None,
+                            covered_by_bead_id: None,
+                            classification: Default::default(),
                             proposed_title: None,
                             proposed_scope: None,
+                            proposed_bead_summary: None,
                             severity: None,
                         }],
                     },
@@ -3904,10 +3951,16 @@ mod tests {
                 amendments: vec![FinalReviewProposal {
                     body: body.to_owned(),
                     rationale: None,
-                    mapped_to_bead_id: mapped_to_bead_id.map(|s| s.to_owned()),
-                    classification: None,
+                    mapped_to_bead_id: None,
+                    covered_by_bead_id: mapped_to_bead_id.map(|s| s.to_owned()),
+                    classification: if mapped_to_bead_id.is_some() {
+                        AmendmentClassification::CoveredByExistingBead
+                    } else {
+                        Default::default()
+                    },
                     proposed_title: None,
                     proposed_scope: None,
+                    proposed_bead_summary: None,
                     severity: None,
                 }],
             },
@@ -3942,9 +3995,11 @@ mod tests {
                     body: body.to_owned(),
                     rationale: Some(rationale.to_owned()),
                     mapped_to_bead_id: None,
-                    classification: Some(AmendmentClassification::ProposeNewBead),
+                    covered_by_bead_id: None,
+                    classification: AmendmentClassification::ProposeNewBead,
                     proposed_title: Some(proposed_title.to_owned()),
                     proposed_scope: Some(proposed_scope.to_owned()),
+                    proposed_bead_summary: Some(proposed_title.to_owned()),
                     severity: Some(severity),
                 }],
             },
@@ -4020,7 +4075,7 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(
             merged[0].classification,
-            AmendmentClassification::PlannedElsewhere
+            AmendmentClassification::CoveredByExistingBead
         );
         assert_eq!(merged[0].mapped_to_bead_id.as_deref(), Some("9ni.6.5"));
     }
@@ -4057,7 +4112,7 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(
             merged[0].classification,
-            AmendmentClassification::PlannedElsewhere
+            AmendmentClassification::CoveredByExistingBead
         );
         assert_eq!(
             merged[0].mapped_to_bead_id.as_deref(),
@@ -4112,7 +4167,10 @@ mod tests {
         );
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].classification, AmendmentClassification::FixNow);
+        assert_eq!(
+            merged[0].classification,
+            AmendmentClassification::FixCurrentBead
+        );
         assert_eq!(merged[0].mapped_to_bead_id, None);
     }
 
@@ -4206,7 +4264,10 @@ mod tests {
         );
 
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].classification, AmendmentClassification::FixNow);
+        assert_eq!(
+            merged[0].classification,
+            AmendmentClassification::FixCurrentBead
+        );
         assert_eq!(merged[0].proposed_title, None);
         assert_eq!(merged[0].proposed_scope, None);
         assert_eq!(merged[0].severity, None);

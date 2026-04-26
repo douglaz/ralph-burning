@@ -103,6 +103,9 @@ fn amendment(body: &str) -> QueuedAmendment {
         batch_sequence: 1,
         source,
         dedup_key,
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }
 }
 
@@ -634,10 +637,9 @@ fn build_stage_prompt_injects_review_guidance_with_nearby_work_ids() {
     .expect("build prompt");
 
     assert!(prompt.contains("## Finding Classification"));
-    assert!(prompt.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
-    assert!(prompt.contains("- `ms-alpha.nearby`"));
-    assert!(prompt.contains("- `nearby`"));
-    assert!(!prompt.contains("unlikely to apply"));
+    assert!(prompt.contains("covered_by_existing_bead"));
+    assert!(prompt.contains("covered_by_bead_id"));
+    assert!(prompt.contains("Default to fix_current_bead"));
 }
 
 #[test]

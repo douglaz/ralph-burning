@@ -12924,6 +12924,9 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                         &crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
                         "Implement the final amendment.",
                     ),
+                classification: Default::default(),
+                covered_by_bead_id: None,
+                proposed_bead_summary: None,
             };
             crate::adapters::fs::FsAmendmentQueueStore
                 .write_amendment(ws.path(), &pid, &amendment)

@@ -369,6 +369,9 @@ where
                     batch_sequence: (idx + 1) as u32,
                     source,
                     dedup_key,
+                    classification: Default::default(),
+                    covered_by_bead_id: None,
+                    proposed_bead_summary: None,
                 }
             })
             .collect())

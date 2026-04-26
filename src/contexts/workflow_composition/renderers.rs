@@ -154,6 +154,14 @@ pub fn render_validation(stage_id: StageId, payload: &ValidationPayload) -> Stri
             writeln!(out, "- {item}").unwrap();
         }
     }
+    if stage_id == StageId::Review && !payload.classified_findings.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "## Classified Findings").unwrap();
+        writeln!(out).unwrap();
+        for finding in &payload.classified_findings {
+            writeln!(out, "- {} ({})", finding.body, finding.classification).unwrap();
+        }
+    }
 
     out
 }
@@ -372,6 +380,7 @@ pub fn render_final_review_proposal(
     } else {
         for (idx, amendment) in payload.amendments.iter().enumerate() {
             writeln!(out, "{}. {}", idx + 1, amendment.body).unwrap();
+            writeln!(out, "   Classification: {}", amendment.classification).unwrap();
             if let Some(rationale) = &amendment.rationale {
                 writeln!(out, "   Rationale: {rationale}").unwrap();
             }
@@ -510,6 +519,8 @@ pub fn render_final_review_aggregate(payload: &FinalReviewAggregatePayload) -> S
     } else {
         for amendment in &payload.final_accepted_amendments {
             writeln!(out, "### `{}`", amendment.amendment_id).unwrap();
+            writeln!(out).unwrap();
+            writeln!(out, "**Classification:** {}", amendment.classification).unwrap();
             writeln!(out).unwrap();
             writeln!(out, "{}", amendment.normalized_body).unwrap();
             writeln!(out).unwrap();

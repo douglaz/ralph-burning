@@ -102,7 +102,15 @@ impl StageContract {
         match self.family {
             ContractFamily::Planning => schemars::schema_for!(PlanningPayload),
             ContractFamily::Execution => schemars::schema_for!(ExecutionPayload),
-            ContractFamily::Validation => schemars::schema_for!(ValidationPayload),
+            ContractFamily::Validation => {
+                let mut schema = schemars::schema_for!(ValidationPayload);
+                if self.stage_id != StageId::Review {
+                    if let Some(object) = schema.schema.object.as_mut() {
+                        object.properties.remove("classified_findings");
+                    }
+                }
+                schema
+            }
         }
     }
 

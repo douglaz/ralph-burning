@@ -3,9 +3,12 @@
 use ralph_burning::contexts::workflow_composition::contracts::{
     all_contracts, contract_for_stage, ContractFamily,
 };
+use ralph_burning::contexts::workflow_composition::payloads::StagePayload;
+use ralph_burning::contexts::workflow_composition::review_classification::ReviewFindingClass;
 use ralph_burning::contexts::workflow_composition::{built_in_flows, flow_definition};
 use ralph_burning::shared::domain::{FailureClass, FlowPreset, StageId};
 use ralph_burning::shared::error::ContractError;
+use ralph_burning::test_support::logging::log_capture;
 use serde_json::json;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -59,6 +62,28 @@ fn valid_validation_rejected_json() -> serde_json::Value {
         "findings_or_gaps": ["Missing edge-case coverage."],
         "follow_up_or_amendments": ["Add tests for empty inputs."]
     })
+}
+
+fn review_payload_with_classified_finding(finding: serde_json::Value) -> serde_json::Value {
+    json!({
+        "outcome": "request_changes",
+        "evidence": ["review evidence"],
+        "findings_or_gaps": ["classified gap"],
+        "follow_up_or_amendments": ["classified amendment"],
+        "classified_findings": [finding]
+    })
+}
+
+fn parsed_review_finding(
+    finding: serde_json::Value,
+) -> ralph_burning::contexts::workflow_composition::payloads::ClassifiedFinding {
+    let bundle = contract_for_stage(StageId::Review)
+        .evaluate_permissive(&review_payload_with_classified_finding(finding))
+        .expect("review payload should parse");
+    match bundle.payload {
+        StagePayload::Validation(payload) => payload.classified_findings[0].clone(),
+        _ => panic!("expected validation payload"),
+    }
 }
 
 // ── Registry completeness ───────────────────────────────────────────────────
@@ -301,6 +326,115 @@ fn evaluate_permissive_accepts_non_passing_validation_payloads() {
         .expect("permissive evaluation");
 
     assert!(bundle.artifact.contains("Rejected"));
+}
+
+#[test]
+fn review_finding_fix_current_bead_round_trips() {
+    let finding = parsed_review_finding(json!({
+        "body": "Fix the current bead issue.",
+        "classification": "fix_current_bead"
+    }));
+    assert_eq!(finding.classification, ReviewFindingClass::FixCurrentBead);
+}
+
+#[test]
+fn review_finding_covered_by_existing_bead_round_trips() {
+    let finding = parsed_review_finding(json!({
+        "body": "Covered elsewhere.",
+        "classification": "covered_by_existing_bead",
+        "covered_by_bead_id": "9ni.8.5"
+    }));
+    assert_eq!(
+        finding.classification,
+        ReviewFindingClass::CoveredByExistingBead
+    );
+    assert_eq!(finding.covered_by_bead_id.as_deref(), Some("9ni.8.5"));
+}
+
+#[test]
+fn review_finding_covered_by_existing_bead_without_id_falls_back_and_warns() {
+    let capture = log_capture();
+    let finding = capture.in_scope(|| {
+        parsed_review_finding(json!({
+            "body": "Missing target.",
+            "classification": "covered_by_existing_bead"
+        }))
+    });
+
+    assert_eq!(finding.classification, ReviewFindingClass::FixCurrentBead);
+    capture.assert_event_has_fields(&[("level", "WARN")]);
+}
+
+#[test]
+fn review_finding_propose_new_bead_round_trips() {
+    let finding = parsed_review_finding(json!({
+        "body": "Missing substantial follow-up.",
+        "classification": "propose_new_bead",
+        "proposed_bead_summary": "Add the missing follow-up"
+    }));
+    assert_eq!(finding.classification, ReviewFindingClass::ProposeNewBead);
+    assert_eq!(
+        finding.proposed_bead_summary.as_deref(),
+        Some("Add the missing follow-up")
+    );
+}
+
+#[test]
+fn review_finding_propose_new_bead_without_summary_falls_back_and_warns() {
+    let capture = log_capture();
+    let finding = capture.in_scope(|| {
+        parsed_review_finding(json!({
+            "body": "Missing substantial follow-up.",
+            "classification": "propose_new_bead"
+        }))
+    });
+
+    assert_eq!(finding.classification, ReviewFindingClass::FixCurrentBead);
+    capture.assert_event_has_fields(&[("level", "WARN")]);
+}
+
+#[test]
+fn review_finding_informational_only_round_trips() {
+    let finding = parsed_review_finding(json!({
+        "body": "No action needed.",
+        "classification": "informational_only"
+    }));
+    assert_eq!(
+        finding.classification,
+        ReviewFindingClass::InformationalOnly
+    );
+    assert!(finding.classification.triggers_restart());
+}
+
+#[test]
+fn legacy_review_finding_defaults_to_fix_current_bead() {
+    let finding = parsed_review_finding(json!({
+        "body": "Legacy finding."
+    }));
+    assert_eq!(finding.classification, ReviewFindingClass::FixCurrentBead);
+}
+
+#[test]
+fn review_schema_exposes_classified_findings() {
+    let schema_value =
+        serde_json::to_value(contract_for_stage(StageId::Review).json_schema()).unwrap();
+    assert!(
+        schema_value
+            .pointer("/properties/classified_findings")
+            .is_some(),
+        "review schema should expose classified findings"
+    );
+}
+
+#[test]
+fn qa_schema_does_not_expose_classified_findings() {
+    let schema_value = serde_json::to_value(contract_for_stage(StageId::Qa).json_schema()).unwrap();
+    assert!(
+        schema_value
+            .pointer("/properties/classified_findings")
+            .is_none(),
+        "QA schema should remain free of review classification fields"
+    );
 }
 
 // ── JSON Schema generation ──────────────────────────────────────────────────

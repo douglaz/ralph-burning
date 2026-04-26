@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Three-way review classification schema for milestone-aware review stages.
+//! Review classification schema for milestone-aware review stages.
 //!
 //! Each finding produced by review or final_review is classified as one of:
 //! - **fix-now**: within the active bead's scope, remediate immediately
@@ -11,6 +11,50 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::contexts::project_run_record::task_prompt_contract;
+
+// ── Lightweight Review Finding Class ─────────────────────────────────
+
+/// Contract-level classification for review and final-review findings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewFindingClass {
+    /// The finding is in scope for the current bead and should be fixed in this run.
+    #[default]
+    FixCurrentBead,
+    /// The finding is already covered by another bead.
+    CoveredByExistingBead,
+    /// The finding should be surfaced as a proposed new bead.
+    ProposeNewBead,
+    /// The finding is informational and requires no action.
+    InformationalOnly,
+}
+
+impl ReviewFindingClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FixCurrentBead => "fix_current_bead",
+            Self::CoveredByExistingBead => "covered_by_existing_bead",
+            Self::ProposeNewBead => "propose_new_bead",
+            Self::InformationalOnly => "informational_only",
+        }
+    }
+
+    /// Current behavior treats every class as fix-now equivalent. Later beads
+    /// will route non-default classes differently.
+    pub fn triggers_restart(self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Display for ReviewFindingClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+pub fn default_review_finding_class() -> ReviewFindingClass {
+    ReviewFindingClass::FixCurrentBead
+}
 
 // ── Severity ─────────────────────────────────────────────────────────
 
@@ -43,7 +87,7 @@ impl std::fmt::Display for Severity {
 
 // ── Finding Classification ───────────────────────────────────────────
 
-/// Three-way classification for a review finding.
+/// Legacy structured classification for milestone-aware review findings.
 ///
 /// Every finding must be classified as exactly one variant. Downstream
 /// reconciliation (8.5.x) and prompt rendering (7.2.2) depend on this
@@ -402,77 +446,17 @@ pub fn render_classification_guidance(
     planned_elsewhere_bead_ids: &std::collections::HashSet<String>,
     include_propose_new_bead: bool,
 ) -> String {
-    let mut guidance = String::from(
-        "## Finding Classification\n\
-         \n\
-         Classify every finding you report using exactly one of the following categories.\n\
-         \n\
-         ### fix-now\n\
-         \n\
-         The finding is within the current bead's scope and should be fixed immediately.\n\
-         Required fields: `finding_summary`, `severity` (critical/high/medium/low), \
-         `affected_files` (list of file paths), optional `remediation_hint`.\n",
-    );
-
-    guidance.push_str(
-        "\n\
-         ### planned-elsewhere\n\
-         \n\
-         The finding is valid but is already owned by another bead listed in the \
-         \"Already Planned Elsewhere\" or \"Nearby work\" sections of the project prompt. \
-         Use this when you are confident the referenced bead's scope covers the concern.\n\
-         Required fields: `finding_summary`, `mapped_to_bead_id`, `confidence` \
-         (0.0\u{2013}1.0, must be > 0.8 or it will be flagged for review), `rationale`.\n",
-    );
-
-    if planned_elsewhere_bead_ids.is_empty() {
-        guidance.push_str(
-            "\nNo beads are listed in the \"Already Planned Elsewhere\" or \"Nearby work\" sections, \
-             so this classification is unlikely to apply.\n",
-        );
-    } else {
-        let mut sorted_ids: Vec<&str> = planned_elsewhere_bead_ids
-            .iter()
-            .map(String::as_str)
-            .collect();
-        sorted_ids.sort();
-        guidance.push_str("\nValid bead IDs for `mapped_to_bead_id`:\n");
-        for id in &sorted_ids {
-            guidance.push_str(&format!("- `{id}`\n"));
-        }
-    }
-
-    if include_propose_new_bead {
-        guidance.push_str(
-            "\n\
-             ### propose-new-bead\n\
-             \n\
-             The finding represents genuinely missing work not covered by any existing bead. \
-             Use this sparingly \u{2014} only when the concern is real and no existing bead \
-             addresses it.\n\
-             Required fields: `finding_summary`, `proposed_title`, `proposed_scope`, \
-             `severity` (critical/high/medium/low), `rationale`.\n",
-        );
-    }
-
-    guidance.push_str(
-        "\n\
-         ### Decision guide\n\
-         \n\
-         Ignore files under `.ralph-burning/`; they are live orchestration state and are out of review scope.\n\
-         \n\
-         1. Is the finding within the current bead's scope? \u{2192} **fix-now**\n\
-         2. Is it covered by a bead listed in \"Already Planned Elsewhere\" or \"Nearby work\"? \
-         \u{2192} **planned-elsewhere**\n",
-    );
-    if include_propose_new_bead {
-        guidance.push_str(
-            "3. Is it genuinely missing from all existing beads? \
-             \u{2192} **propose-new-bead**\n",
-        );
-    }
-
-    guidance
+    let _ = planned_elsewhere_bead_ids;
+    let _ = include_propose_new_bead;
+    "## Finding Classification\n\
+     Each finding MUST carry a `classification` field with one of:\n\
+     - fix_current_bead: in scope for the current bead and should be fixed in this run (DEFAULT).\n\
+     - covered_by_existing_bead: include `covered_by_bead_id` naming the bead that already covers this work; do not amend the current bead.\n\
+     - propose_new_bead: include `proposed_bead_summary` (one line); the orchestrator will surface this for human triage as a new bead.\n\
+     - informational_only: no fix needed; recorded for posterity.\n\
+     Default to fix_current_bead unless one of the others is clearly more appropriate; use propose_new_bead sparingly.\n\
+     Ignore files under `.ralph-burning/`; they are live orchestration state and are out of review scope.\n"
+        .to_owned()
 }
 
 /// Renders scope guidance text for planning-oriented stages that consume a
@@ -1538,11 +1522,10 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pe = std::collections::HashSet::new();
         let guidance = render_classification_guidance(&pe, false);
-        assert!(guidance.contains("### fix-now"));
-        assert!(guidance.contains("### planned-elsewhere"));
-        assert!(guidance.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
-        assert!(!guidance.contains("### propose-new-bead"));
-        assert!(!guidance.contains("propose-new-bead"));
+        assert!(guidance.contains("fix_current_bead"));
+        assert!(guidance.contains("covered_by_existing_bead"));
+        assert!(guidance.contains("propose_new_bead"));
+        assert!(guidance.contains("informational_only"));
         Ok(())
     }
 
@@ -1551,10 +1534,9 @@ mod tests {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let pe = std::collections::HashSet::new();
         let guidance = render_classification_guidance(&pe, true);
-        assert!(guidance.contains("### fix-now"));
-        assert!(guidance.contains("### planned-elsewhere"));
-        assert!(guidance.contains("### propose-new-bead"));
-        assert!(guidance.contains("### Decision guide"));
+        assert!(guidance.contains("Each finding MUST carry a `classification` field"));
+        assert!(guidance.contains("Default to fix_current_bead"));
+        assert!(guidance.contains("`.ralph-burning/`"));
         Ok(())
     }
 
@@ -1564,13 +1546,9 @@ mod tests {
         pe.insert("m1.zeta-task".to_owned());
         pe.insert("m1.alpha-task".to_owned());
         let guidance = render_classification_guidance(&pe, false);
-        assert!(guidance.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
-        assert!(guidance.contains("- `m1.alpha-task`"));
-        assert!(guidance.contains("- `m1.zeta-task`"));
-        // alpha should appear before zeta
-        let alpha_pos = guidance.find("m1.alpha-task").unwrap();
-        let zeta_pos = guidance.find("m1.zeta-task").unwrap();
-        assert!(alpha_pos < zeta_pos);
+        assert!(guidance.contains("covered_by_bead_id"));
+        assert!(!guidance.contains("m1.alpha-task"));
+        assert!(!guidance.contains("m1.zeta-task"));
         Ok(())
     }
 
@@ -1578,7 +1556,7 @@ mod tests {
     fn render_guidance_notes_empty_pe_section() -> Result<(), Box<dyn std::error::Error>> {
         let pe = std::collections::HashSet::new();
         let guidance = render_classification_guidance(&pe, false);
-        assert!(guidance.contains("unlikely to apply"));
+        assert!(guidance.contains("Default to fix_current_bead"));
         Ok(())
     }
 

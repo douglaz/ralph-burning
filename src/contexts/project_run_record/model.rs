@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::contexts::milestone_record::queries::BeadLineageView;
 use crate::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
+use crate::contexts::workflow_composition::review_classification::ReviewFindingClass;
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 
 /// Immutable project metadata persisted in `project.toml`.
@@ -348,6 +349,15 @@ pub struct QueuedAmendment {
     /// duplicates. For manual amendments this is derived from normalized body + source.
     #[serde(default)]
     pub dedup_key: String,
+    /// Review/final-review classification surfaced for later routing beads.
+    #[serde(default)]
+    pub classification: ReviewFindingClass,
+    /// Bead ID when `classification` is `covered_by_existing_bead`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_by_bead_id: Option<String>,
+    /// One-line proposed bead summary when `classification` is `propose_new_bead`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_bead_summary: Option<String>,
 }
 
 fn default_amendment_source() -> AmendmentSource {

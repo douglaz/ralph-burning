@@ -525,6 +525,9 @@ fn make_manual_amendment(amendment_id: &str, body: &str) -> QueuedAmendment {
         batch_sequence: 0,
         source: AmendmentSource::Manual,
         dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, body),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }
 }
 
@@ -4192,6 +4195,9 @@ fn list_amendments_returns_all_pending() {
             batch_sequence: 0,
             source: source.clone(),
             dedup_key,
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         });
     }
 
@@ -4526,6 +4532,9 @@ fn clear_amendments_partial_failure_reports_remaining() {
             batch_sequence: 0,
             source: AmendmentSource::Manual,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix A"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
         QueuedAmendment {
             amendment_id: "amend-2".to_owned(),
@@ -4537,6 +4546,9 @@ fn clear_amendments_partial_failure_reports_remaining() {
             batch_sequence: 0,
             source: AmendmentSource::Manual,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix B"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
     ];
 
@@ -4726,6 +4738,9 @@ fn add_manual_amendment_retry_reuses_preserved_file_after_completed_reopen_failu
                     batch_sequence: 0,
                     source: AmendmentSource::Manual,
                     dedup_key: dedup_key.clone(),
+                    classification: Default::default(),
+                    covered_by_bead_id: None,
+                    proposed_bead_summary: None,
                 },
             )
             .unwrap();
@@ -4840,6 +4855,9 @@ fn remove_amendment_preserves_amendment_on_snapshot_write_failure() {
         batch_sequence: 0,
         source,
         dedup_key,
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     });
     let run_store_rm = FakeRunSnapshotStore::with_snapshot(snapshot);
     let run_write_rm = FailingRunSnapshotWriteStore;
@@ -4881,6 +4899,9 @@ fn remove_amendment_fails_when_file_deletion_fails() {
         batch_sequence: 0,
         source,
         dedup_key,
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
     snapshot.amendment_queue.pending.push(amendment.clone());
     let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
@@ -4924,6 +4945,9 @@ fn clear_amendments_preserves_all_on_snapshot_write_failure() {
             batch_sequence: 0,
             source: AmendmentSource::Manual,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix A"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
         QueuedAmendment {
             amendment_id: "amend-2".to_owned(),
@@ -4935,6 +4959,9 @@ fn clear_amendments_preserves_all_on_snapshot_write_failure() {
             batch_sequence: 0,
             source: AmendmentSource::Manual,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix B"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
     ];
 
@@ -5126,6 +5153,9 @@ fn stage_amendment_batch_rolls_back_earlier_files_on_mid_batch_write_failure() {
             batch_sequence: 0,
             source: AmendmentSource::PrReview,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
         QueuedAmendment {
             amendment_id: "batch-2".to_owned(),
@@ -5137,6 +5167,9 @@ fn stage_amendment_batch_rolls_back_earlier_files_on_mid_batch_write_failure() {
             batch_sequence: 1,
             source: AmendmentSource::PrReview,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
     ];
 
@@ -5223,6 +5256,9 @@ fn clear_partial_failure_restores_files_when_repair_write_fails() {
         batch_sequence: 0,
         source: source.clone(),
         dedup_key: QueuedAmendment::compute_dedup_key(&source, "fix A"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
     let amendment_b = QueuedAmendment {
         amendment_id: "amend-b".to_owned(),
@@ -5234,6 +5270,9 @@ fn clear_partial_failure_restores_files_when_repair_write_fails() {
         batch_sequence: 1,
         source: source.clone(),
         dedup_key: QueuedAmendment::compute_dedup_key(&source, "fix B"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
 
     // Use FailAfterNRemovesAmendmentQueue: first remove succeeds, second fails.
@@ -5435,6 +5474,9 @@ fn stage_amendment_batch_fails_when_journal_append_fails() {
             batch_sequence: 0,
             source: AmendmentSource::PrReview,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
         QueuedAmendment {
             amendment_id: "batch-2".to_owned(),
@@ -5446,6 +5488,9 @@ fn stage_amendment_batch_fails_when_journal_append_fails() {
             batch_sequence: 1,
             source: AmendmentSource::PrReview,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
     ];
 
@@ -5597,6 +5642,9 @@ fn stage_amendment_batch_surfaces_partial_journal_as_corrupt_record() {
             batch_sequence: 0,
             source: AmendmentSource::PrReview,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
         QueuedAmendment {
             amendment_id: "batch-2".to_owned(),
@@ -5608,6 +5656,9 @@ fn stage_amendment_batch_surfaces_partial_journal_as_corrupt_record() {
             batch_sequence: 1,
             source: AmendmentSource::PrReview,
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+            classification: Default::default(),
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
         },
     ];
 
@@ -5711,6 +5762,9 @@ fn stage_amendment_batch_returns_corrupt_record_when_rollback_fails() {
         batch_sequence: 0,
         source: AmendmentSource::PrReview,
         dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }];
 
     let result = service::stage_amendment_batch(
@@ -5952,6 +6006,9 @@ fn stage_amendment_batch_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
         batch_sequence: 0,
         source: AmendmentSource::PrReview,
         dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }];
 
     let result = service::stage_amendment_batch(
@@ -5998,6 +6055,9 @@ fn remove_amendment_returns_corrupt_when_snapshot_and_restore_both_fail() {
         batch_sequence: 0,
         source: AmendmentSource::Manual,
         dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test body"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
 
     // FailingWriteAmendmentQueue: remove succeeds, write (restore) fails.
@@ -6045,6 +6105,9 @@ fn clear_amendments_returns_corrupt_when_snapshot_and_restore_both_fail() {
         batch_sequence: 0,
         source: AmendmentSource::Manual,
         dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test body"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
 
     // FailingWriteAmendmentQueue: remove succeeds, write (restore) fails.
@@ -6160,6 +6223,9 @@ fn clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail() 
         batch_sequence: 0,
         source: AmendmentSource::Manual,
         dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "first"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
     let a2 = QueuedAmendment {
         amendment_id: "clear-p-2".to_owned(),
@@ -6171,6 +6237,9 @@ fn clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail() 
         batch_sequence: 1,
         source: AmendmentSource::Manual,
         dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "second"),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     };
 
     // First remove succeeds (a1 deleted), second fails (a2 remains).
@@ -6232,6 +6301,9 @@ fn stage_amendment_batch_reopens_legacy_completed_snapshot_without_backfilling_m
             &AmendmentSource::PrReview,
             "keep historical limit unknown",
         ),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }];
 
     service::stage_amendment_batch(
@@ -6304,6 +6376,9 @@ fn stage_amendment_batch_preserves_files_on_completed_project_reopen_failure() {
             &AmendmentSource::PrReview,
             "persist me before failure",
         ),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }];
 
     let result = service::stage_amendment_batch(
@@ -6359,6 +6434,9 @@ fn stage_amendment_batch_rolls_back_files_on_non_completed_snapshot_write_failur
             &AmendmentSource::PrReview,
             "should be rolled back",
         ),
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }];
 
     let result = service::stage_amendment_batch(

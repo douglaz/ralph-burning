@@ -9,7 +9,18 @@ use ralph_burning::contexts::workflow_composition::panel_contracts::{
     PromptReviewDecision, PromptReviewPrimaryPayload, PromptValidationPayload, RecordKind,
     RecordProducer,
 };
+use ralph_burning::contexts::workflow_composition::review_classification::ReviewFindingClass;
 use ralph_burning::shared::domain::StageId;
+use ralph_burning::test_support::logging::log_capture;
+
+fn parsed_final_review_amendment(amendment: serde_json::Value) -> FinalReviewProposal {
+    let payload: FinalReviewProposalPayload = serde_json::from_value(serde_json::json!({
+        "summary": "review summary",
+        "amendments": [amendment]
+    }))
+    .expect("final-review payload should parse");
+    payload.amendments[0].clone()
+}
 
 // ── Completion consensus math ────────────────────────────────────────────────
 
@@ -139,15 +150,103 @@ fn final_review_proposal_payload_round_trips() {
             body: "Tighten the final wording.".to_string(),
             rationale: Some("Clarifies the edge case.".to_string()),
             mapped_to_bead_id: None,
-            classification: None,
+            covered_by_bead_id: None,
+            classification: Default::default(),
             proposed_title: None,
             proposed_scope: None,
+            proposed_bead_summary: None,
             severity: None,
         }],
     };
     let json = serde_json::to_string(&payload).expect("serializes");
     let restored: FinalReviewProposalPayload = serde_json::from_str(&json).expect("deserializes");
     assert_eq!(payload, restored);
+}
+
+#[test]
+fn final_review_amendment_fix_current_bead_round_trips() {
+    let amendment = parsed_final_review_amendment(serde_json::json!({
+        "body": "Fix the issue.",
+        "classification": "fix_current_bead"
+    }));
+    assert_eq!(amendment.classification, ReviewFindingClass::FixCurrentBead);
+}
+
+#[test]
+fn final_review_amendment_covered_by_existing_bead_round_trips() {
+    let amendment = parsed_final_review_amendment(serde_json::json!({
+        "body": "Covered elsewhere.",
+        "classification": "covered_by_existing_bead",
+        "covered_by_bead_id": "9ni.8.5"
+    }));
+    assert_eq!(
+        amendment.classification,
+        ReviewFindingClass::CoveredByExistingBead
+    );
+    assert_eq!(amendment.covered_by_bead_id.as_deref(), Some("9ni.8.5"));
+}
+
+#[test]
+fn final_review_amendment_covered_by_existing_bead_without_id_falls_back_and_warns() {
+    let capture = log_capture();
+    let amendment = capture.in_scope(|| {
+        parsed_final_review_amendment(serde_json::json!({
+            "body": "Missing target.",
+            "classification": "covered_by_existing_bead"
+        }))
+    });
+
+    assert_eq!(amendment.classification, ReviewFindingClass::FixCurrentBead);
+    capture.assert_event_has_fields(&[("level", "WARN")]);
+}
+
+#[test]
+fn final_review_amendment_propose_new_bead_round_trips() {
+    let amendment = parsed_final_review_amendment(serde_json::json!({
+        "body": "Missing substantial work.",
+        "classification": "propose_new_bead",
+        "proposed_bead_summary": "Add substantial follow-up"
+    }));
+    assert_eq!(amendment.classification, ReviewFindingClass::ProposeNewBead);
+    assert_eq!(
+        amendment.proposed_bead_summary.as_deref(),
+        Some("Add substantial follow-up")
+    );
+}
+
+#[test]
+fn final_review_amendment_propose_new_bead_without_summary_falls_back_and_warns() {
+    let capture = log_capture();
+    let amendment = capture.in_scope(|| {
+        parsed_final_review_amendment(serde_json::json!({
+            "body": "Missing substantial work.",
+            "classification": "propose_new_bead"
+        }))
+    });
+
+    assert_eq!(amendment.classification, ReviewFindingClass::FixCurrentBead);
+    capture.assert_event_has_fields(&[("level", "WARN")]);
+}
+
+#[test]
+fn final_review_amendment_informational_only_round_trips() {
+    let amendment = parsed_final_review_amendment(serde_json::json!({
+        "body": "No action.",
+        "classification": "informational_only"
+    }));
+    assert_eq!(
+        amendment.classification,
+        ReviewFindingClass::InformationalOnly
+    );
+    assert!(amendment.classification.triggers_restart());
+}
+
+#[test]
+fn legacy_final_review_amendment_defaults_to_fix_current_bead() {
+    let amendment = parsed_final_review_amendment(serde_json::json!({
+        "body": "Legacy amendment."
+    }));
+    assert_eq!(amendment.classification, ReviewFindingClass::FixCurrentBead);
 }
 
 #[test]
@@ -187,10 +286,12 @@ fn final_review_aggregate_payload_round_trips() {
         normalized_body: "Tighten the final wording.".to_string(),
         sources: vec![],
         mapped_to_bead_id: None,
-        classification: AmendmentClassification::FixNow,
+        covered_by_bead_id: None,
+        classification: AmendmentClassification::FixCurrentBead,
         rationale: None,
         proposed_title: None,
         proposed_scope: None,
+        proposed_bead_summary: None,
         severity: None,
     };
     let payload = FinalReviewAggregatePayload {
@@ -217,22 +318,22 @@ fn final_review_aggregate_payload_round_trips() {
 }
 
 #[test]
-fn final_review_aggregate_planned_elsewhere_no_restart() {
-    // When all accepted amendments are planned-elsewhere, restart_required
-    // should be false and the summary should reflect that.
+fn final_review_aggregate_covered_by_existing_bead_round_trips_classification() {
     let amendment = FinalReviewCanonicalAmendment {
         amendment_id: "fr-1-deadbeef".to_string(),
         normalized_body: "Tighten the final wording.".to_string(),
         sources: vec![],
         mapped_to_bead_id: Some("other-bead-42".to_string()),
-        classification: AmendmentClassification::PlannedElsewhere,
+        covered_by_bead_id: Some("other-bead-42".to_string()),
+        classification: AmendmentClassification::CoveredByExistingBead,
         rationale: None,
         proposed_title: None,
         proposed_scope: None,
+        proposed_bead_summary: None,
         severity: None,
     };
     let payload = FinalReviewAggregatePayload {
-        restart_required: false,
+        restart_required: true,
         force_completed: false,
         total_reviewers: 2,
         total_proposed_amendments: 1,
@@ -242,25 +343,21 @@ fn final_review_aggregate_planned_elsewhere_no_restart() {
         disputed_amendment_ids: vec![],
         amendments: vec![amendment.clone()],
         final_accepted_amendments: vec![amendment],
-        final_review_restart_count: 0,
+        final_review_restart_count: 1,
         max_restarts: 2,
-        summary:
-            "Final review accepted 1 amendment(s), all planned-elsewhere; no restart required."
-                .to_string(),
+        summary: "Final review accepted 1 amendment(s); restart required.".to_string(),
         exhausted_count: 0,
         probe_exhausted_count: 0,
         effective_min_reviewers: 2,
     };
 
-    // Verify the payload round-trips correctly with planned-elsewhere fields.
     let json = serde_json::to_string(&payload).expect("serializes");
     let restored: FinalReviewAggregatePayload = serde_json::from_str(&json).expect("deserializes");
     assert_eq!(payload, restored);
-
-    // Key assertions: restart is not required and the mapped_to_bead_id is preserved.
-    assert!(
-        !restored.restart_required,
-        "all planned-elsewhere should not restart"
+    assert!(restored.restart_required);
+    assert_eq!(
+        restored.final_accepted_amendments[0].classification,
+        AmendmentClassification::CoveredByExistingBead
     );
     assert_eq!(
         restored.final_accepted_amendments[0]

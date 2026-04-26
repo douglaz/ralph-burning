@@ -1,0 +1,7 @@
+id = "ni72-1"
+name = "review-finding-classifications"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "e3f5c77991b62d52f8350c44bdbe84f232e7a800c6d0eb2b507aff0cf76f92c9"
+created_at = "2026-04-26T11:01:41.781048595Z"
+status_summary = "created"

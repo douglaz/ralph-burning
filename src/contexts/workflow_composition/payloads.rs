@@ -11,7 +11,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::contexts::workflow_composition::panel_contracts::AmendmentClassification;
+use crate::contexts::workflow_composition::review_classification::{
+    default_review_finding_class, ReviewFindingClass,
+};
 
 // ── Planning family ─────────────────────────────────────────────────────────
 
@@ -82,15 +84,70 @@ impl std::fmt::Display for StepStatus {
 // ── Validation / Review family ──────────────────────────────────────────────
 
 /// A finding with an explicit classification for milestone-aware routing.
+#[derive(Debug, Clone, Deserialize)]
+struct ClassifiedFindingWire {
+    body: String,
+    #[serde(default)]
+    classification: Option<ReviewFindingClass>,
+    #[serde(default)]
+    covered_by_bead_id: Option<String>,
+    #[serde(default)]
+    mapped_to_bead_id: Option<String>,
+    #[serde(default)]
+    proposed_bead_summary: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "ClassifiedFindingWire")]
 pub struct ClassifiedFinding {
     /// The finding body (equivalent to an item in `follow_up_or_amendments`).
     pub body: String,
     /// How this finding should be routed.
-    pub classification: AmendmentClassification,
-    /// Bead ID when classification is planned-elsewhere.
+    #[serde(default = "default_review_finding_class")]
+    #[schemars(default = "default_review_finding_class")]
+    pub classification: ReviewFindingClass,
+    /// Bead ID when classification is covered-by-existing-bead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_by_bead_id: Option<String>,
+    /// Legacy name for older internal payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mapped_to_bead_id: Option<String>,
+    /// One-line proposed bead summary when classification is propose-new-bead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_bead_summary: Option<String>,
+}
+
+impl From<ClassifiedFindingWire> for ClassifiedFinding {
+    fn from(raw: ClassifiedFindingWire) -> Self {
+        let mut classification = raw.classification.unwrap_or_default();
+        let covered_by_bead_id = raw
+            .covered_by_bead_id
+            .or_else(|| raw.mapped_to_bead_id.clone());
+
+        match classification {
+            ReviewFindingClass::CoveredByExistingBead if covered_by_bead_id.is_none() => {
+                tracing::warn!(
+                    "covered_by_existing_bead review finding missing covered_by_bead_id; falling back to fix_current_bead"
+                );
+                classification = ReviewFindingClass::FixCurrentBead;
+            }
+            ReviewFindingClass::ProposeNewBead if raw.proposed_bead_summary.is_none() => {
+                tracing::warn!(
+                    "propose_new_bead review finding missing proposed_bead_summary; falling back to fix_current_bead"
+                );
+                classification = ReviewFindingClass::FixCurrentBead;
+            }
+            _ => {}
+        }
+
+        Self {
+            body: raw.body,
+            classification,
+            covered_by_bead_id,
+            mapped_to_bead_id: raw.mapped_to_bead_id,
+            proposed_bead_summary: raw.proposed_bead_summary,
+        }
+    }
 }
 
 /// Payload for validation/review stages.
@@ -104,8 +161,8 @@ pub struct ValidationPayload {
     pub findings_or_gaps: Vec<String>,
     pub follow_up_or_amendments: Vec<String>,
     /// Classified findings for milestone-aware review stages. When present,
-    /// only fix-now findings are routed to the amendment queue; planned-elsewhere
-    /// findings are logged and passed to the reconciliation layer.
+    /// classification metadata is preserved for downstream routing while all
+    /// findings remain fix-now equivalent in the current engine.
     ///
     /// When absent (non-milestone mode or older LLM output), all items in
     /// `follow_up_or_amendments` are treated as fix-now for backward compat.
