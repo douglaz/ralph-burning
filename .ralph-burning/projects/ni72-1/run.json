@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260426110147",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 2
+      "completion_round": 3
     },
     "started_at": "2026-04-26T11:01:47.135918476Z",
     "prompt_hash_at_cycle_start": "e3f5c77991b62d52f8350c44bdbe84f232e7a800c6d0eb2b507aff0cf76f92c9",
     "prompt_hash_at_stage_start": "e3f5c77991b62d52f8350c44bdbe84f232e7a800c6d0eb2b507aff0cf76f92c9",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 1
+    "final_review_restart_count": 2
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 2,
+  "completion_rounds": 3,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-2-d935bdfc",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "fix-now/high: Propose-new-bead amendments can make a completed run fail during success reconciliation. The prompt says `propose_new_bead` only needs `proposed_bead_summary` (`src/contexts/workflow_composition/review_classification.rs:455`), and final-review normalization preserves `ProposeNewBead` when that summary exists while allowing `proposed_title`, `proposed_scope`, `severity`, and `rationale` to remain absent (`src/contexts/workflow_composition/final_review.rs:600`). Later, `reconcile_proposed_beads_after_success` still treats accepted `ProposeNewBead` amendments as actionable and returns an error if those older metadata fields are missing (`src/contexts/automation_runtime/success_reconciliation.rs:1108`). A model following the new contract can therefore produce a valid final-review payload that breaks post-run reconciliation. Remediation: until the new-bead routing bead owns this path, downgrade summary-only proposed-bead amendments to `FixCurrentBead` before persistence or make success reconciliation ignore them; alternatively require and prompt for the full metadata it already expects.",
+        "created_at": "2026-04-26T14:46:53.772839060Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "1e71e8904a2ac9ae3fc35603f6d844e3a3d9967488154bc07e58f4a29e10fe10"
+      },
+      {
+        "amendment_id": "fr-2-4c706133",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 2,
+        "body": "fix-now/medium: `covered_by_existing_bead` is not actually fix-now-equivalent for current behavior. Final-review aggregation preserves a `mapped_to_bead_id` for covered-by amendments (`src/contexts/workflow_composition/final_review.rs:761`), while the post-success reconstruction path records planned-elsewhere mappings for any accepted amendment with `mapped_to_bead_id`, without checking whether routing is supposed to be active (`src/contexts/automation_runtime/success_reconciliation.rs:1262`). That bypasses the current bead's light-wiring-only scope: accepted covered-by findings can still create planned-elsewhere state/comments after success even though non-default classes are supposed to be observed and logged only for now. Remediation: keep the metadata inspectable, but gate reconstruction/routing so it does not consume the new classification fields until the planned-elsewhere routing bead enables that behavior.",
+        "created_at": "2026-04-26T14:46:53.772844049Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "b14a74cacc0666d464f4478024da1bf9a0d2d075185effd76836851c2ba827c1"
+      }
+    ],
     "processed_count": 2
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 3 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-26T13:42:20.321356792Z",
+    "resolved_at": "2026-04-26T14:33:42.631110295Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
