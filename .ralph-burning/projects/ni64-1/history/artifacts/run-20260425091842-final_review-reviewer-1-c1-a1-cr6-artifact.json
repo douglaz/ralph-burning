@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T16:05:39.850717202Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne fix-now issue found in nearby sibling filtering; closed/deferred siblings can leak into the new `Nearby work` section when only detail fallback carries their status.\n\n## Amendments\n\n1. finding_summary: `Nearby work` can still include closed/deferred siblings when the builder is relying on parent-detail fallback rather than `br list` summaries. In `load_nearby_dependency_details`, sibling prefetching only filters `parent_detail.dependents` by `relation.status` at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:1897), and `nearby_sibling_entries` repeats the same summary/relation-only check at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:2690). But `nearby_entry_from_relation` later prefers the fetched bead detail status at [src/cli/project.rs](/home/user/ralph-burning/src/cli/project.rs:2619). If the parent relation omits status and the sibling summary is missing/sparse, a closed sibling loaded via `br show` is still admitted, rendered as closed in `## Nearby work`, and can even consume one of the 5 sibling slots ahead of an open sibling. That violates the requirement to omit closed/deferred nearby beads entirely and can mislead planned-elsewhere routing.\nremediation_hint: Filter sibling candidates using detail status when it is available, both before the prefetch `take(NEARBY_SIBLING_LIMIT)` and before inserting the rendered sibling entry, and add a regression test where only the fetched sibling detail carries `status=closed`.\n   Rationale: This is a direct correctness bug in the new nearby-context builder: the prompt can advertise already-closed sibling work as still nearby/open-scope context, and the prefetch limit can hide a real open sibling behind that stale candidate.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

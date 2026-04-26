@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr22-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T07:32:39.816543130Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 22/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-22-7eae14bc`\n- `fr-22-f449cb5e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-22-7eae14bc`\n\nContract-marked prompt overrides can now invent `## Nearby work` IDs that review and final-review treat as valid `mapped_to_bead_id` owners. `create_project_from_bead_context` only shape-validates overrides ([src/contexts/project_run_record/service.rs:427-432]); later stages derive the planned-elsewhere allowlist directly from prompt text ([src/contexts/workflow_composition/engine.rs:191-195], [src/contexts/workflow_composition/final_review.rs:467-530, 2382-2385], [src/contexts/project_run_record/task_prompt_contract.rs:591-632]). A stale or hand-written override can therefore silently reroute findings to beads that were never graph-derived for this task.\n\n### `fr-22-f449cb5e`\n\nPrompt-review guidance becomes self-contradictory on malformed contract-marked prompts that do not actually contain `## Nearby work`. When validation fails, `prompt_authoritative_section_titles()` falls back to the full current section list ([src/contexts/project_run_record/task_prompt_contract.rs:197-210]), and `prompt_review_consumer_guidance_for_prompt()` then tells the refiner to preserve the graph-derived nearby-work body verbatim ([src/contexts/project_run_record/task_prompt_contract.rs:284-300, 338-342]). The validator later rejects any refinement that adds `## Nearby work` when the original prompt lacked it ([src/contexts/workflow_composition/prompt_review.rs:333-370]), so drift-recovery can churn on impossible instructions.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 22
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T00:18:49.598169209Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAll three amendments identify real defects in the current prompt-building path: two hide valid routing targets from reviewers, and one turns optional nearby-context hydration into a hard startup dependency.\n\n## Votes\n\n- `fr-14-d0dcd9f6`: Accept\n  `nearby_related_work_candidates` excludes any candidate whose bead ID has a different milestone prefix via `nearby_related_work_is_milestone_scoped`, but downstream routing code explicitly accepts canonical nearby IDs from any milestone and only withholds foreign short aliases. That leaves the review router able to honor cross-milestone owners while the prompt builder prevents those owners from ever appearing in `Nearby work`. The mismatch is real and can force misclassification of already-owned work. Limiting alias generation, not candidate selection, is the correct boundary.\n- `fr-14-4e7b3c48`: Accept\n  Direct relations beyond `NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT` are immediately inserted into `unavailable_ids`, and `nearby_entries_from_relations` later drops any direct relation lacking refreshed detail when `require_detail_for_entries` is true. That means open direct dependencies can vanish from `Nearby work` before byte-budget trimming, even though the focal bead already carries usable relation ID/title/status data. Some dependents may still be surfaced elsewhere, but direct relations that are not duplicated in `Already Planned Elsewhere` become unroutable in review. Using relation/summary data as the fallback and treating detail as enrichment is the more robust behavior.\n- `fr-14-aed5cae4`: Accept\n  `project create-from-bead` now fails on any `load_bead_summaries` error, and ordinary `br list` exit/IO failures are mapped straight into that fatal path. That makes supplemental summary hydration a hard prerequisite even after `br show` has already resolved the active bead and its direct relations. The code already distinguishes true corruption (`AppError::CorruptRecord`) from ordinary command failures, so keeping corruption fatal while degrading transient `br list` failures to partial or empty nearby context is a sound robustness fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T12:50:29.678141938Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Prompt overrides and prompt-review drift now use the legacy-compatible canonical validator when the source prompt predates `## Nearby work`, while freshly generated prompts still use the strict current validator. Nearby direct dependency/dependent context now includes all direct relation IDs, including `parent_child`, so parent epics and child beads are visible in the direct relation subsections instead of being filtered out.\n\n## Steps\n\n0. [Completed] Reviewed the pending amendments against the current prompt validation, prompt review, nearby-context builder, and regression tests.\n1. [Completed] Preserved strict `Nearby work` validation for freshly generated prompts while allowing canonical v1 prompt overrides without the new section through the compatibility validator.\n2. [Completed] Adjusted prompt-review drift validation to preserve legacy v1 compatibility when the original prompt lacks `Nearby work`, while still requiring the current shape for current prompts.\n3. [Completed] Restored parent/child relations in nearby direct dependency and dependent entries and updated the regression test to assert both blocking and hierarchy relations appear.\n4. [Completed] Ran the repository validation gates required for this bead.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 4
+}

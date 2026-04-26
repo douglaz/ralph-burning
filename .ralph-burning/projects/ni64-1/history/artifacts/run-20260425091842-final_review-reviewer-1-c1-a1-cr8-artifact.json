@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T17:53:44.818098105Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the branch state against 453f57bf5a70cd69f9a3fb0345fadc4bcf80f6fb and found 2 fix-now issues in nearby-context construction: one summary-fallback sibling omission bug and one prompt-creation latency regression from serial nearby-detail prefetching.\n\n## Amendments\n\n1. src/cli/project.rs:1912-1928 and 2788-2800 cap summary-inferred sibling detail prefetch at five IDs before detail filtering. When the parent epic detail cannot be loaded and one of those first five summaries is stale-open but actually closed, that sibling is dropped without promoting the sixth open sibling, so the `Nearby work` section can under-report available siblings and hide legitimate planned-elsewhere ownership.\n   Rationale: This bead’s main job is to surface nearby ownership accurately. On the summary-only fallback path, closed siblings can still consume the prefetch window, which produces incomplete sibling context precisely in the degraded cases where the fallback is needed.\n2. src/cli/project.rs:1863-1966 and 2773-2785 now eagerly and sequentially run `br show` for every dependency/dependent, the parent epic, up to 20 sibling candidates, and a bounded related-work set before rendering the prompt. On moderately connected beads this turns task creation into dozens of subprocesses, making prompt creation latency scale with graph degree and label density.\n   Rationale: The nearby-context builder is on the task-creation hot path. Because every lookup is awaited serially and failures are swallowed, large or slow bead graphs can make prompt generation sluggish or flaky without any visible error, which is a real robustness regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 8
+}

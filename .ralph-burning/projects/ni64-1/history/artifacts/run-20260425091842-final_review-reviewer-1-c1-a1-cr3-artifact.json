@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T12:06:56.415605844Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now correctness issues: legacy canonical prompts are no longer accepted in some validation paths, and Nearby work incorrectly excludes parent/child relations from direct dependency/dependent summaries.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/prompt_review.rs:328-339` and `src/contexts/project_run_record/service.rs:426-435` now require `validate_current_canonical_prompt_shape`, which rejects canonical v1 prompts that legitimately omit `## Nearby work`. That bypasses the compatibility path intentionally added in `src/contexts/project_run_record/task_prompt_contract.rs:298-306`, so prompt review and `project create-from-bead --prompt-file ...` can no longer accept previously generated canonical task prompts unless the caller invents a Nearby work section it was never given. Keep the stricter validator for freshly generated prompts, but preserve legacy-compatible validation when the source prompt predates this section or version-bump the contract before making the new heading mandatory everywhere.\n   Rationale: This is a backwards-compatibility regression against existing bead-backed task prompts; it can make prompt-review retries fail on legacy projects and blocks reuse of stored canonical prompts as overrides.\n2. `src/cli/project.rs:2457-2460` drops every non-`blocks` relation from `Nearby work`, so parent/child edges never appear in `direct_dependencies` or `direct_dependents`. Because bead creation still accepts any open/in-progress bead type (`src/cli/project.rs:1396-1423`), epic beads lose all child-bead scope summaries in `Direct dependents`, and child beads lose their parent epic in `Direct dependencies`, even though the bead spec says these subsections should summarize the focal bead's direct dependency/dependent IDs. If you want to avoid duplicate parent-epic noise for leaf beads, that needs a narrower rule than excluding the entire `parent-child` relation class.\n   Rationale: For epic or hierarchy-heavy work, the new Nearby work section omits the most relevant adjacent beads, which weakens the prompt precisely where it is supposed to help reviewers classify related work.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr21-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T06:24:25.503019516Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 21/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-21-70e017d4`\n- `fr-21-e45be213`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-21-70e017d4`\n\nRestrict planned-elsewhere/nearby bead-id extraction to top-level canonical sections outside fenced blocks. The new nearby routing helpers call `extract_bullet_bead_ids_from_section`, which enters a section whenever `line.trim() == \"## Nearby work\"` / `\"## Already Planned Elsewhere\"` and then parses any trimmed `- ...` bullets until the next column-1 `##` heading ([src/contexts/project_run_record/task_prompt_contract.rs:490-523]). Generated prompts deliberately indent canonical-looking headings inside AGENTS guidance ([src/contexts/project_run_record/service.rs:780-808]), so an indented or fenced example can now inject arbitrary bead IDs into the Nearby-work allowlist. That lets review/final_review accept `planned-elsewhere` mappings for beads that were never graph-derived.\n\n### `fr-21-e45be213`\n\nUse summary/relation status when prefetching parent-detail-only siblings, or keep scanning until you have five non-closed candidates. In the sparse-summary fallback, sibling prefetching drops status information on the floor: the prefetch filter ignores `summary`/`relation_status` and only excludes candidates that already have a closed detail ([src/cli/project.rs:1973-1998], [src/cli/project.rs:2035-2118], [src/cli/project.rs:3054-3106], [src/cli/project.rs:3355-3402]). Because render mode later requires a loaded detail for siblings that exist only via `parent_detail.dependents` ([src/cli/project.rs:3373-3377]), a milestone with many closed parent-child siblings can consume the 10-load scan budget on closed IDs and omit later open siblings entirely. That breaks the bead's requirement to surface up to five open siblings after filtering closed/deferred ones.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 21
+}

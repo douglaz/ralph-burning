@@ -2096,9 +2096,23 @@ mod tests {
     {
         let tmp = tempfile::tempdir()?;
         let fake_br = tmp.path().join("fake-br");
+        let shell_path = std::env::var_os("SHELL")
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+            .or_else(|| {
+                std::env::var_os("PATH").and_then(|paths| {
+                    std::env::split_paths(&paths)
+                        .map(|dir| dir.join("sh"))
+                        .find(|path| path.exists())
+                })
+            })
+            .unwrap_or_else(|| PathBuf::from("/bin/sh"));
         std::fs::write(
             &fake_br,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  while :; do\n    :\n  done\nfi\nexit 0\n",
+            format!(
+                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  while :; do\n    :\n  done\nfi\nexit 0\n",
+                shell_path.display()
+            ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
         permissions.set_mode(0o755);

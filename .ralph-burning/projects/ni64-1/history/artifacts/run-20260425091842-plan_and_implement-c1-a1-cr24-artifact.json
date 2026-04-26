@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr24-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr24",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T09:08:50.569301756Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the three pending nearby-work amendments in the current tree. Contract-marked `--prompt-file` overrides now hydrate bead graph context before validating graph-derived `## Nearby work`, while generic prompt overrides still skip hydration. Direct nearby dependency/dependent filtering now uses fresh detail first, then target bead summary status, and only falls back to relation metadata when no target status is available, preventing stale-open relation refs from surfacing closed/deferred targets. Reviewer-facing planned-elsewhere routing IDs now suppress short aliases that final-review canonicalization would reject, with regression coverage for an Already Planned Elsewhere ID conflicting with a same-milestone Nearby work alias.\n\n## Steps\n\n0. [Completed] Inspected the create-from-bead prompt override path, nearby direct relation status handling, planned-elsewhere ID extraction, final-review canonicalizer, and existing regression coverage.\n1. [Completed] Updated create-from-bead hydration so contract-marked prompt overrides validate against a graph-populated context instead of an empty nearby context.\n2. [Completed] Updated direct nearby relation status precedence to prefer detail status, then target summary status, then relation status fallback.\n3. [Completed] Updated planned-elsewhere routing extraction so reviewer guidance only includes unambiguous short aliases accepted by final-review canonicalization.\n4. [Completed] Added focused regressions covering canonical prompt-file nearby validation, stale direct relation metadata filtering, and reviewer allowlist/final-review alias consistency.\n5. [Completed] Ran focused regressions and the repository validation gates, including the authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_with_canonical_prompt_file_validates_nearby_work_against_graph --test cli` passed.\n- `nix develop -c cargo test --locked --features test-stub direct_relation_fallback_prefers_summary_status_over_stale_relation --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub extract_planned_elsewhere_routing_bead_ids_omits_ambiguous_short_aliases --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub reviewer_allowlist_omits_alias_rejected_by_final_review_canonicalizer --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 24
+}

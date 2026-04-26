@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T16:07:15.952189633Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nThe amendment identifies a real status-precedence bug in nearby sibling selection and should be accepted.\n\n## Votes\n\n- `fr-6-29bf0570`: Accept\n  The code paths cited are inconsistent. `nearby_sibling_entries` and the sibling prefetch in `load_nearby_dependency_details` decide inclusion using only summary/relation status, but `nearby_entry_from_relation` and `nearby_entry_from_summary` later prefer `bead_details` status when rendering. That means a sibling can pass the omission filter, then resolve to `closed` or `deferred` from fetched detail and still appear in `## Nearby work`, potentially displacing an eligible open sibling within the five-item cap. The existing helper `nearby_status_is_omitted` and sibling-filter tests show the intended behavior is to exclude closed/deferred entries entirely, so a regression test for the detail-only-closed case is warranted.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 6
+}

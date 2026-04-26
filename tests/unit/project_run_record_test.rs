@@ -803,6 +803,9 @@ fn sample_bead_context() -> BeadProjectContext {
             status: Some("open".to_owned()),
             outcome: Some("pending".to_owned()),
         }],
+        nearby_bead_context:
+            ralph_burning::contexts::project_run_record::task_prompt_contract::NearbyBeadContext::default(
+            ),
         planned_elsewhere: vec![
             PlannedElsewherePromptContext {
                 id: "ms-alpha.bead-4".to_owned(),
@@ -1155,6 +1158,7 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
     assert!(prompt.contains("bead_execution_prompt"));
     assert!(prompt.contains("## Milestone Summary"));
     assert!(prompt.contains("## Current Bead Details"));
+    assert!(prompt.contains("## Nearby work"));
     assert!(prompt.contains("## Must-Do Scope"));
     assert!(prompt.contains("## Explicit Non-Goals"));
     assert!(prompt.contains("## Acceptance Criteria"));
@@ -1177,6 +1181,62 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
         1
     );
     assert!(prompt.contains("Follow AGENTS.md and keep changes inspectable."));
+}
+
+#[test]
+fn enforce_nearby_context_budget_trims_lowest_priority_categories_first() {
+    use ralph_burning::contexts::project_run_record::task_prompt_contract::{
+        enforce_nearby_context_budget, render_nearby_bead_context, NearbyBeadContext,
+        NearbyBeadEntry,
+    };
+
+    fn nearby_entry(id: &str) -> NearbyBeadEntry {
+        NearbyBeadEntry {
+            bead_id: id.to_owned(),
+            title: format!("Nearby bead {id}"),
+            scope_summary: "A concise one-line scope summary.".to_owned(),
+            status: "open".to_owned(),
+        }
+    }
+
+    let retained = NearbyBeadContext {
+        direct_dependencies: vec![nearby_entry("dep-1")],
+        direct_dependents: vec![nearby_entry("dependent-1")],
+        siblings: Vec::new(),
+        related_work: Vec::new(),
+    };
+    let over_budget = NearbyBeadContext {
+        siblings: vec![nearby_entry("sibling-1"), nearby_entry("sibling-2")],
+        related_work: vec![nearby_entry("related-1"), nearby_entry("related-2")],
+        ..retained.clone()
+    };
+    let budget = render_nearby_bead_context(&retained).len();
+
+    let enforced = enforce_nearby_context_budget(over_budget, budget);
+
+    assert_eq!(enforced.direct_dependencies, retained.direct_dependencies);
+    assert_eq!(enforced.direct_dependents, retained.direct_dependents);
+    assert!(enforced.siblings.is_empty());
+    assert!(enforced.related_work.is_empty());
+}
+
+#[test]
+fn render_bead_task_prompt_omits_empty_nearby_work_subsections() {
+    let mut context = sample_bead_context();
+    context.nearby_bead_context.direct_dependencies = vec![
+        ralph_burning::contexts::project_run_record::task_prompt_contract::NearbyBeadEntry {
+            bead_id: "ms-alpha.bead-1".to_owned(),
+            title: "Define task-source metadata".to_owned(),
+            scope_summary: "Prepare metadata needed by this bead.".to_owned(),
+            status: "open".to_owned(),
+        },
+    ];
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("## Nearby work"));
+    assert!(prompt.contains("### Direct dependencies"));
+    assert!(!prompt.contains("### Direct dependents"));
 }
 
 #[test]
@@ -2522,6 +2582,66 @@ fn create_project_from_bead_context_rejects_invalid_canonical_prompt_override() 
             if path == "<prompt override>"
                 && reason.contains("canonical bead task contract violated")
                 && reason.contains("## Current Bead Details")
+    ));
+}
+
+#[test]
+fn create_project_from_bead_context_rejects_canonical_override_missing_nearby_work() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let marker =
+        ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker();
+
+    let error = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("missing-nearby-work").unwrap()),
+            prompt_override: Some(format!(
+                "{marker}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH"
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect_err("contract override missing graph-derived nearby work should fail");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidPrompt { ref path, ref reason }
+            if path == "<prompt override>"
+                && reason.contains("missing section heading `## Nearby work`")
+    ));
+}
+
+#[test]
+fn create_project_from_bead_context_rejects_prompt_override_that_invents_nearby_work() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let marker =
+        ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker();
+
+    let error = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("fake-nearby-work").unwrap()),
+            prompt_override: Some(format!(
+                "{marker}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `ms-alpha.fake` [open] Fabricated nearby owner\n  Scope: Not graph-derived.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH"
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect_err("contract override must not invent graph-derived nearby work");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidPrompt { ref path, ref reason }
+            if path == "<prompt override>"
+                && reason.contains("prompt override `## Nearby work` must match")
     ));
 }
 

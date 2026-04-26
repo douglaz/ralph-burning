@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T11:00:07.791879053Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the prompt-contract compatibility issue by keeping `Nearby work` in the current rendered v1 prompt while allowing legacy `bead_execution_prompt/1` prompts that lack that section to validate. The validator now treats `SECTION_NEARBY_WORK` as an optional canonical section only when it is missing, while still rejecting `Nearby work` if it appears out of order after later sections. Added focused regression tests for both the legacy-missing case and the misplaced-section case.\n\n## Steps\n\n0. [Completed] Inspected the canonical prompt contract validator and affected consumers that depend on `validate_canonical_prompt_shape`.\n1. [Completed] Implemented the compatibility path by adding optional-section handling for `Nearby work` in missing-section validation without changing the renderer or contract marker.\n2. [Completed] Added regression coverage proving old v1 prompts without `Nearby work` pass and misplaced `Nearby work` headings still fail.\n3. [Completed] Ran formatting, linting, full test, and Nix build gates on the current tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub canonical_prompt_shape --lib` passed: 15 tests.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

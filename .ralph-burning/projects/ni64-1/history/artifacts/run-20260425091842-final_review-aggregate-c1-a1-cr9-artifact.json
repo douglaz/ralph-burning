@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T18:57:23.918672585Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 9/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-9-dcf04770`\n- `fr-9-572561fc`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-9-dcf04770`\n\n`src/cli/project.rs:2631-2647, 1942-1957, 2815-2840` — the new nearby-context detail prefetch does not choose candidates using the same de-duplication rules that rendering uses. `included_ids` removes direct dependencies/dependents before siblings/related work are rendered, but sibling/related detail prefetch still only grabs the first fixed `limit+1` raw candidates. If two or more early matches are already consumed by higher-priority sections, the first actually rendered sibling/related entry never gets a `br show` refresh, so `nearby_candidate_status_is_omitted` falls back to stale summary data and can leak a closed/deferred bead back into `Nearby work`. That violates the bead’s closed/deferred filtering requirement and can misroute planned-elsewhere review findings.\n\n### `fr-9-572561fc`\n\n`src/cli/project.rs:2905-2938`, `src/contexts/project_run_record/task_prompt_contract.rs:556-560`, `src/contexts/workflow_composition/review_classification.rs:439-441`, `src/contexts/workflow_composition/final_review.rs:1119-1124` — nearby related work is gathered across all bead summaries without milestone scoping, but the new routing allowlist/public guidance also adds short-form aliases for every nearby bead. If `Nearby work` includes a foreign bead like `other-ms.bead-4`, reviewers are told bare `bead-4` is a valid `mapped_to_bead_id`, and final review accepts it. Downstream planned-elsewhere verification resolves bare aliases by prepending the active bead’s milestone prefix, so that mapping can be recorded/commented against `current-ms.bead-4` instead of the foreign nearby owner. That silently misroutes the finding and can let the active bead ship with the wrong work marked as already covered.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

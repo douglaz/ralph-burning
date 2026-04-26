@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr10-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr10",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T19:48:56.786412935Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending nearby-context issues. Detail fallback loading now refreshes the exact sibling and related-work candidates that would render after direct-relation and sibling de-duplication, and it adaptively continues within a hard cap when fetched detail marks stale-open candidates closed/deferred. Related-work selection is now milestone-scoped, so foreign milestone beads are not injected through label overlap; the existing routing allowlist behavior that only grants short-form aliases for active-milestone nearby IDs was validated.\n\n## Steps\n\n0. [Completed] Inspected nearby-context construction, render-order de-duplication, related-work candidate selection, and planned-elsewhere routing alias behavior.\n1. [Completed] Implemented render-candidate-stable detail fallback loading for siblings and related work, with bounded adaptive refresh after detail-status filtering.\n2. [Completed] Constrained nearby related-work candidates to the active bead's milestone namespace to avoid cross-milestone routing context.\n3. [Completed] Added regression coverage for foreign milestone related-work exclusion and adaptive related-work prefetch after multiple detail-closed candidates.\n4. [Completed] Ran focused tests and the full repository validation gates, including the authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context_excludes_foreign_milestone_related_work --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details_adaptively_prefetches_related_after_detail_filtering --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details --lib` passed: 6 tests.\n- `nix develop -c cargo test --locked --features test-stub extract_planned_elsewhere_routing_bead_ids_omits_foreign_nearby_short_aliases --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 10
+}

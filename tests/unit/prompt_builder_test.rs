@@ -151,6 +151,7 @@ fn sample_bead_context() -> BeadProjectContext {
                 outcome: Some("pending".to_owned()),
             },
         ],
+        nearby_bead_context: task_prompt_contract::NearbyBeadContext::default(),
         planned_elsewhere: vec![
             ralph_burning::contexts::project_run_record::service::PlannedElsewherePromptContext {
                 id: "ms-alpha.bead-4".to_owned(),
@@ -581,7 +582,62 @@ fn build_stage_prompt_injects_scope_guidance_for_plan_and_implement() {
     assert!(prompt.contains("deferred work with a brief rationale"));
     assert!(prompt
         .contains("Use `Milestone Summary` and other milestone context as read-only background"));
-    assert!(prompt.contains("Do not absorb work owned by `Already Planned Elsewhere`."));
+    assert!(prompt
+        .contains("Do not absorb work owned by `Already Planned Elsewhere` or `Nearby work`."));
+}
+
+#[test]
+fn build_stage_prompt_injects_review_guidance_with_nearby_work_ids() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-review-nearby-routing").unwrap();
+    let run_id = RunId::new("run-20260314193212").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::Review, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::Review);
+    let mut bead_context = sample_bead_context();
+    bead_context.planned_elsewhere.clear();
+    bead_context.nearby_bead_context.related_work = vec![task_prompt_contract::NearbyBeadEntry {
+        bead_id: "ms-alpha.nearby".to_owned(),
+        title: "Nearby owner".to_owned(),
+        scope_summary: "Owns adjacent review finding routing.".to_owned(),
+        status: "open".to_owned(),
+    }];
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &render_bead_task_prompt(&bead_context),
+        &events,
+    );
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendFamily::Claude,
+        BackendRole::Reviewer,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build prompt");
+
+    assert!(prompt.contains("## Finding Classification"));
+    assert!(prompt.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
+    assert!(prompt.contains("- `ms-alpha.nearby`"));
+    assert!(prompt.contains("- `nearby`"));
+    assert!(!prompt.contains("unlikely to apply"));
 }
 
 #[test]

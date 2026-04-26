@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr25-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr25-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T10:11:25.486275503Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted 2 of 3 amendments. The `create-from-bead` and prompt-override findings identify real robustness/backward-compatibility regressions. The prompt-review repair finding describes an intentional fail-closed safety boundary around graph-derived `Nearby work`, not a defect.\n\n## Votes\n\n- `fr-25-957e55a8`: Accept\n  `execute_create_from_bead_in_dir` now unconditionally propagates `load_bead_summaries(current_dir).await?`, so even degradable `br list` failures abort project creation. That is a real robustness regression because the focal bead already carries dependency/dependent metadata from `br show`, and the downstream prompt-context builders are explicitly written to fall back when summary data is missing. A best-effort path is warranted here, while still allowing truly corrupt-record cases to stay fatal.\n- `fr-25-94aeb4f3`: Accept\n  `create_project_from_bead_context` now validates every contract-marked override with `validate_current_canonical_prompt_shape` and then requires `## Nearby work` to be present/match. That breaks legacy v1 contract prompts that `validate_canonical_prompt_shape` still intentionally accepts elsewhere, so previously persisted canonical overrides from older versions now fail project creation. This is a backward-compatibility regression, not just a stricter preference.\n- `fr-25-84d1fe31`: Reject\n  The cited behavior is real, but it is a deliberate fail-closed policy rather than a correctness defect. Prompt review only has the original prompt as its contract reference; it does not have authoritative live graph data to regenerate `## Nearby work`. Allowing prompt review to add that section would fabricate routing context, and allowing success without it would silently downgrade a current-contract prompt after graph-derived context was lost. Rejecting such repairs is the safer behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 25
+}

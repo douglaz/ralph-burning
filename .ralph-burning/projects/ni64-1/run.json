@@ -1,0 +1,67 @@
+{
+  "active_run": null,
+  "interrupted_run": {
+    "run_id": "run-20260425091842",
+    "stage_cursor": {
+      "stage": "final_review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 25
+    },
+    "started_at": "2026-04-25T09:18:42.219180501Z",
+    "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
+    "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 24,
+    "stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-04-26T10:01:12.092799370Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4-xhigh"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.3-codex-spark-xhigh"
+        }
+      ],
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.5-xhigh"
+      }
+    }
+  },
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 25,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 44
+  },
+  "status_summary": "failed at Final Review: stage commit failed for stage 'final_review': max completion rounds exceeded: 26/25",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-26T10:01:12.092799370Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4-xhigh"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.5-xhigh"
+    }
+  }
+}

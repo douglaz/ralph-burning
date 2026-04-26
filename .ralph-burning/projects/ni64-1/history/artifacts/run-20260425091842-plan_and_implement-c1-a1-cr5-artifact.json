@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T13:44:46.779423866Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Contract consumer guidance is now derived from the actual prompt shape, so legacy contract-marked v1 prompts that omit `## Nearby work` no longer tell completion, final-review, or prompt-review agents that the missing section is authoritative; prompt-review guidance also explicitly preserves the legacy shape instead of requiring the new section. Nearby bead entries now compact and truncate titles before rendering, with long-title regression coverage alongside existing scope-summary truncation, so a single verbose bead title no longer blows the nearby-work budget or forces removal of a highest-priority direct relation.\n\n## Steps\n\n0. [Completed] Inspected current prompt contract validation, stage/prompt-review guidance injection, prompt override compatibility, and nearby-context builder/rendering code.\n1. [Completed] Updated contract guidance helpers to choose authoritative sections from the source prompt, preserving current strict behavior for generated prompts while omitting `Nearby work` guidance for legacy v1 prompts that lack the section.\n2. [Completed] Added nearby title compaction/truncation before budget enforcement and kept scope-summary truncation in the entry builder path.\n3. [Completed] Added focused regression coverage for legacy prompt guidance and long nearby-entry title truncation.\n4. [Completed] Ran focused tests and the full repository validation gates required for the bead.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub stage_guidance_for_legacy_prompt_omits_nearby_work_section --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub prompt_review_guidance_for_legacy_prompt_does_not_require_nearby_work --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context_truncates_long_entry_titles --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 5
+}

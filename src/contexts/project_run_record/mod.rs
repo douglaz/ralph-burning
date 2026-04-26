@@ -1,4 +1,4 @@
-mod fence_util;
+pub(crate) mod fence_util;
 pub mod journal;
 pub mod model;
 pub mod queries;

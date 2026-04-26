@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T12:58:58.371707068Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nManual review found 2 medium fix-now issues in the nearby-work prompt-context integration.\n\n## Amendments\n\n1. `src/contexts/project_run_record/service.rs:427-430` explicitly accepts contract-marked prompt overrides that omit `## Nearby work`, and `src/contexts/workflow_composition/prompt_review.rs:333-340` also treats that legacy shape as valid. But `src/contexts/project_run_record/task_prompt_contract.rs:182-190` and `src/contexts/workflow_composition/prompt_review.rs:366-367` still inject guidance that says `Nearby work` is an authoritative canonical section whenever the marker is present. On a supported legacy override, prompt-review/completion/final-review agents are told to preserve and use a section that does not exist, which can create false contract-drift or scope complaints.\n   Rationale: This branch deliberately keeps legacy marker-bearing prompts valid, so downstream guidance has to key off the detected prompt shape, not just marker presence. Right now the compatibility path and the guidance path disagree.\n2. `src/cli/project.rs:2586-2606` never truncates `NearbyBeadEntry.title` (and even falls back to the title for `scope_summary`), while `src/contexts/project_run_record/task_prompt_contract.rs:92-111` can only get back under budget by dropping whole entries and `src/contexts/project_run_record/task_prompt_contract.rs:140-148` renders the full title verbatim. A single long bead title can therefore blow the nearby-work byte budget or cause the highest-priority direct dependency to be removed entirely instead of being shortened, violating the per-entry and section-budget requirements.\n   Rationale: The implementation bounds only `scope_summary`; titles are unbounded planner/backlog text. That means budget enforcement can discard the exact dependency context this bead is supposed to retain.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 4
+}

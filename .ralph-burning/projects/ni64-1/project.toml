@@ -1,0 +1,7 @@
+id = "ni64-1"
+name = "inject-nearby-bead-context"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e"
+created_at = "2026-04-25T09:18:37.873058577Z"
+status_summary = "created"

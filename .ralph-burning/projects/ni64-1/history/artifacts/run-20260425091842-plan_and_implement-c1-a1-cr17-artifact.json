@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr17-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr17",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T02:47:15.811731353Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Nearby direct dependency/dependent freshness no longer stops at the old 24-ID cap: all direct relation IDs are refreshed with bounded concurrent `br show` calls, and refreshed production rendering omits direct entries whose detail is unavailable or whose fresh detail is closed/deferred instead of falling back to stale relation/summary status. Final-review planned-elsewhere ID canonicalization now tracks ambiguous short aliases and rejects them during canonicalization, so non-unique aliases cannot persist as `mapped_to_bead_id`; canonical IDs and unambiguous short aliases still merge correctly.\n\n## Steps\n\n0. [Completed] Inspected nearby-context detail refresh/rendering and final-review planned-elsewhere canonicalization paths.\n1. [Completed] Removed the direct-relation refresh cap and made refreshed direct relation rendering require authoritative detail before inclusion.\n2. [Completed] Added ambiguous short-alias tracking to the planned-elsewhere canonicalizer so ambiguous aliases fail closed instead of falling back to raw allowed IDs.\n3. [Completed] Added focused regression coverage for direct relations beyond the previous cap, failed direct refresh omission, and ambiguous short-alias rejection during final-review merge.\n4. [Completed] Ran focused tests plus repository formatting, linting, full test, Nix build, and whitespace validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details_refreshes_all_direct_relations --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details_refreshes_all_directs_and_omits_failed_directs --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub ambiguous_planned_elsewhere_short_alias_is_rejected --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- Initial full `cargo test --locked --features test-stub` hit an unrelated transient `br` fake-binary/PATH failure in `sync_import_uses_configured_br_binary_for_health_check`; the exact failed test passed serially with `--test-threads=1`.\n- `nix develop -c cargo test --locked --features test-stub` passed on rerun.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 17
+}

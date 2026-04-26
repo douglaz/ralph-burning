@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T03:00:42.488170751Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nOne amendment identifies a real degraded-path routing bug in direct nearby-work rendering and planned-elsewhere allowlisting. The other overstates a bounded freshness prefetch as a defect; removing it would weaken stale-status filtering for sibling and related nearby entries.\n\n## Votes\n\n- `fr-17-4f24006f`: Accept\n  `nearby_entries_from_relations` currently drops any direct dependency/dependent when `require_detail_for_entries` is true and that target's fresh `br show` detail is missing, even though the focal bead still carries the relation ID/title/status and `br list` may have a usable summary. `execute_create_from_bead_in_dir` still renders those relations in the dependency context, but `extract_planned_elsewhere_routing_bead_ids` / `PlannedElsewhereIdCanonicalizer::from_prompt` only allow IDs that appear under `Nearby work` or `Already Planned Elsewhere`. In degraded paths this makes explicitly-related beads visible in one prompt section but unroutable as planned-elsewhere, which is a real correctness/robustness bug. The fix should still keep definitive-missing beads suppressed, but transiently unavailable detail should not erase direct nearby entries.\n- `fr-17-4812ebf7`: Reject\n  The sibling/related `br show` fan-out is a bounded freshness check, not just a cosmetic prompt hint. The nearby section feeds planned-elsewhere routing, and the refresh logic exists to prevent stale-open summaries from keeping closed siblings/related beads in `Nearby work`. The implementation caps that work (`NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN`, `NEARBY_RELATED_WORK_DETAIL_PREFETCH_MAX_SCAN`) and batches loads with `NEARBY_DETAIL_LOAD_CONCURRENCY`; transient failures already fall back to summary-backed rendering. Reverting siblings and related work to summary-only would reintroduce stale-status and misrouting bugs without demonstrating a stronger correctness or safety problem in the current bounded prefetch approach.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}

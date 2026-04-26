@@ -282,6 +282,7 @@ pub struct BeadProjectContext {
     pub bead_acceptance_criteria: Vec<String>,
     pub upstream_dependencies: Vec<BeadDependencyPromptContext>,
     pub downstream_dependents: Vec<BeadDependencyPromptContext>,
+    pub nearby_bead_context: task_prompt_contract::NearbyBeadContext,
     pub planned_elsewhere: Vec<PlannedElsewherePromptContext>,
     pub review_policy: Vec<String>,
     pub parent_epic_id: Option<String>,
@@ -415,6 +416,7 @@ pub fn create_project_from_bead_context(
         &context.milestone_id,
         &context.bead_id,
     )?);
+    let prompt_is_override = prompt_override.is_some();
     let (prompt_contents, prompt_path) = match prompt_override {
         Some(prompt) => (prompt, "<prompt override>".to_owned()),
         None => (
@@ -423,7 +425,7 @@ pub fn create_project_from_bead_context(
         ),
     };
     if task_prompt_contract::prompt_declares_contract(&prompt_contents) {
-        task_prompt_contract::validate_canonical_prompt_shape(&prompt_contents).map_err(
+        task_prompt_contract::validate_current_canonical_prompt_shape(&prompt_contents).map_err(
             |errors| AppError::InvalidPrompt {
                 path: prompt_path.clone(),
                 reason: format!(
@@ -432,6 +434,13 @@ pub fn create_project_from_bead_context(
                 ),
             },
         )?;
+        if prompt_is_override {
+            validate_prompt_override_nearby_work_matches_context(
+                &prompt_contents,
+                &prompt_path,
+                &context,
+            )?;
+        }
     }
     let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
 
@@ -497,6 +506,37 @@ pub fn create_project_from_bead_context(
         input,
         serde_json::Value::Object(initial_details),
     )
+}
+
+fn validate_prompt_override_nearby_work_matches_context(
+    prompt_contents: &str,
+    prompt_path: &str,
+    context: &BeadProjectContext,
+) -> AppResult<()> {
+    let generated_prompt = render_bead_task_prompt(context);
+    let generated_nearby_work = task_prompt_contract::canonical_section_body(
+        &generated_prompt,
+        task_prompt_contract::SECTION_NEARBY_WORK,
+    )
+    .unwrap_or_default();
+    let Some(override_nearby_work) = task_prompt_contract::canonical_section_body(
+        prompt_contents,
+        task_prompt_contract::SECTION_NEARBY_WORK,
+    ) else {
+        return Err(AppError::InvalidPrompt {
+            path: prompt_path.to_owned(),
+            reason: "canonical bead task contract violated: prompt override must include graph-derived `## Nearby work` for this bead".to_owned(),
+        });
+    };
+
+    if override_nearby_work == generated_nearby_work {
+        return Ok(());
+    }
+
+    Err(AppError::InvalidPrompt {
+        path: prompt_path.to_owned(),
+        reason: "canonical bead task contract violated: prompt override `## Nearby work` must match the graph-derived nearby work for this bead".to_owned(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1161,6 +1201,8 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         )));
         lines.join("\n")
     };
+    let nearby_work =
+        task_prompt_contract::render_nearby_bead_context(&context.nearby_bead_context);
 
     let must_do_scope = if bead_must_do_scope.is_empty() {
         "No explicit scope description was supplied. Use the bead title and acceptance criteria as the required scope boundary.".to_owned()
@@ -1220,6 +1262,11 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             "## {}\n\n{}",
             task_prompt_contract::SECTION_CURRENT_BEAD_DETAILS,
             current_bead_details
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_NEARBY_WORK,
+            nearby_work
         ),
         format!(
             "## {}\n\n{}",

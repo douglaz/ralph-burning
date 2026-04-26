@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr19-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T04:41:16.005402222Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 19/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-19-01223aa8`\n- `fr-19-f06f7ddf`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-19-01223aa8`\n\nfinding_summary: Open siblings and related beads can be omitted from `## Nearby work` when `br list` is stale and reports them as `closed`/`deferred`. affected_files: `src/cli/project.rs:3067-3100`, `src/cli/project.rs:3201-3210`, `src/cli/project.rs:3390-3404`. The sibling/related candidate filters consult summary status before any bounded `br show` refresh, so a summary-stale closed bead is never refreshed and the later detail-over-summary logic becomes unreachable for those categories.\n\n### `fr-19-f06f7ddf`\n\nfinding_summary: Prompt review can fabricate a brand-new `## Nearby work` section when the original prompt is contract-marked but malformed rather than valid legacy v1. affected_files: `src/contexts/workflow_composition/prompt_review.rs:337-350`, `src/contexts/workflow_composition/prompt_review.rs:361-368`. Only well-formed legacy prompts are blocked from adding `Nearby work`, and the verbatim-body check only runs when the original prompt already had that section, so a drifted prompt that kept the contract marker but lost `Nearby work` can be 'repaired' with hallucinated nearby bead IDs.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 19
+}

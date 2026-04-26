@@ -8,6 +8,10 @@
 use super::fence_util::{closes_fence, opening_fence_delimiter};
 use crate::shared::domain::StageId;
 
+/// Approximate prompt budget for nearby bead context. Builders enforce this
+/// before rendering so the renderer can print the context without re-truncating.
+pub const NEARBY_BEAD_CONTEXT_BYTE_CAP: usize = 2_000;
+
 /// Stable contract identifier for bead-backed execution prompts.
 pub const BEAD_TASK_PROMPT_CONTRACT_NAME: &str = "bead_execution_prompt";
 
@@ -20,6 +24,8 @@ const CONTRACT_MARKER_PREFIX: &str = "<!-- ralph-task-prompt-contract:";
 pub const SECTION_MILESTONE_SUMMARY: &str = "Milestone Summary";
 /// Canonical section title for current bead metadata.
 pub const SECTION_CURRENT_BEAD_DETAILS: &str = "Current Bead Details";
+/// Canonical section title for nearby bead graph context.
+pub const SECTION_NEARBY_WORK: &str = "Nearby work";
 /// Canonical section title for required in-scope work.
 pub const SECTION_MUST_DO_SCOPE: &str = "Must-Do Scope";
 /// Canonical section title for explicit out-of-scope work.
@@ -37,6 +43,7 @@ pub const SECTION_AGENTS_REPO_GUIDANCE: &str = "AGENTS / Repo Guidance";
 pub const BEAD_TASK_PROMPT_SECTION_TITLES: &[&str] = &[
     SECTION_MILESTONE_SUMMARY,
     SECTION_CURRENT_BEAD_DETAILS,
+    SECTION_NEARBY_WORK,
     SECTION_MUST_DO_SCOPE,
     SECTION_EXPLICIT_NON_GOALS,
     SECTION_ACCEPTANCE_CRITERIA,
@@ -44,6 +51,104 @@ pub const BEAD_TASK_PROMPT_SECTION_TITLES: &[&str] = &[
     SECTION_REVIEW_POLICY,
     SECTION_AGENTS_REPO_GUIDANCE,
 ];
+
+fn is_optional_canonical_section(index: usize, allow_legacy_missing_nearby_work: bool) -> bool {
+    if !allow_legacy_missing_nearby_work {
+        return false;
+    }
+
+    BEAD_TASK_PROMPT_SECTION_TITLES
+        .get(index)
+        .is_some_and(|section| *section == SECTION_NEARBY_WORK)
+}
+
+/// Nearby bead graph context pre-truncated by the builder to
+/// [`NEARBY_BEAD_CONTEXT_BYTE_CAP`] before prompt rendering.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NearbyBeadContext {
+    pub direct_dependencies: Vec<NearbyBeadEntry>,
+    pub direct_dependents: Vec<NearbyBeadEntry>,
+    pub siblings: Vec<NearbyBeadEntry>,
+    pub related_work: Vec<NearbyBeadEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NearbyBeadEntry {
+    pub bead_id: String,
+    pub title: String,
+    pub scope_summary: String,
+    pub status: String,
+}
+
+impl NearbyBeadContext {
+    pub fn is_empty(&self) -> bool {
+        self.direct_dependencies.is_empty()
+            && self.direct_dependents.is_empty()
+            && self.siblings.is_empty()
+            && self.related_work.is_empty()
+    }
+}
+
+pub fn enforce_nearby_context_budget(
+    mut ctx: NearbyBeadContext,
+    byte_cap: usize,
+) -> NearbyBeadContext {
+    while nearby_context_rendered_bytes(&ctx) > byte_cap {
+        if ctx.related_work.pop().is_some() {
+            continue;
+        }
+        if ctx.siblings.pop().is_some() {
+            continue;
+        }
+        if ctx.direct_dependents.pop().is_some() {
+            continue;
+        }
+        if ctx.direct_dependencies.pop().is_some() {
+            continue;
+        }
+        break;
+    }
+    ctx
+}
+
+pub fn render_nearby_bead_context(ctx: &NearbyBeadContext) -> String {
+    if ctx.is_empty() {
+        return "No nearby open work was found.".to_owned();
+    }
+
+    let mut sections = Vec::new();
+    push_nearby_subsection(
+        &mut sections,
+        "Direct dependencies",
+        &ctx.direct_dependencies,
+    );
+    push_nearby_subsection(&mut sections, "Direct dependents", &ctx.direct_dependents);
+    push_nearby_subsection(&mut sections, "Siblings", &ctx.siblings);
+    push_nearby_subsection(&mut sections, "Related work", &ctx.related_work);
+    sections.join("\n\n")
+}
+
+fn nearby_context_rendered_bytes(ctx: &NearbyBeadContext) -> usize {
+    render_nearby_bead_context(ctx).len()
+}
+
+fn push_nearby_subsection(sections: &mut Vec<String>, title: &str, entries: &[NearbyBeadEntry]) {
+    if entries.is_empty() {
+        return;
+    }
+
+    let mut lines = vec![format!("### {title}")];
+    for entry in entries {
+        lines.push(format!(
+            "- `{}` [{}] {}",
+            entry.bead_id, entry.status, entry.title
+        ));
+        if !entry.scope_summary.is_empty() {
+            lines.push(format!("  Scope: {}", entry.scope_summary));
+        }
+    }
+    sections.push(lines.join("\n"));
+}
 
 /// Machine-readable marker embedded in canonical bead task prompts.
 pub fn contract_marker() -> String {
@@ -74,19 +179,43 @@ fn markdown_canonical_section_heading(line: &str) -> Option<(usize, usize)> {
     Some((section_index, leading_spaces))
 }
 
-fn consumer_guidance_body(scope_boundary_guidance: &str) -> String {
+fn consumer_guidance_body(scope_boundary_guidance: &str, section_titles: &[&str]) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "The project prompt below uses `{}`.\n\n",
         contract_identifier()
     ));
     out.push_str("Treat these sections as authoritative:\n");
-    for section in BEAD_TASK_PROMPT_SECTION_TITLES {
+    for section in section_titles {
         out.push_str(&format!("- `{section}`\n"));
     }
     out.push('\n');
     out.push_str(scope_boundary_guidance);
     out
+}
+
+fn prompt_authoritative_section_titles(prompt: &str) -> Vec<&'static str> {
+    if validate_current_canonical_prompt_shape(prompt).is_ok() {
+        return BEAD_TASK_PROMPT_SECTION_TITLES.to_vec();
+    }
+
+    if validate_canonical_prompt_shape(prompt).is_ok() {
+        return BEAD_TASK_PROMPT_SECTION_TITLES
+            .iter()
+            .copied()
+            .filter(|section| *section != SECTION_NEARBY_WORK)
+            .collect();
+    }
+
+    if canonical_section_body(prompt, SECTION_NEARBY_WORK).is_none() {
+        return BEAD_TASK_PROMPT_SECTION_TITLES
+            .iter()
+            .copied()
+            .filter(|section| *section != SECTION_NEARBY_WORK)
+            .collect();
+    }
+
+    BEAD_TASK_PROMPT_SECTION_TITLES.to_vec()
 }
 
 fn top_level_lines(prompt: &str) -> impl Iterator<Item = &str> {
@@ -124,12 +253,65 @@ pub fn prompt_uses_contract(prompt: &str) -> bool {
     has_top_level_contract_marker(prompt)
 }
 
+/// Extract a top-level markdown section body from a canonical task prompt.
+///
+/// The returned body starts immediately after the matching `## ...` heading and
+/// ends before the next top-level `## ...` heading outside fenced blocks.
+pub fn canonical_section_body<'a>(prompt: &'a str, section_title: &str) -> Option<&'a str> {
+    let section_header = format!("## {section_title}");
+    let mut active_fence = None;
+    let mut offset = 0usize;
+    let mut body_start = None;
+
+    for segment in prompt.split_inclusive('\n') {
+        let line = segment.trim_end_matches('\n').trim_end_matches('\r');
+        let trimmed_end = line.trim_end();
+        let leading_spaces = trimmed_end.chars().take_while(|ch| *ch == ' ').count();
+        let heading_line = if leading_spaces <= 3 {
+            &trimmed_end[leading_spaces..]
+        } else {
+            trimmed_end
+        };
+
+        if let Some(opening) = active_fence {
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            offset += segment.len();
+            continue;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            active_fence = Some(opening);
+            offset += segment.len();
+            continue;
+        }
+
+        if body_start.is_some() && leading_spaces <= 3 && heading_line.starts_with("## ") {
+            return body_start.map(|start| &prompt[start..offset]);
+        }
+
+        if leading_spaces <= 3 && heading_line == section_header {
+            body_start = Some(offset + segment.len());
+        }
+
+        offset += segment.len();
+    }
+
+    body_start.map(|start| &prompt[start..])
+}
+
 /// Guidance injected into workflow stage prompts when the project prompt uses
 /// the canonical bead task prompt contract.
 pub fn stage_consumer_guidance() -> String {
+    stage_consumer_guidance_with_sections(BEAD_TASK_PROMPT_SECTION_TITLES)
+}
+
+fn stage_consumer_guidance_with_sections(section_titles: &[&str]) -> String {
     let mut out = String::from("## Task Prompt Contract\n\n");
     out.push_str(&consumer_guidance_body(
         "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` and `Already Planned Elsewhere` as out-of-scope unless the work is strictly required to satisfy the active bead.",
+        section_titles,
     ));
     out
 }
@@ -137,9 +319,14 @@ pub fn stage_consumer_guidance() -> String {
 /// Guidance injected into planning-oriented workflow stage prompts when the
 /// project prompt uses the canonical bead task prompt contract.
 pub fn planning_stage_consumer_guidance() -> String {
+    planning_stage_consumer_guidance_with_sections(BEAD_TASK_PROMPT_SECTION_TITLES)
+}
+
+fn planning_stage_consumer_guidance_with_sections(section_titles: &[&str]) -> String {
     let mut out = String::from("## Task Prompt Contract\n\n");
     out.push_str(&consumer_guidance_body(
         "Use `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` as out-of-scope. Do not absorb work owned by `Already Planned Elsewhere`; leave it deferred or referenced as related follow-up instead of pulling it into the active bead.",
+        section_titles,
     ));
     out
 }
@@ -147,11 +334,27 @@ pub fn planning_stage_consumer_guidance() -> String {
 /// Guidance injected into prompt-review templates when the prompt uses the
 /// canonical bead task prompt contract.
 pub fn prompt_review_consumer_guidance() -> String {
-    let mut out = stage_consumer_guidance();
+    prompt_review_consumer_guidance_with_sections(BEAD_TASK_PROMPT_SECTION_TITLES, false)
+}
+
+fn prompt_review_consumer_guidance_with_sections(
+    section_titles: &[&str],
+    legacy_missing_nearby_work: bool,
+) -> String {
+    let mut out = stage_consumer_guidance_with_sections(section_titles);
     out.push_str(&format!(
         "\n\nIf you rewrite the prompt, preserve the exact contract marker line `{}` and keep the canonical section headings in the same order.",
         contract_marker()
     ));
+    if legacy_missing_nearby_work {
+        out.push_str(
+            " This prompt uses the legacy v1 shape without `Nearby work`; do not add that section unless explicitly modernizing the prompt.",
+        );
+    } else if section_titles.contains(&SECTION_NEARBY_WORK) {
+        out.push_str(
+            " Preserve the graph-derived `Nearby work` body verbatim; do not add, remove, or rewrite nearby bead IDs.",
+        );
+    }
     out.push_str(
         "\n\nPreserve milestone-provided `AGENTS / Repo Guidance` verbatim instead of rewriting it into synthesized bullets.",
     );
@@ -161,7 +364,8 @@ pub fn prompt_review_consumer_guidance() -> String {
 /// Return stage-consumer guidance when the prompt uses the canonical contract.
 pub fn stage_consumer_guidance_for_prompt(prompt: &str) -> String {
     if prompt_uses_contract(prompt) {
-        stage_consumer_guidance()
+        let section_titles = prompt_authoritative_section_titles(prompt);
+        stage_consumer_guidance_with_sections(&section_titles)
     } else {
         String::new()
     }
@@ -175,15 +379,23 @@ pub fn stage_consumer_guidance_for_stage_prompt(stage_id: StageId, prompt: &str)
     }
 
     match stage_id {
-        StageId::Planning | StageId::PlanAndImplement => planning_stage_consumer_guidance(),
-        _ => stage_consumer_guidance(),
+        StageId::Planning | StageId::PlanAndImplement => {
+            let section_titles = prompt_authoritative_section_titles(prompt);
+            planning_stage_consumer_guidance_with_sections(&section_titles)
+        }
+        _ => {
+            let section_titles = prompt_authoritative_section_titles(prompt);
+            stage_consumer_guidance_with_sections(&section_titles)
+        }
     }
 }
 
 /// Return prompt-review guidance when the prompt uses the canonical contract.
 pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
     if prompt_uses_contract(prompt) {
-        prompt_review_consumer_guidance()
+        let section_titles = prompt_authoritative_section_titles(prompt);
+        let legacy_missing_nearby_work = !section_titles.contains(&SECTION_NEARBY_WORK);
+        prompt_review_consumer_guidance_with_sections(&section_titles, legacy_missing_nearby_work)
     } else {
         String::new()
     }
@@ -191,6 +403,20 @@ pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
 
 /// Validate that a prompt preserves the canonical marker and section order.
 pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
+    validate_canonical_prompt_shape_with_options(prompt, true)
+}
+
+/// Validate the current canonical prompt shape for newly generated or refined
+/// prompts. Unlike [`validate_canonical_prompt_shape`], this compatibility-free
+/// check requires `Nearby work` so prompt review cannot silently drop it.
+pub fn validate_current_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
+    validate_canonical_prompt_shape_with_options(prompt, false)
+}
+
+fn validate_canonical_prompt_shape_with_options(
+    prompt: &str,
+    allow_legacy_missing_nearby_work: bool,
+) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     let marker = contract_marker();
     let mut marker_line_index = None;
@@ -240,6 +466,10 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
 
         if found_index > expected_index && expected_index < BEAD_TASK_PROMPT_SECTION_TITLES.len() {
             for missing_index in expected_index..found_index {
+                if is_optional_canonical_section(missing_index, allow_legacy_missing_nearby_work) {
+                    reported_missing[missing_index] = true;
+                    continue;
+                }
                 errors.push(format!(
                     "missing section heading `## {}`",
                     BEAD_TASK_PROMPT_SECTION_TITLES[missing_index]
@@ -281,7 +511,10 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 
     for (index, section) in BEAD_TASK_PROMPT_SECTION_TITLES.iter().enumerate() {
-        if seen_positions[index].is_none() && !reported_missing[index] {
+        if seen_positions[index].is_none()
+            && !reported_missing[index]
+            && !is_optional_canonical_section(index, allow_legacy_missing_nearby_work)
+        {
             errors.push(format!("missing section heading `## {section}`"));
         }
     }
@@ -297,24 +530,56 @@ fn extract_pe_bead_ids_internal(
     prompt: &str,
     include_short_form_aliases: bool,
 ) -> std::collections::HashSet<String> {
+    extract_bullet_bead_ids_from_section(
+        prompt,
+        SECTION_ALREADY_PLANNED_ELSEWHERE,
+        include_short_form_aliases,
+    )
+}
+
+fn extract_bullet_bead_ids_from_section(
+    prompt: &str,
+    section_title: &str,
+    include_short_form_aliases: bool,
+) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
-    let section_header = format!("## {SECTION_ALREADY_PLANNED_ELSEWHERE}");
+    let section_header = format!("## {section_title}");
+    let section_index = BEAD_TASK_PROMPT_SECTION_TITLES
+        .iter()
+        .position(|title| *title == section_title);
     let mut in_section = false;
+    let mut active_fence = None;
 
     for line in prompt.lines() {
+        if let Some(opening) = active_fence {
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            continue;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            active_fence = Some(opening);
+            continue;
+        }
+
         if in_section {
-            // Stop at the next `## ` heading.
-            if line.starts_with("## ") {
+            // Stop at the next top-level `## ` heading.
+            if line.trim_start() == line && line.starts_with("## ") {
                 break;
             }
-            let trimmed = line.trim();
+            if line.trim_start() != line {
+                continue;
+            }
+            let trimmed = line.trim_end();
             if let Some(rest) = trimmed.strip_prefix("- ") {
                 // The bead ID is the first token before space or '('.
                 let id = rest
                     .split(|c: char| c.is_whitespace() || c == '(')
                     .next()
                     .unwrap_or("")
-                    .trim();
+                    .trim()
+                    .trim_matches('`');
                 if !id.is_empty() {
                     result.insert(id.to_owned());
                     // Review-time matching accepts a short-form alias by
@@ -327,12 +592,31 @@ fn extract_pe_bead_ids_internal(
                     }
                 }
             }
-        } else if line.trim() == section_header {
+            continue;
+        }
+
+        let Some((found_index, leading_spaces)) = markdown_canonical_section_heading(line) else {
+            continue;
+        };
+        let Some(target_index) = section_index else {
+            continue;
+        };
+
+        if found_index == target_index && leading_spaces == 0 && line.trim_end() == section_header {
             in_section = true;
+        } else if found_index > target_index && leading_spaces == 0 {
+            break;
         }
     }
 
     result
+}
+
+fn extract_nearby_bead_ids_internal(
+    prompt: &str,
+    include_short_form_aliases: bool,
+) -> std::collections::HashSet<String> {
+    extract_bullet_bead_ids_from_section(prompt, SECTION_NEARBY_WORK, include_short_form_aliases)
 }
 
 /// Extract the canonical bead IDs from the "Already Planned Elsewhere"
@@ -354,6 +638,84 @@ pub fn extract_pe_canonical_bead_ids(prompt: &str) -> std::collections::HashSet<
 /// `planned_bead_membership_refs` in bundle.rs.
 pub fn extract_pe_bead_ids(prompt: &str) -> std::collections::HashSet<String> {
     extract_pe_bead_ids_internal(prompt, true)
+}
+
+/// Extract bead IDs that review stages may route `planned-elsewhere`
+/// findings to. This includes explicit "Already Planned Elsewhere" items and
+/// focused "Nearby work" entries because both sections identify work owned by
+/// beads adjacent to the active task.
+pub fn extract_planned_elsewhere_routing_bead_ids(
+    prompt: &str,
+) -> std::collections::HashSet<String> {
+    let mut ids = extract_pe_bead_ids_internal(prompt, false);
+    let prompt_milestone_id = extract_prompt_milestone_id(prompt);
+    let nearby_ids = extract_nearby_bead_ids_internal(prompt, false);
+    ids.extend(nearby_ids.iter().cloned());
+
+    let mut alias_target_ids = extract_pe_bead_ids_internal(prompt, false);
+    alias_target_ids.extend(
+        nearby_ids
+            .into_iter()
+            .filter(|id| nearby_short_alias_is_safe(prompt_milestone_id.as_deref(), id)),
+    );
+    insert_unambiguous_short_aliases(&mut ids, alias_target_ids);
+    ids
+}
+
+/// Extract canonical bead IDs from the prompt sections that identify work
+/// outside the active bead. Unlike [`extract_planned_elsewhere_routing_bead_ids`],
+/// this omits short-form aliases because it is intended for human guidance.
+pub fn extract_planned_elsewhere_canonical_routing_bead_ids(
+    prompt: &str,
+) -> std::collections::HashSet<String> {
+    let mut ids = extract_pe_bead_ids_internal(prompt, false);
+    ids.extend(extract_nearby_bead_ids_internal(prompt, false));
+    ids
+}
+
+/// Extract canonical bead IDs that may provide short-form routing aliases.
+///
+/// Already-planned-elsewhere items keep their existing broad short-alias
+/// behavior. Nearby-work items only provide short aliases when their milestone
+/// prefix matches the active prompt milestone, matching
+/// [`extract_planned_elsewhere_routing_bead_ids`].
+pub fn extract_planned_elsewhere_alias_target_canonical_bead_ids(
+    prompt: &str,
+) -> std::collections::HashSet<String> {
+    let mut ids = extract_pe_bead_ids_internal(prompt, false);
+    let prompt_milestone_id = extract_prompt_milestone_id(prompt);
+    ids.extend(
+        extract_nearby_bead_ids_internal(prompt, false)
+            .into_iter()
+            .filter(|id| nearby_short_alias_is_safe(prompt_milestone_id.as_deref(), id)),
+    );
+    ids
+}
+
+fn insert_unambiguous_short_aliases(
+    ids: &mut std::collections::HashSet<String>,
+    canonical_ids: std::collections::HashSet<String>,
+) {
+    let mut alias_targets: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    for canonical_id in canonical_ids {
+        let Some(short_id) = strip_milestone_prefix(&canonical_id) else {
+            continue;
+        };
+        alias_targets
+            .entry(short_id.to_owned())
+            .and_modify(|target| {
+                if target.as_deref() != Some(canonical_id.as_str()) {
+                    *target = None;
+                }
+            })
+            .or_insert_with(|| Some(canonical_id));
+    }
+    for (alias, target) in alias_targets {
+        if target.is_some() {
+            ids.insert(alias);
+        }
+    }
 }
 
 /// Strip the milestone-id prefix from a canonical bead ID.
@@ -385,6 +747,24 @@ pub fn milestone_prefix_of(canonical_id: &str) -> Option<&str> {
     } else {
         Some(prefix)
     }
+}
+
+fn extract_prompt_milestone_id(prompt: &str) -> Option<String> {
+    prompt.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let rest = trimmed
+            .strip_prefix("- Milestone ID: ")
+            .or_else(|| trimmed.strip_prefix("- Milestone: "))?;
+        let milestone_id = rest.trim().trim_matches('`').trim();
+        (!milestone_id.is_empty()).then(|| milestone_id.to_owned())
+    })
+}
+
+fn nearby_short_alias_is_safe(prompt_milestone_id: Option<&str>, bead_id: &str) -> bool {
+    let Some(prompt_milestone_id) = prompt_milestone_id else {
+        return false;
+    };
+    milestone_prefix_of(bead_id) == Some(prompt_milestone_id)
 }
 
 /// Default review policy for canonical bead execution prompts.
@@ -477,9 +857,49 @@ mod tests {
     }
 
     #[test]
+    fn stage_guidance_for_legacy_prompt_omits_nearby_work_section() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let guidance = stage_consumer_guidance_for_prompt(&prompt);
+
+        assert!(guidance.contains("`Milestone Summary`"));
+        assert!(!guidance.contains("`Nearby work`"));
+    }
+
+    #[test]
+    fn prompt_review_guidance_for_legacy_prompt_does_not_require_nearby_work() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let guidance = prompt_review_consumer_guidance_for_prompt(&prompt);
+
+        assert!(guidance.contains("legacy v1 shape without `Nearby work`"));
+        assert!(!guidance.contains("- `Nearby work`"));
+    }
+
+    #[test]
+    fn prompt_review_guidance_for_malformed_prompt_without_nearby_work_does_not_preserve_it() {
+        let prompt = format!(
+            "# Drifted Prompt\n\n{}\n\n## Acceptance Criteria\n\nLater section only.",
+            contract_marker()
+        );
+
+        let guidance = prompt_review_consumer_guidance_for_prompt(&prompt);
+
+        assert!(guidance.contains("## Task Prompt Contract"));
+        assert!(!guidance.contains("- `Nearby work`"));
+        assert!(!guidance.contains("Preserve the graph-derived `Nearby work` body verbatim"));
+    }
+
+    #[test]
     fn canonical_prompt_shape_requires_marker_and_all_sections() {
         let valid_prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
         assert!(validate_canonical_prompt_shape(&valid_prompt).is_ok());
@@ -496,9 +916,46 @@ mod tests {
     }
 
     #[test]
+    fn canonical_prompt_shape_allows_legacy_v1_prompt_without_nearby_work() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn current_canonical_prompt_shape_requires_nearby_work() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors =
+            validate_current_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing section heading `## Nearby work`")));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_rejects_nearby_work_after_later_sections() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Nearby work\n\nN\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("unexpected canonical heading `## Nearby work`")));
+    }
+
+    #[test]
     fn canonical_prompt_shape_rejects_marker_after_canonical_section_block() {
         let prompt = format!(
-            "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n{}",
+            "# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH\n\n{}",
             contract_marker()
         );
 
@@ -511,7 +968,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_duplicate_canonical_headings() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nGoal:\nShip the thing.\n\n## Acceptance Criteria\n\nEmbedded bead marker that should stay inside the body.\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nGoal:\nShip the thing.\n\n## Acceptance Criteria\n\nEmbedded bead marker that should stay inside the body.\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -524,7 +981,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_out_of_order_headings() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Explicit Non-Goals\n\nD\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Explicit Non-Goals\n\nD\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -540,7 +997,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_reports_missing_section_without_cascading_later_errors() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -573,7 +1030,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_extra_canonical_headings_after_agents_guidance() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
             contract_marker()
         );
 
@@ -586,7 +1043,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_allows_escaped_canonical_heading_lines_after_agents_guidance() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n    ## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n    ## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
             contract_marker()
         );
 
@@ -596,7 +1053,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_ignores_canonical_headings_inside_fenced_examples() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\n```md\n## Acceptance Criteria\n```\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\n```md\n## Acceptance Criteria\n```\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -606,7 +1063,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_keeps_longer_opening_fence_active_until_matching_close() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n  ````md\n  ## Acceptance Criteria\n  ```\n  ````\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n  ````md\n  ## Acceptance Criteria\n  ```\n  ````\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -616,7 +1073,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_rejects_markdown_valid_indented_canonical_heading_lines() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -629,7 +1086,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_allows_four_space_indented_heading_like_lines_in_section_bodies() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n    ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Summary: first line\n    ## Acceptance Criteria\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
@@ -639,7 +1096,7 @@ mod tests {
     #[test]
     fn canonical_prompt_shape_allows_trailing_whitespace_on_canonical_headings() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary \n\nA\n\n## Current Bead Details\t\n\nB\n\n## Must-Do Scope \n\nC\n\n## Explicit Non-Goals \n\nD\n\n## Acceptance Criteria \n\nE\n\n## Already Planned Elsewhere \n\nF\n\n## Review Policy \n\nG\n\n## AGENTS / Repo Guidance \n\nH",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary \n\nA\n\n## Current Bead Details\t\n\nB\n\n## Nearby work \n\nN\n\n## Must-Do Scope \n\nC\n\n## Explicit Non-Goals \n\nD\n\n## Acceptance Criteria \n\nE\n\n## Already Planned Elsewhere \n\nF\n\n## Review Policy \n\nG\n\n## AGENTS / Repo Guidance \n\nH",
             contract_marker()
         );
 
@@ -698,6 +1155,94 @@ mod tests {
         assert!(ids.contains("8.5.3"));
         assert!(ids.contains("plain-id"));
         assert_eq!(ids.len(), 3);
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_includes_nearby_work() {
+        let prompt = "- Milestone: `9ni`\n\n## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby IDs\n  Scope: Route findings to the dependent.\n\n### Related work\n- `plain-related` [in_progress] Related item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- 9ni.7.1 (Later work) - planned\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("9ni.6.5"));
+        assert!(ids.contains("6.5"));
+        assert!(ids.contains("plain-related"));
+        assert!(ids.contains("9ni.7.1"));
+        assert!(ids.contains("7.1"));
+        assert_eq!(ids.len(), 5);
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_omits_foreign_nearby_short_aliases() {
+        let prompt = "- Milestone ID: `current-ms`\n\n## Nearby work\n\n### Related work\n- `other-ms.bead-4` [open] Foreign related item\n- `current-ms.bead-5` [open] Same milestone related item\n\n## Must-Do Scope\n\nCurrent bead only.\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("other-ms.bead-4"));
+        assert!(!ids.contains("bead-4"));
+        assert!(ids.contains("current-ms.bead-5"));
+        assert!(ids.contains("bead-5"));
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_omits_ambiguous_short_aliases() {
+        let prompt = "- Milestone ID: `current-ms`\n\n## Nearby work\n\n### Related work\n- `current-ms.bead-4` [open] Same milestone related item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- other-ms.bead-4 (Foreign planned item) - downstream\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("current-ms.bead-4"));
+        assert!(ids.contains("other-ms.bead-4"));
+        assert!(
+            !ids.contains("bead-4"),
+            "reviewer guidance should not advertise a short alias that final review rejects"
+        );
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_canonical_routing_bead_ids_omits_short_aliases() {
+        let prompt = "## Nearby work\n\n### Direct dependents\n- `9ni.6.5` [open] Consume nearby IDs\n\n## Already Planned Elsewhere\n\n- 9ni.7.1 (Later work) - planned\n";
+
+        let ids = extract_planned_elsewhere_canonical_routing_bead_ids(prompt);
+
+        assert!(ids.contains("9ni.6.5"));
+        assert!(ids.contains("9ni.7.1"));
+        assert!(!ids.contains("6.5"));
+        assert!(!ids.contains("7.1"));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_ignores_indented_section_examples() {
+        let prompt = "## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- legit.1 (Planned) - downstream\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\n    ## Nearby work\n    - `injected.9` [open] Indented example\n\n    ## Already Planned Elsewhere\n    - injected.10 (Indented example) - no\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("legit.1"));
+        assert!(!ids.contains("injected.9"));
+        assert!(!ids.contains("injected.10"));
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_ignores_fenced_section_examples() {
+        let prompt = "## Nearby work\n\n```md\n- `injected.9` [open] Fenced nearby item\n```\n\n- `legit.2` [open] Real nearby item\n\n## Must-Do Scope\n\n```md\n## Already Planned Elsewhere\n- injected.10 (Fenced example) - no\n```\n\n## Already Planned Elsewhere\n\n- legit.3 (Real planned item) - downstream\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("legit.2"));
+        assert!(ids.contains("legit.3"));
+        assert!(!ids.contains("injected.9"));
+        assert!(!ids.contains("injected.10"));
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_ignores_fenced_section_headers() {
+        let prompt = "- Milestone: `9ni`\n\n```md\n## Nearby work\n- `9ni.injected-nearby` [open] Fenced nearby item\n\n## Already Planned Elsewhere\n- 9ni.injected-planned (Fenced planned item) - no\n```\n\n## Nearby work\n\n- `9ni.legit-nearby` [open] Real nearby item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- 9ni.legit-planned (Real planned item) - downstream\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("9ni.legit-nearby"));
+        assert!(ids.contains("9ni.legit-planned"));
+        assert!(!ids.contains("9ni.injected-nearby"));
+        assert!(!ids.contains("9ni.injected-planned"));
     }
 
     #[test]

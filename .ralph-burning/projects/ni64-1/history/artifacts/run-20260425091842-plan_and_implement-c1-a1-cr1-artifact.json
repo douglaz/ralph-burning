@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T10:14:01.593392727Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented nearby bead context injection for bead-backed task prompts. The prompt context now carries `NearbyBeadContext` with direct dependencies, direct dependents, siblings, and related work; project creation builds it from existing bead detail/list data, filters closed/deferred work, limits siblings/related entries, enforces the 2000-byte budget in priority order, and renders a `## Nearby work` section with empty subsections omitted. Added focused tests covering direct relations, sibling inference/filtering, label overlap ordering, budget trimming, and renderer omission.\n\n## Steps\n\n0. [Completed] Inspected existing bead prompt assembly, dependency/dependent prompt context, bead summary models, and renderer contract.\n1. [Completed] Extended bead summary/domain prompt structures with nearby bead context fields and rendering helpers.\n2. [Completed] Added builder logic for direct relations, siblings via parent epic, related work via label overlap, closed/deferred filtering, stable ordering, one-line scope summaries, and priority-aware byte-budget enforcement.\n3. [Completed] Added and updated tests for the requested nearby-context builder and renderer behaviors.\n4. [Completed] Validated formatting, linting, tests, and Nix build in the repo Nix environment.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context --lib` passed: 4 tests.\n- `nix develop -c cargo test --locked --features test-stub render_bead_task_prompt_omits_empty_nearby_work_subsections --test unit` passed: 1 test.\n- `nix develop -c cargo test --locked --features test-stub` passed with no failures.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not available in either the base shell or `nix develop`; no backlog edits were made as part of this implementation.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

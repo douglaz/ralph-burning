@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr13-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T23:15:44.725300167Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReject the `br list` hard-fail amendment because fail-closed canonical prompt hydration is intentional and still bypassable with a prompt override; accept the nearby-detail failure and unbounded fanout amendments because they expose real correctness and robustness defects.\n\n## Votes\n\n- `fr-13-6ada3d44`: Reject\n  The `load_bead_summaries(...)?` change is a deliberate fail-closed behavior for canonical prompt generation, not a defect on its own. This command now relies on `br list` for authoritative dependency/dependent, planned-elsewhere, and nearby-work context; falling back to empty summaries would knowingly emit unknown or stale status/title data. There is also still an explicit escape hatch via `--prompt-file`, so this does not make project creation impossible in general. Restoring the old degraded path would trade a clear failure for silently lower-integrity prompts.\n- `fr-13-64fbce41`: Accept\n  `load_nearby_details_for_ids` currently turns every `load_bead_detail` failure into `None`, and the render path then falls back to summary/relation data as though the refresh succeeded. That is unsafe because nearby rendering intentionally uses detail to override stale summary status/title/description and to suppress closed or deferred items. If a `br show` fails, the user can be shown stale nearby work with no indication that the authoritative refresh failed.\n- `fr-13-7bb1dc84`: Accept\n  The production path is unbounded. `nearby_all_direct_relation_detail_candidate_ids` returns every direct dependency/dependent, and `load_nearby_details_for_ids` launches one concurrent `br show` per id through `FuturesUnordered` with no runtime semaphore or cap before any render budget is applied. The only direct-detail cap is test-only. Highly connected beads can therefore trigger large subprocess fanout during project creation, which is a real robustness and resource-control bug.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 13
+}

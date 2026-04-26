@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr21-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T06:21:44.973539573Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nStatic review found 2 fix-now issues in the new Nearby-work routing/builder logic.\n\n## Amendments\n\n1. Restrict planned-elsewhere/nearby bead-id extraction to top-level canonical sections outside fenced blocks. The new nearby routing helpers call `extract_bullet_bead_ids_from_section`, which enters a section whenever `line.trim() == \"## Nearby work\"` / `\"## Already Planned Elsewhere\"` and then parses any trimmed `- ...` bullets until the next column-1 `##` heading ([src/contexts/project_run_record/task_prompt_contract.rs:490-523]). Generated prompts deliberately indent canonical-looking headings inside AGENTS guidance ([src/contexts/project_run_record/service.rs:780-808]), so an indented or fenced example can now inject arbitrary bead IDs into the Nearby-work allowlist. That lets review/final_review accept `planned-elsewhere` mappings for beads that were never graph-derived.\n   Rationale: The new Nearby-work routing path widens the existing parser to a second authoritative section, so whitespace/fence-insensitive parsing can suppress legitimate fix-now restarts by treating arbitrary example IDs as valid owners.\n2. Use summary/relation status when prefetching parent-detail-only siblings, or keep scanning until you have five non-closed candidates. In the sparse-summary fallback, sibling prefetching drops status information on the floor: the prefetch filter ignores `summary`/`relation_status` and only excludes candidates that already have a closed detail ([src/cli/project.rs:1973-1998], [src/cli/project.rs:2035-2118], [src/cli/project.rs:3054-3106], [src/cli/project.rs:3355-3402]). Because render mode later requires a loaded detail for siblings that exist only via `parent_detail.dependents` ([src/cli/project.rs:3373-3377]), a milestone with many closed parent-child siblings can consume the 10-load scan budget on closed IDs and omit later open siblings entirely. That breaks the bead's requirement to surface up to five open siblings after filtering closed/deferred ones.\n   Rationale: This is a real correctness gap in the new Nearby-work builder: the sparse-summary path can silently drop valid sibling context, which in turn weakens the prompt's ability to route adjacent work correctly.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 21
+}

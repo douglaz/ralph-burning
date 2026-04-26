@@ -394,12 +394,12 @@ pub fn validate_classification(classification: &FindingClassification) -> Vec<St
 /// propose-new-bead classification (used by final_review). The review
 /// stage only uses fix-now and planned-elsewhere.
 ///
-/// `pe_bead_ids` is the set of bead IDs from the "Already Planned
-/// Elsewhere" section that reviewers may reference. If empty, the
-/// planned-elsewhere guidance still appears but notes that no beads are
-/// listed.
+/// `planned_elsewhere_bead_ids` is the set of bead IDs from the "Already
+/// Planned Elsewhere" and "Nearby work" sections that reviewers may
+/// reference. If empty, the planned-elsewhere guidance still appears but
+/// notes that no beads are listed.
 pub fn render_classification_guidance(
-    pe_bead_ids: &std::collections::HashSet<String>,
+    planned_elsewhere_bead_ids: &std::collections::HashSet<String>,
     include_propose_new_bead: bool,
 ) -> String {
     let mut guidance = String::from(
@@ -419,19 +419,22 @@ pub fn render_classification_guidance(
          ### planned-elsewhere\n\
          \n\
          The finding is valid but is already owned by another bead listed in the \
-         \"Already Planned Elsewhere\" section of the project prompt. Use this when \
-         you are confident the referenced bead's scope covers the concern.\n\
+         \"Already Planned Elsewhere\" or \"Nearby work\" sections of the project prompt. \
+         Use this when you are confident the referenced bead's scope covers the concern.\n\
          Required fields: `finding_summary`, `mapped_to_bead_id`, `confidence` \
          (0.0\u{2013}1.0, must be > 0.8 or it will be flagged for review), `rationale`.\n",
     );
 
-    if pe_bead_ids.is_empty() {
+    if planned_elsewhere_bead_ids.is_empty() {
         guidance.push_str(
-            "\nNo beads are listed in the \"Already Planned Elsewhere\" section, \
+            "\nNo beads are listed in the \"Already Planned Elsewhere\" or \"Nearby work\" sections, \
              so this classification is unlikely to apply.\n",
         );
     } else {
-        let mut sorted_ids: Vec<&str> = pe_bead_ids.iter().map(String::as_str).collect();
+        let mut sorted_ids: Vec<&str> = planned_elsewhere_bead_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
         sorted_ids.sort();
         guidance.push_str("\nValid bead IDs for `mapped_to_bead_id`:\n");
         for id in &sorted_ids {
@@ -459,7 +462,7 @@ pub fn render_classification_guidance(
          Ignore files under `.ralph-burning/`; they are live orchestration state and are out of review scope.\n\
          \n\
          1. Is the finding within the current bead's scope? \u{2192} **fix-now**\n\
-         2. Is it covered by a bead listed in \"Already Planned Elsewhere\"? \
+         2. Is it covered by a bead listed in \"Already Planned Elsewhere\" or \"Nearby work\"? \
          \u{2192} **planned-elsewhere**\n",
     );
     if include_propose_new_bead {
@@ -482,7 +485,8 @@ pub fn render_scope_guidance(project_prompt: &str) -> String {
         return String::new();
     }
 
-    let planned_elsewhere_ids = task_prompt_contract::extract_pe_canonical_bead_ids(project_prompt);
+    let planned_elsewhere_ids =
+        task_prompt_contract::extract_planned_elsewhere_canonical_routing_bead_ids(project_prompt);
     let mut guidance = String::from(
         "## Scope Guidance\n\
          \n\
@@ -495,19 +499,19 @@ pub fn render_scope_guidance(project_prompt: &str) -> String {
          - Use `Milestone Summary` and other milestone context as read-only background for \
          understanding sequencing and intent. Do not expand the plan beyond the active bead \
          based on milestone context alone.\n\
-         - Do not absorb work owned by `Already Planned Elsewhere`. Reference that work as \
-         deferred or related follow-up instead of duplicating it here.\n",
+         - Do not absorb work owned by `Already Planned Elsewhere` or `Nearby work`. Reference \
+         that work as deferred or related follow-up instead of duplicating it here.\n",
     );
 
     if planned_elsewhere_ids.is_empty() {
         guidance.push_str(
-            "\nThe prompt does not list any bead IDs under `Already Planned Elsewhere`, so \
-             there are no named delegated items to reference.\n",
+            "\nThe prompt does not list any bead IDs under `Already Planned Elsewhere` or \
+             `Nearby work`, so there are no named delegated items to reference.\n",
         );
     } else {
         let mut sorted_ids: Vec<&str> = planned_elsewhere_ids.iter().map(String::as_str).collect();
         sorted_ids.sort();
-        guidance.push_str("\nBead IDs already planned elsewhere:\n");
+        guidance.push_str("\nBead IDs already planned elsewhere or nearby:\n");
         for id in sorted_ids {
             guidance.push_str(&format!("- `{id}`\n"));
         }
@@ -1536,6 +1540,7 @@ mod tests {
         let guidance = render_classification_guidance(&pe, false);
         assert!(guidance.contains("### fix-now"));
         assert!(guidance.contains("### planned-elsewhere"));
+        assert!(guidance.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
         assert!(!guidance.contains("### propose-new-bead"));
         assert!(!guidance.contains("propose-new-bead"));
         Ok(())
@@ -1559,6 +1564,7 @@ mod tests {
         pe.insert("m1.zeta-task".to_owned());
         pe.insert("m1.alpha-task".to_owned());
         let guidance = render_classification_guidance(&pe, false);
+        assert!(guidance.contains("\"Already Planned Elsewhere\" or \"Nearby work\""));
         assert!(guidance.contains("- `m1.alpha-task`"));
         assert!(guidance.contains("- `m1.zeta-task`"));
         // alpha should appear before zeta
@@ -1597,7 +1603,7 @@ mod tests {
     #[test]
     fn render_scope_guidance_includes_scope_rules_and_canonical_planned_elsewhere_ids() {
         let prompt = format!(
-            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- ms-alpha.zeta (Zeta) - later work\n- ms-alpha.alpha (Alpha) - adjacent work\n- ms-beta.alpha (Another Alpha) - parallel work\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- ms-alpha.zeta (Zeta) - later work\n- ms-alpha.alpha (Alpha) - adjacent work\n- ms-beta.alpha (Another Alpha) - parallel work\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
             task_prompt_contract::contract_marker()
         );
 
@@ -1612,7 +1618,8 @@ mod tests {
         assert!(guidance.contains(
             "Use `Milestone Summary` and other milestone context as read-only background"
         ));
-        assert!(guidance.contains("Do not absorb work owned by `Already Planned Elsewhere`."));
+        assert!(guidance
+            .contains("Do not absorb work owned by `Already Planned Elsewhere` or `Nearby work`."));
         assert!(guidance.contains("- `ms-alpha.alpha`"));
         assert!(guidance.contains("- `ms-beta.alpha`"));
         assert!(guidance.contains("- `ms-alpha.zeta`"));
@@ -1621,5 +1628,20 @@ mod tests {
         let alpha_pos = guidance.find("ms-alpha.alpha").unwrap();
         let zeta_pos = guidance.find("ms-alpha.zeta").unwrap();
         assert!(alpha_pos < zeta_pos);
+    }
+
+    #[test]
+    fn render_scope_guidance_includes_nearby_work_ids() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `ms-alpha.nearby` [open] Nearby owner\n  Scope: Owns adjacent validation.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nNo explicit planned-elsewhere items were supplied.\n\n## Review Policy\n\nF\n\n## AGENTS / Repo Guidance\n\nG",
+            task_prompt_contract::contract_marker()
+        );
+
+        let guidance = render_scope_guidance(&prompt);
+
+        assert!(guidance.contains("Bead IDs already planned elsewhere or nearby:"));
+        assert!(guidance.contains("- `ms-alpha.nearby`"));
+        assert!(!guidance.contains("- `nearby`"));
+        assert!(!guidance.contains("no named delegated items"));
     }
 }

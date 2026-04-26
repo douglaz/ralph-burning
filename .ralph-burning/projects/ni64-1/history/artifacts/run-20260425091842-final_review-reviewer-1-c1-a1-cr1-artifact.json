@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T10:20:42.382429562Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 1 high-severity regression: the canonical bead prompt format was changed incompatibly without preserving historical `bead_execution_prompt/1` prompts.\n\n## Amendments\n\n1. finding_summary: The branch makes `## Nearby work` a required `bead_execution_prompt/1` section without a compatibility path for the older `/1` prompts that are already persisted on existing tasks. `BEAD_TASK_PROMPT_CONTRACT_VERSION` is still `1`, but `SECTION_NEARBY_WORK` was added to `BEAD_TASK_PROMPT_SECTION_TITLES` in `src/contexts/project_run_record/task_prompt_contract.rs:18-19,42-53`, and the renderer now always emits that section in `src/contexts/project_run_record/service.rs:1217-1231`. Older version-1 prompts generated before this bead therefore fail `validate_canonical_prompt_shape`, which disables canonical scope handling in `src/contexts/workflow_composition/review_classification.rs:519-521` and causes prompt-review / override validation to reject unchanged historical prompts in `src/contexts/workflow_composition/prompt_review.rs:328-339` and `src/contexts/project_run_record/service.rs:426-435`.\nremediation_hint: Either introduce a new contract version and keep consumers able to recognize/validate legacy v1 prompts, or keep `Nearby work` optional when validating older `/1` prompts.\n   Rationale: Bead task prompts are durable project data. Invalidating the previous v1 shape means already-created tasks on this repo silently lose review scope guidance or start failing prompt validation after this branch lands.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr20-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T05:34:47.127356699Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real consistency bugs between contract/allowlist logic and the downstream consumers that enforce review behavior. Each can silently change review outcomes in ways that reduce correctness and safety.\n\n## Votes\n\n- `fr-20-3fc4462a`: Accept\n  `extract_planned_elsewhere_routing_bead_ids` only exposes a nearby short alias after the same-milestone safety check, but `PlannedElsewhereIdCanonicalizer::from_prompt` reconstructs alias targets from every canonical nearby bead whose suffix matches that allowlisted alias. If both `current-ms.bead-4` and `other-ms.bead-4` are present, `bead-4` is advertised as valid for the local bead yet the canonicalizer marks it ambiguous and clears the mapping, which downgrades a valid `planned-elsewhere` finding back to `fix-now`. That is a correctness regression; the canonicalizer and displayed allowlist need the same source of truth.\n- `fr-20-fb75fff9`: Accept\n  The contract validator accepts canonical headings after `trim_end()`, but `canonical_section_body` looks for an exact `line == \"## Nearby work\"` match and exact `starts_with(\"## \")` boundaries. A contract-valid prompt using `## Nearby work ` therefore passes validation while `nearby_work_section_body` fails to find the section, causing `canonical_contract_drift_concerns` to skip the verbatim Nearby work comparison. That leaves a real hole where nearby IDs can be rewritten or dropped without triggering the intended guard. The section parser should normalize headings the same way as the validator.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 20
+}

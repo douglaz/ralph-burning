@@ -330,13 +330,53 @@ fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str
         return Vec::new();
     }
 
-    match task_prompt_contract::validate_canonical_prompt_shape(refined_prompt) {
+    let original_uses_current_contract =
+        task_prompt_contract::validate_current_canonical_prompt_shape(original_prompt).is_ok();
+    let original_is_legacy_v1_contract = !original_uses_current_contract
+        && task_prompt_contract::validate_canonical_prompt_shape(original_prompt).is_ok();
+    let validation_result = if original_is_legacy_v1_contract {
+        match task_prompt_contract::validate_canonical_prompt_shape(refined_prompt) {
+            Ok(()) if task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt)
+                .is_ok() =>
+            {
+                Err(vec![
+                    "legacy v1 prompt refinements must not add `## Nearby work`; that section is graph-derived builder output".to_owned(),
+                ])
+            }
+            other => other,
+        }
+    } else {
+        task_prompt_contract::validate_current_canonical_prompt_shape(refined_prompt)
+    };
+
+    let validation_passed = validation_result.is_ok();
+    let mut concerns = match validation_result {
         Ok(()) => Vec::new(),
         Err(errors) => vec![format!(
             "Preserve the canonical bead task prompt contract exactly: {}",
             errors.join("; ")
         )],
+    };
+
+    let original_nearby_work = nearby_work_section_body(original_prompt);
+    let refined_nearby_work = nearby_work_section_body(refined_prompt);
+    if validation_passed {
+        if original_nearby_work.is_some() && original_nearby_work != refined_nearby_work {
+            concerns.push(
+                "Preserve graph-derived `## Nearby work` verbatim; prompt review must not add, remove, or rewrite nearby bead IDs".to_owned(),
+            );
+        } else if original_nearby_work.is_none() && refined_nearby_work.is_some() {
+            concerns.push(
+                "Do not add graph-derived `## Nearby work` when the original contract-marked prompt did not contain that section".to_owned(),
+            );
+        }
     }
+
+    concerns
+}
+
+fn nearby_work_section_body(prompt: &str) -> Option<&str> {
+    task_prompt_contract::canonical_section_body(prompt, task_prompt_contract::SECTION_NEARBY_WORK)
 }
 
 fn build_prompt_review_member_prompt(
@@ -519,6 +559,7 @@ mod tests {
     use super::*;
 
     const CANONICAL_PROMPT: &str = "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH";
+    const CURRENT_CANONICAL_PROMPT: &str = "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\n- Milestone ID: ms-alpha\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `ms-alpha.real` [open] Real nearby owner\n  Scope: Graph-derived context.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH";
 
     #[test]
     fn build_prompt_review_member_prompt_surfaces_contract_guidance() {
@@ -536,6 +577,23 @@ mod tests {
 
         assert!(prompt.contains("## Task Prompt Contract"));
         assert!(prompt.contains("preserve the exact contract marker line"));
+    }
+
+    #[test]
+    fn build_prompt_review_member_prompt_requires_nearby_work_verbatim_for_current_prompt() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            CURRENT_CANONICAL_PROMPT,
+            CURRENT_CANONICAL_PROMPT,
+            "refiner",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.contains("Preserve the graph-derived `Nearby work` body verbatim"));
     }
 
     #[test]
@@ -627,6 +685,35 @@ mod tests {
     }
 
     #[test]
+    fn canonical_contract_drift_rejects_malformed_contract_refinement_that_adds_nearby_work() {
+        let concerns = canonical_contract_drift_concerns(
+            "# Drifted Prompt\n\n<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n\n## Acceptance Criteria\n\nLater section only.",
+            CURRENT_CANONICAL_PROMPT,
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Do not add graph-derived `## Nearby work`"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_allows_legacy_v1_refinement_without_nearby_work() {
+        let concerns = canonical_contract_drift_concerns(CANONICAL_PROMPT, CANONICAL_PROMPT);
+
+        assert!(concerns.is_empty());
+    }
+
+    #[test]
+    fn canonical_contract_drift_rejects_legacy_v1_refinement_that_adds_nearby_work() {
+        let concerns = canonical_contract_drift_concerns(
+            CANONICAL_PROMPT,
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `ms-alpha.fake` [open] Fabricated nearby owner\n  Scope: Not graph-derived.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("must not add `## Nearby work`"));
+    }
+
+    #[test]
     fn canonical_contract_drift_flags_misplaced_top_level_marker() {
         let concerns = canonical_contract_drift_concerns(
             CANONICAL_PROMPT,
@@ -635,6 +722,38 @@ mod tests {
 
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("must appear before the canonical section block"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_missing_nearby_work_in_refined_prompt() {
+        let concerns = canonical_contract_drift_concerns(
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\nN\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            CANONICAL_PROMPT,
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("missing section heading `## Nearby work`"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_rewritten_nearby_work_body() {
+        let refined = CURRENT_CANONICAL_PROMPT.replace("ms-alpha.real", "ms-alpha.fake");
+
+        let concerns = canonical_contract_drift_concerns(CURRENT_CANONICAL_PROMPT, &refined);
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve graph-derived `## Nearby work` verbatim"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_rewritten_nearby_work_with_trailing_heading_space() {
+        let original = CURRENT_CANONICAL_PROMPT.replace("## Nearby work", "## Nearby work ");
+        let refined = original.replace("ms-alpha.real", "ms-alpha.fake");
+
+        let concerns = canonical_contract_drift_concerns(&original, &refined);
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve graph-derived `## Nearby work` verbatim"));
     }
 
     #[test]

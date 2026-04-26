@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T17:55:38.368008010Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 8/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-8-7afbda5d`\n- `fr-8-dfa984f2`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-7afbda5d`\n\nsrc/cli/project.rs:1912-1928 and 2788-2800 cap summary-inferred sibling detail prefetch at five IDs before detail filtering. When the parent epic detail cannot be loaded and one of those first five summaries is stale-open but actually closed, that sibling is dropped without promoting the sixth open sibling, so the `Nearby work` section can under-report available siblings and hide legitimate planned-elsewhere ownership.\n\n### `fr-8-dfa984f2`\n\nsrc/cli/project.rs:1863-1966 and 2773-2785 now eagerly and sequentially run `br show` for every dependency/dependent, the parent epic, up to 20 sibling candidates, and a bounded related-work set before rendering the prompt. On moderately connected beads this turns task creation into dozens of subprocesses, making prompt creation latency scale with graph degree and label density.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

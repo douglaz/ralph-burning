@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-25T16:52:58.293234262Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending Nearby work sibling-status fallback issue in `src/cli/project.rs`. Sibling candidate filtering now consults fetched bead detail status when available, both while prefetching sibling details and before rendering sibling entries, so closed/deferred siblings whose terminal status appears only in `br show` detail are omitted and do not consume the rendered sibling limit. Added regression coverage for detail-only closed siblings and for prefetch behavior where a closed sibling appears before enough open siblings.\n\n## Steps\n\n0. [Completed] Inspected nearby-context sibling prefetching, sibling entry rendering, and existing Nearby work tests.\n1. [Completed] Added detail-aware `nearby_candidate_status_is_omitted` filtering and applied it to sibling summary candidates, parent-detail relation candidates, and post-prefetch retained sibling counting.\n2. [Completed] Added focused regression tests for siblings closed only in fetched detail and for preventing detail-closed siblings from consuming the sibling prefetch/render limit.\n3. [Completed] Ran focused tests and full repository validation gates, including the authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context_filters_siblings_closed_only_in_detail --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub build_nearby_bead_context_filters_detail_closed_siblings_before_limit --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details_skips_detail_closed_siblings_before_limit --lib` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 7
+}

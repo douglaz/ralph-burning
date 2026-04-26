@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr23-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr23",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T08:14:41.829950147Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Contract-marked prompt overrides are now shape-validated and, if they include `## Nearby work`, must match the graph-derived Nearby work body rendered from the bead context, preventing hand-written or stale overrides from inventing review/final-review routing IDs. Prompt-review contract guidance now derives authoritative sections from the actual prompt body, so malformed contract-marked prompts that lack `## Nearby work` no longer instruct refiners to preserve a nonexistent graph-derived section. The prompt-review Nearby work section extractor now uses the shared top-level section parser.\n\n## Steps\n\n0. [Completed] Inspected prompt override creation, canonical prompt validation/guidance, prompt-review drift handling, and planned-elsewhere ID extraction paths for the two pending amendments.\n1. [Completed] Added shared top-level canonical section body extraction and used it to identify whether `Nearby work` is actually present when building consumer guidance.\n2. [Completed] Added prompt override validation that rejects contract-marked overrides whose `## Nearby work` body differs from the graph-derived body for the active bead context.\n3. [Completed] Updated prompt-review Nearby work body comparison to use the shared section extractor and added focused regression coverage for invented override Nearby work and malformed prompt-review guidance without Nearby work.\n4. [Completed] Ran focused tests and the repository validation gates required for this bead.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub prompt_review_guidance_for_malformed_prompt_without_nearby_work_does_not_preserve_it --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub create_project_from_bead_context_rejects_prompt_override_that_invents_nearby_work --test unit` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 23
+}

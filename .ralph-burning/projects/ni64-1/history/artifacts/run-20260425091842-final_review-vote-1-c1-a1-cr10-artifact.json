@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T20:06:57.668131649Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nAccepted the planned-elsewhere alias-merging amendment as a real correctness bug. Rejected the nearby-work override amendment because the current codebase explicitly supports legacy canonical prompt overrides without `Nearby work` as a compatibility mode, so that behavior is intentional rather than an accidental bypass.\n\n## Votes\n\n- `fr-10-444a7a7f`: Reject\n  `prompt_override` is an explicit escape hatch, and the codebase intentionally preserves legacy canonical prompts that omit `## Nearby work`: `validate_canonical_prompt_shape` allows that shape, there is a dedicated test for it, and prompt-review logic explicitly treats it as a supported legacy form rather than drift. That means this is not an unintended correctness bug in the current implementation; rejecting or silently rewriting such overrides would be a contract change that breaks deliberate backward-compatibility semantics.\n- `fr-10-8787411a`: Accept\n  This is a real merge bug. The prompt contract and reviewer guidance deliberately allow both canonical and short-form nearby bead IDs, and later allowlist validation accepts both forms, but `merge_final_review_amendments` compares `mapped_to_bead_id` as raw strings. Two reviewers can therefore agree on the same owning bead yet be treated as conflicting, which wrongly downgrades `planned-elsewhere` to `fix-now` and can change restart/routing behavior. The IDs need canonicalization before merge, or the short aliases should not be advertised.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 10
+}

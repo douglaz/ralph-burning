@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr16-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr16",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T01:54:34.463350735Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the transient `br show` fallback issue in `src/cli/project.rs`. Nearby detail refresh now records only definitive missing bead results as unavailable, while transient detail failures leave sibling/related entries eligible to render from already-loaded summaries. Render filtering still suppresses entries without either detail or summary data, and direct relation fallback behavior remains preserved. Added focused fake-`br` regression coverage proving transient detail failures do not empty sibling or related Nearby work context.\n\n## Steps\n\n0. [Completed] Inspected nearby detail refresh loading, unavailable-ID handling, render-time status filtering, and existing Nearby work fallback tests.\n1. [Completed] Updated detail refresh error handling so transient `br show` errors are skipped instead of recorded as unavailable, while definitive missing-bead errors still suppress entries.\n2. [Completed] Adjusted render-time detail requirement policy so summary-backed sibling and related entries survive transient refresh failure, without allowing unknown entries that lack both detail and summary.\n3. [Completed] Added and updated regression tests for transient detail failures and direct relation fallback preservation.\n4. [Completed] Ran focused and full repository validation gates, including the authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details_falls_back_to_summary_after_transient_detail_failures --lib` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 16
+}

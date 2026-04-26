@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr24-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr24-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T09:21:59.518612488Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 24/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-24-49fc01f4`\n- `fr-24-06822a99`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-24-49fc01f4`\n\nCanonical prompt overrides can still bypass the new `## Nearby work` section. In `src/contexts/project_run_record/service.rs:428-432`, contract-marked overrides are validated with the legacy-compatible shape, and `validate_prompt_override_nearby_work_matches_context` returns early when the override omits the section entirely (`src/contexts/project_run_record/service.rs:519-523`). That means `project create-from-bead --prompt-file` can still persist a bead-backed prompt with no nearby graph context at all, so downstream review/final-review stages lose the very IDs they now rely on for `planned-elsewhere` routing. Reject legacy-shape contract overrides here or auto-upgrade them so every contract prompt emitted from this path carries graph-derived nearby work.\n\n### `fr-24-06822a99`\n\nNearby-work hydration now silently degrades to partial data whenever `br list` has an I/O failure. `execute_create_from_bead` swallows every non-corruption `load_bead_summaries` error into `BTreeMap::new()` (`src/cli/project.rs:425-428`) and then continues building the prompt. But the new `related_work` category is derived entirely from `bead_summaries` label overlap (`src/cli/project.rs:3316-3349`), and sibling discovery/summary enrichment also depends on that map. On a timeout, version mismatch, or other `br list` failure, project creation still succeeds while emitting an apparently canonical prompt that is missing nearby routing context, which will push reviewers toward `fix-now`/`propose-new-bead` for work that should have been classified as already owned elsewhere. This path should fail loudly or mark the prompt as degraded instead of silently pretending the nearby context is complete.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 24
+}

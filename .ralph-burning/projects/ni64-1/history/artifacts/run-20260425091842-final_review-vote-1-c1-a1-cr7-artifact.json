@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T17:02:06.193445243Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real defects in prompt integrity and planned-elsewhere routing. The first is a concrete stale-state filtering bug in related-work selection; the second is a contract-validation gap that lets legacy prompts gain reviewer-invented nearby-work entries.\n\n## Votes\n\n- `fr-7-62e5e818`: Accept\n  ACCEPT: `nearby_related_work_entries` selects candidates by summary data, filters only `included_ids`, and applies `.take(NEARBY_RELATED_WORK_LIMIT)` before any detail-status recheck. Unlike sibling handling, it never calls `nearby_candidate_status_is_omitted(...)` with `bead_details`, even though those details were prefetched. `nearby_entry_from_summary` then prefers the detail status, so a summary-open/detail-closed or deferred bead can still render under `Related work` and be harvested later as a valid routing target. Filtering against `bead_details` before the top-N limit is the correct remediation.\n- `fr-7-3646e12e`: Accept\n  ACCEPT: when the original prompt is legacy v1, `canonical_contract_drift_concerns` validates the refined prompt with `validate_canonical_prompt_shape`, which is the compatibility validator that accepts both shapes. That means a refined prompt can add a brand-new `## Nearby work` section and still pass, despite the prompt-review guidance explicitly saying legacy prompts should not add it unless explicitly modernized. Because downstream routing allowlists include IDs extracted from `Nearby work`, this is a real integrity gap, even if the immediate impact is low severity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 7
+}

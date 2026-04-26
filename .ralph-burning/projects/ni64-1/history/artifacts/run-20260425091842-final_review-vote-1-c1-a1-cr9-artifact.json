@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-25T18:57:23.894751165Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real correctness bugs in the nearby-work/planned-elsewhere flow. The first is a render/prefetch mismatch that can surface stale closed work; the second is an alias-resolution bug that can misroute planned-elsewhere mappings to the wrong bead.\n\n## Votes\n\n- `fr-9-dcf04770`: Accept\n  `build_nearby_bead_context_with_details` de-duplicates with `included_ids` across direct relations before siblings/related work, but the sibling and related-work detail prefetchers do not use that same selection rule. `nearby_related_work_detail_candidate_ids` just takes the first `limit+1` raw candidates, and the sibling scan helpers count retained candidates only by status, not by whether they will later be excluded as already included. That means early direct-relation overlaps can consume the prefetch budget, leaving the first actually rendered sibling/related entry without refreshed detail. When that entry has a stale summary status but a closed/deferred detail status, `nearby_candidate_status_is_omitted` falls back to the stale summary and can incorrectly render omitted work. That is a real filtering bug.\n- `fr-9-572561fc`: Accept\n  `nearby_related_work_candidates` is not milestone-scoped, so foreign-milestone beads can appear in `Nearby work`. `extract_planned_elsewhere_routing_bead_ids` then adds short-form aliases for those nearby beads, and final review accepts any alias in that allowlist. Downstream, `verify_bead_exists` explicitly resolves a short-form ID by prepending the active bead's prefix when the short form is not directly found. So a reviewer can validly submit a foreign nearby owner as bare `bead-4`, but reconciliation may verify/comment against `current-prefix.bead-4` instead of the foreign canonical bead. That is a real misrouting risk, not just a UX issue, because it can mark the wrong bead as covering the finding.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 9
+}

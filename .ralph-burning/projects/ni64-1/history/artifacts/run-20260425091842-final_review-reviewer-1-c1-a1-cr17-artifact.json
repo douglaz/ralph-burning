@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T02:56:40.388377728Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nFound 2 fix-now issues in nearby-work prompt generation: direct nearby relations disappear when detail refresh is missing, and the new builder eagerly fans out `br show` over sibling/related beads.\n\n## Amendments\n\n1. `src/cli/project.rs:2892-2912` drops a direct dependency/dependent from `## Nearby work` whenever its fresh `br show` detail is missing, even if the focal bead already carries that relation's id/title/status and `br list` supplied a summary. In the degraded paths this branch explicitly tries to support (`br list` unavailable, transient `br show` failure), the prompt can therefore render `No nearby open work was found.` while the old dependency block still lists those beads. Because final-review planned-elsewhere routing only allowlists IDs extracted from `Nearby work` / `Already Planned Elsewhere` (`src/contexts/workflow_composition/final_review.rs:467-470`), those omitted direct relations can no longer be mapped as planned-elsewhere. Fall back to relation/summary data for direct nearby entries when detail refresh is unavailable, and use fresh detail only to override stale status/description when it exists.\n   Rationale: This breaks the core purpose of the new nearby-work section on the very failure modes the branch now degrades through.\n2. `src/cli/project.rs:1884-2025` and `2037-2110` turn nearby-context building into a `br show` fan-out across parent, sibling, and related-work candidates before the project is even created. That makes `project create-from-bead` depend on up to dozens of extra subprocesses for a non-essential prompt hint, which materially increases latency and failure surface on larger milestones. The bead's scope guard explicitly limited per-bead detail fetches to the focal direct relations; siblings and related work should stay summary-backed instead of forcing eager detail refreshes.\n   Rationale: This is a significant robustness and maintainability regression in the command path that assembles bead-backed task prompts.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 17
+}
