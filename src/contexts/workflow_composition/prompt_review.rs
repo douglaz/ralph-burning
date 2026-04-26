@@ -359,13 +359,17 @@ fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str
     };
 
     let original_nearby_work = nearby_work_section_body(original_prompt);
-    if validation_passed
-        && original_nearby_work.is_some()
-        && original_nearby_work != nearby_work_section_body(refined_prompt)
-    {
-        concerns.push(
-            "Preserve graph-derived `## Nearby work` verbatim; prompt review must not add, remove, or rewrite nearby bead IDs".to_owned(),
-        );
+    let refined_nearby_work = nearby_work_section_body(refined_prompt);
+    if validation_passed {
+        if original_nearby_work.is_some() && original_nearby_work != refined_nearby_work {
+            concerns.push(
+                "Preserve graph-derived `## Nearby work` verbatim; prompt review must not add, remove, or rewrite nearby bead IDs".to_owned(),
+            );
+        } else if original_nearby_work.is_none() && refined_nearby_work.is_some() {
+            concerns.push(
+                "Do not add graph-derived `## Nearby work` when the original contract-marked prompt did not contain that section".to_owned(),
+            );
+        }
     }
 
     concerns
@@ -728,6 +732,17 @@ mod tests {
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("Preserve the canonical bead task prompt contract exactly"));
         assert!(concerns[0].contains("missing exact contract marker"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_rejects_malformed_contract_refinement_that_adds_nearby_work() {
+        let concerns = canonical_contract_drift_concerns(
+            "# Drifted Prompt\n\n<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n\n## Acceptance Criteria\n\nLater section only.",
+            CURRENT_CANONICAL_PROMPT,
+        );
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Do not add graph-derived `## Nearby work`"));
     }
 
     #[test]

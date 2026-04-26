@@ -3389,19 +3389,17 @@ fn nearby_candidate_status_is_omitted_with_policy(
 
 fn nearby_candidate_status_is_omitted_for_prefetch(
     bead_id: &str,
-    summary: Option<&BeadSummary>,
-    relation_status: Option<&BeadStatus>,
+    _summary: Option<&BeadSummary>,
+    _relation_status: Option<&BeadStatus>,
     refresh: &NearbyBeadDetails,
 ) -> bool {
-    refresh.unavailable_ids.contains(bead_id)
-        || nearby_status_is_omitted(
-            refresh
-                .details
-                .get(bead_id)
-                .map(|entry| &entry.status)
-                .or_else(|| summary.map(|entry| &entry.status))
-                .or(relation_status),
-        )
+    if refresh.unavailable_ids.contains(bead_id) {
+        return true;
+    }
+    if let Some(detail) = refresh.details.get(bead_id) {
+        return nearby_status_is_omitted(Some(&detail.status));
+    }
+    false
 }
 
 fn infer_parent_epic_id_from_summary(summary: &BeadSummary) -> Option<String> {
@@ -5346,7 +5344,7 @@ mod tests {
     }
 
     #[test]
-    fn nearby_summary_sibling_detail_candidates_include_summary_inferred_siblings() {
+    fn nearby_summary_sibling_detail_candidates_include_summary_inferred_siblings_for_refresh() {
         let bead = sample_bead();
         let bead_summaries = BTreeMap::from([
             (
@@ -5392,7 +5390,7 @@ mod tests {
             &NearbyBeadDetails::default(),
         );
 
-        assert_eq!(candidates, vec!["ms-alpha.bead-1"]);
+        assert_eq!(candidates, vec!["ms-alpha.bead-1", "ms-alpha.bead-3"]);
     }
 
     #[test]
@@ -5766,7 +5764,7 @@ mod tests {
     }
 
     #[test]
-    fn nearby_related_work_prefetch_candidates_skip_summary_terminal_entries() {
+    fn nearby_related_work_prefetch_candidates_include_summary_terminal_entries_for_refresh() {
         let mut bead = sample_bead();
         bead.labels = vec!["a".to_owned()];
         let bead_summaries = BTreeMap::from([
@@ -5813,7 +5811,67 @@ mod tests {
             3,
         );
 
-        assert_eq!(candidates, vec!["ms-alpha.related-3"]);
+        assert_eq!(
+            candidates,
+            vec![
+                "ms-alpha.related-1",
+                "ms-alpha.related-2",
+                "ms-alpha.related-3"
+            ]
+        );
+    }
+
+    #[test]
+    fn nearby_summary_sibling_prefetch_candidates_include_summary_terminal_entries_for_refresh() {
+        let bead = sample_bead();
+        let bead_summaries = BTreeMap::from([
+            (
+                "ms-alpha.bead-1".to_owned(),
+                summary(
+                    "ms-alpha.bead-1",
+                    "Closed sibling summary",
+                    BeadStatus::Closed,
+                    &[],
+                    Some("Summary may be stale and should be refreshed."),
+                    Some("ms-alpha.epic-1"),
+                ),
+            ),
+            (
+                "ms-alpha.bead-3".to_owned(),
+                summary(
+                    "ms-alpha.bead-3",
+                    "Deferred sibling summary",
+                    BeadStatus::Deferred,
+                    &[],
+                    Some("Summary may be stale and should be refreshed."),
+                    Some("ms-alpha.epic-1"),
+                ),
+            ),
+            (
+                "ms-alpha.bead-4".to_owned(),
+                summary(
+                    "ms-alpha.bead-4",
+                    "Open sibling summary",
+                    BeadStatus::Open,
+                    &[],
+                    Some("Open summary should also be refreshed."),
+                    Some("ms-alpha.epic-1"),
+                ),
+            ),
+        ]);
+
+        let candidates = nearby_summary_sibling_detail_candidate_ids(
+            &bead,
+            &bead_summaries,
+            "ms-alpha.epic-1",
+            &BTreeSet::new(),
+            &NearbyBeadDetails::default(),
+        );
+
+        assert_eq!(
+            candidates,
+            vec!["ms-alpha.bead-1", "ms-alpha.bead-3", "ms-alpha.bead-4"]
+        );
     }
 
     #[test]

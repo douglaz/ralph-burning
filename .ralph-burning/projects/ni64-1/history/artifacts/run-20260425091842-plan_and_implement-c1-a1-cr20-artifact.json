@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr20-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr20",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T05:20:47.784128779Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Nearby sibling and related-work detail prefetch now ignores stale summary/relation terminal status unless fresh detail has already confirmed the bead is closed/deferred, allowing stale `br list` closed/deferred candidates to be refreshed via `br show` and included when authoritative detail says they are open. Prompt-review drift checks now reject adding graph-derived `## Nearby work` whenever the original contract-marked prompt lacked that section, including malformed contract prompts that are neither current nor valid legacy v1. Added focused regression coverage for stale-summary refresh candidates and malformed prompt-review fabrication.\n\n## Steps\n\n0. [Completed] Inspected the affected nearby-context candidate filtering and prompt-review canonical drift paths, including the existing local diff and regression tests.\n1. [Completed] Updated nearby prefetch filtering so sibling and related-work refresh candidate selection does not let stale summary closed/deferred status prevent authoritative detail refresh.\n2. [Completed] Updated prompt-review drift validation so contract-marked prompts that originally lack `## Nearby work` cannot gain a fabricated Nearby work section during refinement.\n3. [Completed] Added/updated focused tests for sibling prefetch, related-work prefetch, and malformed contract prompt-review Nearby work fabrication.\n4. [Completed] Ran focused tests plus formatting, linting, full test suite, Nix build, and whitespace validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub nearby_summary_sibling_detail_candidates_include_summary_inferred_siblings_for_refresh --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub nearby_related_work_prefetch_candidates_include_summary_terminal_entries_for_refresh --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub nearby_summary_sibling_prefetch_candidates_include_summary_terminal_entries_for_refresh --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub canonical_contract_drift_rejects_malformed_contract_refinement_that_adds_nearby_work --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 20
+}
