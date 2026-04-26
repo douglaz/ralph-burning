@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr19-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T04:41:15.970221128Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real correctness issues in `Nearby work` handling and prompt-contract enforcement.\n\n## Votes\n\n- `fr-19-01223aa8`: Accept\n  Accept. The sibling and related candidate selectors at `src/cli/project.rs:3067-3100` and `:3201-3210` filter on summary status before any `br show` refresh, and `nearby_candidate_status_is_omitted_for_prefetch` at `:3390-3404` prefers summary status when no detail is loaded. A stale `closed`/`deferred` summary therefore prevents that bead from ever entering the refresh set, so the later detail-over-summary recovery path is unreachable and open nearby work can be silently omitted.\n- `fr-19-f06f7ddf`: Accept\n  Accept. In `canonical_contract_drift_concerns`, malformed-but-contract-marked originals fall through to validating only the refined prompt's current shape (`src/contexts/workflow_composition/prompt_review.rs:337-350`), and the graph-derived nearby-work fidelity check only runs when the original already had that section (`:361-368`). That lets a refiner 'repair' a drifted prompt by inventing a brand-new `## Nearby work` block, which is unsafe because those bead IDs are supposed to come from the builder, not model synthesis.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 19
+}

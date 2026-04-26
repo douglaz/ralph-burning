@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 19
+      "completion_round": 20
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 18
+    "final_review_restart_count": 19
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 19,
+  "completion_rounds": 20,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-19-01223aa8",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "finding_summary: Open siblings and related beads can be omitted from `## Nearby work` when `br list` is stale and reports them as `closed`/`deferred`. affected_files: `src/cli/project.rs:3067-3100`, `src/cli/project.rs:3201-3210`, `src/cli/project.rs:3390-3404`. The sibling/related candidate filters consult summary status before any bounded `br show` refresh, so a summary-stale closed bead is never refreshed and the later detail-over-summary logic becomes unreachable for those categories.",
+        "created_at": "2026-04-26T04:41:16.005390310Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "a53a7e3bb0dd76806928801d5bbbce1f714f1a7214443464436e526870617f3b"
+      },
+      {
+        "amendment_id": "fr-19-f06f7ddf",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 19,
+        "body": "finding_summary: Prompt review can fabricate a brand-new `## Nearby work` section when the original prompt is contract-marked but malformed rather than valid legacy v1. affected_files: `src/contexts/workflow_composition/prompt_review.rs:337-350`, `src/contexts/workflow_composition/prompt_review.rs:361-368`. Only well-formed legacy prompts are blocked from adding `Nearby work`, and the verbatim-body check only runs when the original prompt already had that section, so a drifted prompt that kept the contract marker but lost `Nearby work` can be 'repaired' with hallucinated nearby bead IDs.",
+        "created_at": "2026-04-26T04:41:16.005393786Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "0265cade97ec7715d48dc1ae83c12fc142264dcce38d5d1a7b1e76fa2f83cbcb"
+      }
+    ],
     "processed_count": 31
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 20 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-26T03:39:54.791259684Z",
+    "resolved_at": "2026-04-26T04:31:25.574523644Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
