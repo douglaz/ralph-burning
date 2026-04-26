@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260426110147-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260426110147-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T15:27:15.597586116Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the pending remediation in success reconciliation: accepted `ProposeNewBead` final-review amendments that only carry the new contract summary now log and skip legacy bead creation instead of failing the completed run, while legacy fully-populated proposals still flow through the existing creation path. Planned-elsewhere reconstruction now ignores non-default classification metadata such as `CoveredByExistingBead`, preserving it for downstream routing beads without activating planned-elsewhere side effects in this scope. Added regressions for both paths and kept existing legacy mapping reconstruction behavior intact for `FixCurrentBead` amendments with historical `mapped_to_bead_id` data.\n\n## Steps\n\n0. [Completed] Inspected current success reconciliation and final-review classification persistence around `ProposeNewBead`, `CoveredByExistingBead`, `mapped_to_bead_id`, and aggregate reconstruction.\n1. [Completed] Updated propose-new-bead reconciliation so summary-only new contract proposals are observed and logged but not consumed by the legacy bead-creation pipeline until the routing bead owns that behavior.\n2. [Completed] Updated planned-elsewhere reconstruction so non-default classification metadata is not consumed for routing yet, while legacy `FixCurrentBead` reconstruction remains supported.\n3. [Completed] Added targeted regression coverage for summary-only `propose_new_bead` reconciliation and deferred `covered_by_existing_bead` planned-elsewhere reconstruction.\n4. [Completed] Ran formatting, focused tests, clippy, the full locked test suite, and the authoritative Nix build gate.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub reconstruct_pe_mappings_ignores_new_covered_by_classification -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub reconcile_proposed_beads_after_success_ignores_summary_only_contract_proposals -- --nocapture` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed: lib 1293 passed/6 ignored, CLI 374 passed/3 ignored, run_attach_tmux 1 passed, unit 1112 passed/1 ignored, doctests 0 passed/9 ignored.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}
