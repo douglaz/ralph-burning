@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr22-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr22-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T07:32:39.772687113Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments identify real contract-handling defects. One lets prompt override text become authority for planned-elsewhere routing without provenance checks; the other creates an unsatisfiable prompt-review recovery path for malformed contract-marked prompts missing `## Nearby work`.\n\n## Votes\n\n- `fr-22-7eae14bc`: Accept\n  `create_project_from_bead_context` validates only contract shape for override prompts, not that `## Nearby work` matches graph-derived context. Review/final-review then build the planned-elsewhere allowlist directly from prompt text via `extract_planned_elsewhere_routing_bead_ids`, and final review canonicalization accepts those IDs as valid routing targets. That means a stale or fabricated override can authorize `mapped_to_bead_id` values that were never derived from the task graph, which is a correctness and safety defect.\n- `fr-22-f449cb5e`: Accept\n  For a contract-marked prompt that is malformed and lacks `## Nearby work`, `prompt_authoritative_section_titles()` falls back to the full current section list, so prompt-review guidance tells the refiner to preserve graph-derived nearby-work content. But `canonical_contract_drift_concerns()` rejects both possibilities: omitting `## Nearby work` fails current-shape validation, while adding it triggers the explicit 'do not add graph-derived `## Nearby work`' concern because the original prompt lacked that section. That leaves no satisfiable refinement path and can burn retries on impossible instructions.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 22
+}

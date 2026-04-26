@@ -2,34 +2,57 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 22
+      "completion_round": 23
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 21
+    "final_review_restart_count": 22
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 22,
+  "completion_rounds": 23,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-22-7eae14bc",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 22,
+        "body": "Contract-marked prompt overrides can now invent `## Nearby work` IDs that review and final-review treat as valid `mapped_to_bead_id` owners. `create_project_from_bead_context` only shape-validates overrides ([src/contexts/project_run_record/service.rs:427-432]); later stages derive the planned-elsewhere allowlist directly from prompt text ([src/contexts/workflow_composition/engine.rs:191-195], [src/contexts/workflow_composition/final_review.rs:467-530, 2382-2385], [src/contexts/project_run_record/task_prompt_contract.rs:591-632]). A stale or hand-written override can therefore silently reroute findings to beads that were never graph-derived for this task.",
+        "created_at": "2026-04-26T07:32:39.816532901Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "d586957a097ea4200acb86128cd6151e48d44f09876830d40e397e60b62c94b1"
+      },
+      {
+        "amendment_id": "fr-22-f449cb5e",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 22,
+        "body": "Prompt-review guidance becomes self-contradictory on malformed contract-marked prompts that do not actually contain `## Nearby work`. When validation fails, `prompt_authoritative_section_titles()` falls back to the full current section list ([src/contexts/project_run_record/task_prompt_contract.rs:197-210]), and `prompt_review_consumer_guidance_for_prompt()` then tells the refiner to preserve the graph-derived nearby-work body verbatim ([src/contexts/project_run_record/task_prompt_contract.rs:284-300, 338-342]). The validator later rejects any refinement that adds `## Nearby work` when the original prompt lacked it ([src/contexts/workflow_composition/prompt_review.rs:333-370]), so drift-recovery can churn on impossible instructions.",
+        "created_at": "2026-04-26T07:32:39.816537970Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "4e1b842ee003c26681d2eddf95dc7860e532e97c5cc67a217bafcde9a8156e9f"
+      }
+    ],
     "processed_count": 37
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 23 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-26T06:13:58.039991884Z",
+    "resolved_at": "2026-04-26T07:19:24.737604064Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
