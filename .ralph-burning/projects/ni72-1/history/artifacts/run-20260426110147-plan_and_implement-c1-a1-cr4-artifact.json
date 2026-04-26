@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260426110147-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260426110147-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T16:23:18.963937083Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the two pending findings for bead 9ni.7.2. Review-stage semantic validation now accepts non-passing review payloads when `classified_findings` is populated even if the legacy `follow_up_or_amendments` array is empty. `ReviewFindingClass` now accepts legacy final-review kebab-case classification strings (`fix-now`, `planned-elsewhere`, `propose-new-bead`) while continuing to serialize the new snake_case contract values. Success reconciliation preserves legacy `planned-elsewhere` aggregate mappings by detecting the raw legacy classification before parsed enum normalization, while still deferring new `covered_by_existing_bead` routing behavior to later beads.\n\n## Steps\n\n0. [Completed] Inspected review contract validation, final-review classification serde, success reconciliation aggregate parsing, and existing review/final-review classification tests.\n1. [Completed] Updated review validation so classified-only review findings satisfy the non-approved follow-up requirement for `StageId::Review`.\n2. [Completed] Added serde aliases for legacy final-review kebab-case classification values and preserved legacy planned-elsewhere reconstruction semantics in success reconciliation.\n3. [Completed] Added regression coverage for classified-only review payloads, legacy final-review proposal parsing, legacy aggregate parsing, and legacy planned-elsewhere mapping reconstruction.\n4. [Completed] Ran focused regressions, formatting, clippy, the full locked test suite, and the authoritative Nix build gate.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub review_accepts_classified_findings_without_legacy_follow_ups -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub legacy_kebab_case_final_review_proposal_classifications_parse -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub legacy_kebab_case_final_review_aggregate_classifications_parse -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub reconstruct_pe_mappings_preserves_legacy_planned_elsewhere_classification -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed: lib 1288 passed/6 ignored, CLI 374 passed/3 ignored, run_attach_tmux 1 passed, unit 1115 passed/1 ignored, doctests 0 passed/9 ignored.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 4
+}

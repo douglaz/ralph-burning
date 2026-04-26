@@ -228,7 +228,12 @@ impl StageContract {
                 }
             }
             StagePayload::Validation(p) => {
-                if !p.outcome.is_passing() && p.follow_up_or_amendments.is_empty() {
+                let has_review_findings =
+                    self.stage_id == StageId::Review && !p.classified_findings.is_empty();
+                if !p.outcome.is_passing()
+                    && p.follow_up_or_amendments.is_empty()
+                    && !has_review_findings
+                {
                     return Err(ContractError::DomainValidation {
                         stage_id: self.stage_id.to_string(),
                         details: "follow_up_or_amendments required when outcome is not approved"

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260426110147",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 4
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-3-36ae3fd9",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "Finding summary: Review payloads that use only the new classified findings are rejected before the engine can queue them. In `src/contexts/workflow_composition/contracts.rs:230`, semantic validation still requires `follow_up_or_amendments` to be non-empty for every non-approved validation outcome. A `review` response with `classified_findings` populated, but the legacy string array empty, fails domain validation even though `src/contexts/workflow_composition/payloads.rs:163` defines `classified_findings` as the new classified finding channel and `src/contexts/workflow_composition/engine.rs:8193` can queue those entries. Remediation hint: for `StageId::Review`, treat non-empty `classified_findings` as satisfying the non-approved follow-up requirement, and add a regression test with empty `follow_up_or_amendments` plus one classified finding.",
-        "created_at": "2026-04-26T15:42:28.602684265Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "27c87b1da1ad2010bb13af1f49010f887b50b3f90dd583e1e03f74bdd2c3c726"
-      },
-      {
-        "amendment_id": "fr-3-4319474e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 3,
-        "body": "Finding summary: The final-review classification enum is no longer backward compatible with persisted or in-flight payloads that use the previous kebab-case values. `src/contexts/workflow_composition/panel_contracts.rs:139` aliases final-review classifications to `ReviewFindingClass`, whose serde form in `src/contexts/workflow_composition/review_classification.rs:18` only accepts snake_case values. Existing final-review aggregates can contain `fix-now`, `planned-elsewhere`, or `propose-new-bead`; those now fail parsing in `src/contexts/automation_runtime/success_reconciliation.rs:1088`, or are silently skipped in the reconstruction path at `src/contexts/automation_runtime/success_reconciliation.rs:1259`. Remediation hint: add serde aliases or a migration deserializer for the old values, and cover legacy aggregate/proposal parsing in tests, including legacy planned-elsewhere mappings.",
-        "created_at": "2026-04-26T15:42:28.602688703Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "d172f86ae77cf5796ae39e76bf6e35b40940e10a3d0031ef2cf72ecb6a7e8b75"
-      }
-    ],
-    "processed_count": 4
+    "pending": [],
+    "processed_count": 6
   },
-  "status_summary": "running: final review restart round 4 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-26T15:27:15.840251026Z",

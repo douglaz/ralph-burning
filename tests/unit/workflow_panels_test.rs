@@ -250,6 +250,39 @@ fn legacy_final_review_amendment_defaults_to_fix_current_bead() {
 }
 
 #[test]
+fn legacy_kebab_case_final_review_proposal_classifications_parse() {
+    let fix_now = parsed_final_review_amendment(serde_json::json!({
+        "body": "Legacy fix-now amendment.",
+        "classification": "fix-now"
+    }));
+    assert_eq!(fix_now.classification, ReviewFindingClass::FixCurrentBead);
+
+    let planned_elsewhere = parsed_final_review_amendment(serde_json::json!({
+        "body": "Legacy planned-elsewhere amendment.",
+        "classification": "planned-elsewhere",
+        "mapped_to_bead_id": "9ni.8.5"
+    }));
+    assert_eq!(
+        planned_elsewhere.classification,
+        ReviewFindingClass::CoveredByExistingBead
+    );
+    assert_eq!(
+        planned_elsewhere.covered_by_bead_id.as_deref(),
+        Some("9ni.8.5")
+    );
+
+    let propose_new_bead = parsed_final_review_amendment(serde_json::json!({
+        "body": "Legacy proposed bead amendment.",
+        "classification": "propose-new-bead",
+        "proposed_bead_summary": "Add legacy follow-up"
+    }));
+    assert_eq!(
+        propose_new_bead.classification,
+        ReviewFindingClass::ProposeNewBead
+    );
+}
+
+#[test]
 fn final_review_vote_payload_round_trips() {
     let payload = FinalReviewVotePayload {
         summary: "Reviewer votes captured.".to_string(),
@@ -365,6 +398,63 @@ fn final_review_aggregate_covered_by_existing_bead_round_trips_classification() 
             .as_deref(),
         Some("other-bead-42"),
         "mapped_to_bead_id must survive serialization round-trip"
+    );
+}
+
+#[test]
+fn legacy_kebab_case_final_review_aggregate_classifications_parse() {
+    let payload: FinalReviewAggregatePayload = serde_json::from_value(serde_json::json!({
+        "restart_required": true,
+        "force_completed": false,
+        "total_reviewers": 1,
+        "total_proposed_amendments": 3,
+        "unique_amendment_count": 3,
+        "accepted_amendment_ids": ["a-fix", "a-pe", "a-new"],
+        "rejected_amendment_ids": [],
+        "disputed_amendment_ids": [],
+        "amendments": [],
+        "final_accepted_amendments": [
+            {
+                "amendment_id": "a-fix",
+                "normalized_body": "Legacy fix-now",
+                "sources": [],
+                "classification": "fix-now"
+            },
+            {
+                "amendment_id": "a-pe",
+                "normalized_body": "Legacy planned elsewhere",
+                "sources": [],
+                "mapped_to_bead_id": "9ni.8.5",
+                "classification": "planned-elsewhere"
+            },
+            {
+                "amendment_id": "a-new",
+                "normalized_body": "Legacy proposed bead",
+                "sources": [],
+                "classification": "propose-new-bead",
+                "proposed_bead_summary": "Add legacy follow-up"
+            }
+        ],
+        "final_review_restart_count": 1,
+        "max_restarts": 3,
+        "summary": "Legacy aggregate",
+        "exhausted_count": 0,
+        "probe_exhausted_count": 0,
+        "effective_min_reviewers": 1
+    }))
+    .expect("legacy aggregate classifications should parse");
+
+    assert_eq!(
+        payload.final_accepted_amendments[0].classification,
+        AmendmentClassification::FixCurrentBead
+    );
+    assert_eq!(
+        payload.final_accepted_amendments[1].classification,
+        AmendmentClassification::CoveredByExistingBead
+    );
+    assert_eq!(
+        payload.final_accepted_amendments[2].classification,
+        AmendmentClassification::ProposeNewBead
     );
 }
 

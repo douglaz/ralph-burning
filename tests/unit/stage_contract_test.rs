@@ -74,6 +74,16 @@ fn review_payload_with_classified_finding(finding: serde_json::Value) -> serde_j
     })
 }
 
+fn review_payload_with_only_classified_finding(finding: serde_json::Value) -> serde_json::Value {
+    json!({
+        "outcome": "request_changes",
+        "evidence": ["review evidence"],
+        "findings_or_gaps": ["classified gap"],
+        "follow_up_or_amendments": [],
+        "classified_findings": [finding]
+    })
+}
+
 fn parsed_review_finding(
     finding: serde_json::Value,
 ) -> ralph_burning::contexts::workflow_composition::payloads::ClassifiedFinding {
@@ -326,6 +336,28 @@ fn evaluate_permissive_accepts_non_passing_validation_payloads() {
         .expect("permissive evaluation");
 
     assert!(bundle.artifact.contains("Rejected"));
+}
+
+#[test]
+fn review_accepts_classified_findings_without_legacy_follow_ups() {
+    let bundle = contract_for_stage(StageId::Review)
+        .evaluate_permissive(&review_payload_with_only_classified_finding(json!({
+            "body": "Classified-only finding.",
+            "classification": "fix_current_bead"
+        })))
+        .expect("classified findings should satisfy review follow-up requirement");
+
+    match bundle.payload {
+        StagePayload::Validation(payload) => {
+            assert!(payload.follow_up_or_amendments.is_empty());
+            assert_eq!(payload.classified_findings.len(), 1);
+            assert_eq!(
+                payload.classified_findings[0].classification,
+                ReviewFindingClass::FixCurrentBead
+            );
+        }
+        _ => panic!("expected validation payload"),
+    }
 }
 
 #[test]

@@ -19,11 +19,14 @@ use crate::contexts::project_run_record::task_prompt_contract;
 #[serde(rename_all = "snake_case")]
 pub enum ReviewFindingClass {
     /// The finding is in scope for the current bead and should be fixed in this run.
+    #[serde(alias = "fix-now")]
     #[default]
     FixCurrentBead,
     /// The finding is already covered by another bead.
+    #[serde(alias = "planned-elsewhere")]
     CoveredByExistingBead,
     /// The finding should be surfaced as a proposed new bead.
+    #[serde(alias = "propose-new-bead")]
     ProposeNewBead,
     /// The finding is informational and requires no action.
     InformationalOnly,

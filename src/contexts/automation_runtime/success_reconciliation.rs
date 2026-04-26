@@ -11,6 +11,7 @@
 //! 6. Continues milestone bead selection for non-final milestones
 //! 7. Records the task-to-bead linkage outcome
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -1255,6 +1256,7 @@ fn reconstruct_missing_pe_mappings(
     let rounds_to_scan: Vec<u32> = authoritative_max_round.into_iter().collect();
     for round in rounds_to_scan {
         let payload = latest_by_round[&round];
+        let legacy_planned_elsewhere_ids = legacy_planned_elsewhere_amendment_ids(&payload.payload);
 
         let aggregate: FinalReviewAggregatePayload =
             match serde_json::from_value(payload.payload.clone()) {
@@ -1263,7 +1265,11 @@ fn reconstruct_missing_pe_mappings(
             };
 
         for amendment in &aggregate.final_accepted_amendments {
-            if amendment.classification != AmendmentClassification::FixCurrentBead {
+            let is_legacy_planned_elsewhere =
+                legacy_planned_elsewhere_ids.contains(&amendment.amendment_id);
+            if amendment.classification != AmendmentClassification::FixCurrentBead
+                && !is_legacy_planned_elsewhere
+            {
                 tracing::info!(
                     amendment_id = amendment.amendment_id.as_str(),
                     classification = %amendment.classification,
@@ -1333,6 +1339,29 @@ fn reconstruct_missing_pe_mappings(
     }
 
     (reconstructed, authoritative_max_round)
+}
+
+fn legacy_planned_elsewhere_amendment_ids(
+    aggregate_payload: &serde_json::Value,
+) -> HashSet<String> {
+    aggregate_payload
+        .get("final_accepted_amendments")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|amendment| {
+            amendment
+                .get("classification")
+                .and_then(serde_json::Value::as_str)
+                == Some("planned-elsewhere")
+        })
+        .filter_map(|amendment| {
+            amendment
+                .get("amendment_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -4236,6 +4265,85 @@ mod tests {
             reconstructed.is_empty(),
             "new covered_by_existing_bead contract metadata must not activate planned-elsewhere routing yet"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn reconstruct_pe_mappings_preserves_legacy_planned_elsewhere_classification(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::FileSystem;
+        use crate::contexts::project_run_record::model::PayloadRecord;
+        use crate::contexts::workflow_composition::panel_contracts::RecordKind;
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let project_id = ProjectId::new("proj-legacy-pe")?;
+        let project_root = FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        let milestone_id = MilestoneId::new("ms-legacy-pe")?;
+        let now = Utc::now();
+        let aggregate = serde_json::json!({
+            "restart_required": false,
+            "force_completed": false,
+            "total_reviewers": 1,
+            "total_proposed_amendments": 1,
+            "unique_amendment_count": 1,
+            "accepted_amendment_ids": ["a1"],
+            "rejected_amendment_ids": [],
+            "disputed_amendment_ids": [],
+            "amendments": [],
+            "final_accepted_amendments": [
+                {
+                    "amendment_id": "a1",
+                    "normalized_body": "legacy planned elsewhere",
+                    "sources": [],
+                    "mapped_to_bead_id": "existing-bead",
+                    "classification": "planned-elsewhere"
+                }
+            ],
+            "final_review_restart_count": 0,
+            "max_restarts": 3,
+            "summary": "legacy aggregate",
+            "exhausted_count": 0,
+            "probe_exhausted_count": 0,
+            "effective_min_reviewers": 1
+        });
+
+        let payload = PayloadRecord {
+            payload_id: "run-legacy-pe-final_review-aggregate-c1-a1-cr1-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: now,
+            payload: aggregate,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 1,
+        };
+        std::fs::write(
+            payloads_dir.join("aggregate.json"),
+            serde_json::to_string(&payload)?,
+        )?;
+
+        let (reconstructed, authoritative_max_round) = reconstruct_missing_pe_mappings(
+            base,
+            "proj-legacy-pe",
+            "active-bead",
+            &milestone_id,
+            &[],
+            "run-legacy-pe",
+        );
+
+        assert_eq!(authoritative_max_round, Some(1));
+        assert_eq!(reconstructed.len(), 1);
+        assert_eq!(reconstructed[0].finding_summary, "legacy planned elsewhere");
+        assert_eq!(reconstructed[0].mapped_to_bead_id, "existing-bead");
 
         Ok(())
     }
