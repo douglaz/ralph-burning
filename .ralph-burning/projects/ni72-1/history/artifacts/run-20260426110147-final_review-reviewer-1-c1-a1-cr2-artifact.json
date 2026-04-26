@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260426110147-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260426110147-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T14:44:30.229211520Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound two correctness issues in the non-default classification handoff: summary-only proposed-bead amendments can fail post-run reconciliation, and covered-by amendments can still be routed into planned-elsewhere state despite the current scope guard.\n\n## Amendments\n\n1. fix-now/high: Propose-new-bead amendments can make a completed run fail during success reconciliation. The prompt says `propose_new_bead` only needs `proposed_bead_summary` (`src/contexts/workflow_composition/review_classification.rs:455`), and final-review normalization preserves `ProposeNewBead` when that summary exists while allowing `proposed_title`, `proposed_scope`, `severity`, and `rationale` to remain absent (`src/contexts/workflow_composition/final_review.rs:600`). Later, `reconcile_proposed_beads_after_success` still treats accepted `ProposeNewBead` amendments as actionable and returns an error if those older metadata fields are missing (`src/contexts/automation_runtime/success_reconciliation.rs:1108`). A model following the new contract can therefore produce a valid final-review payload that breaks post-run reconciliation. Remediation: until the new-bead routing bead owns this path, downgrade summary-only proposed-bead amendments to `FixCurrentBead` before persistence or make success reconciliation ignore them; alternatively require and prompt for the full metadata it already expects.\n   Rationale: This is within the current contract-wiring scope because the branch introduces the new accepted shape but leaves an existing downstream consumer expecting the old shape, creating a real failure path.\n2. fix-now/medium: `covered_by_existing_bead` is not actually fix-now-equivalent for current behavior. Final-review aggregation preserves a `mapped_to_bead_id` for covered-by amendments (`src/contexts/workflow_composition/final_review.rs:761`), while the post-success reconstruction path records planned-elsewhere mappings for any accepted amendment with `mapped_to_bead_id`, without checking whether routing is supposed to be active (`src/contexts/automation_runtime/success_reconciliation.rs:1262`). That bypasses the current bead's light-wiring-only scope: accepted covered-by findings can still create planned-elsewhere state/comments after success even though non-default classes are supposed to be observed and logged only for now. Remediation: keep the metadata inspectable, but gate reconstruction/routing so it does not consume the new classification fields until the planned-elsewhere routing bead enables that behavior.\n   Rationale: The current bead explicitly says non-default classes should continue to behave like fix-current findings and should not wire the planned-elsewhere pipeline yet.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

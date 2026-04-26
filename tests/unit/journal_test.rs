@@ -291,6 +291,9 @@ fn amendment_queued_event_builder_serializes_amendment_metadata() {
             backend_family: "claude".to_owned(),
             model_id: "claude-opus".to_owned(),
         }]),
+        None,
+        None,
+        None,
     );
 
     assert_eq!(event.event_type, JournalEventType::AmendmentQueued);

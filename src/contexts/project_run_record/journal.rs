@@ -1,4 +1,5 @@
 use crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource;
+use crate::contexts::workflow_composition::review_classification::ReviewFindingClass;
 use crate::shared::error::{AppError, AppResult};
 
 use super::model::{JournalEvent, JournalEventType};
@@ -322,6 +323,9 @@ pub fn amendment_queued_event(
     source: &str,
     dedup_key: &str,
     reviewer_sources: Option<&[FinalReviewAmendmentSource]>,
+    classification: Option<ReviewFindingClass>,
+    covered_by_bead_id: Option<&str>,
+    proposed_bead_summary: Option<&str>,
 ) -> JournalEvent {
     let mut details = serde_json::json!({
         "run_id": run_id.as_str(),
@@ -334,6 +338,15 @@ pub fn amendment_queued_event(
     if let Some(reviewer_sources) = reviewer_sources {
         details["reviewer_sources"] = serde_json::to_value(reviewer_sources)
             .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+    }
+    if let Some(classification) = classification {
+        details["classification"] = serde_json::json!(classification);
+    }
+    if let Some(covered_by_bead_id) = covered_by_bead_id {
+        details["covered_by_bead_id"] = serde_json::json!(covered_by_bead_id);
+    }
+    if let Some(proposed_bead_summary) = proposed_bead_summary {
+        details["proposed_bead_summary"] = serde_json::json!(proposed_bead_summary);
     }
 
     JournalEvent {

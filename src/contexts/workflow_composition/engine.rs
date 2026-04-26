@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -51,8 +51,9 @@ use crate::contexts::project_run_record::service::{
 };
 use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::payloads::{
-    ReviewOutcome, StagePayload, ValidationPayload,
+    ClassifiedFinding, ReviewOutcome, StagePayload, ValidationPayload,
 };
+use crate::contexts::workflow_composition::review_classification::ReviewFindingClass;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
@@ -3777,6 +3778,9 @@ where
                             amendment.queued.source.as_str(),
                             &amendment.queued.dedup_key,
                             Some(&amendment.reviewer_sources),
+                            Some(amendment.queued.classification),
+                            amendment.queued.covered_by_bead_id.as_deref(),
+                            amendment.queued.proposed_bead_summary.as_deref(),
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -4937,9 +4941,9 @@ where
 
                     let follow_ups = validation_follow_ups(&bundle.payload);
 
-                    // Record non-fix-now classified findings for downstream
-                    // reconciliation (8.5.x). These are not queued as amendments
-                    // but are logged with their classification intact.
+                    // Keep this compatibility hook for later routing beads. In
+                    // the current engine every class still restarts like a
+                    // fix-current finding, so this usually records nothing.
                     if let StagePayload::Validation(ref validation) = bundle.payload {
                         let deferred: Vec<_> = validation
                             .classified_findings
@@ -5015,6 +5019,9 @@ where
                             amendment.source.as_str(),
                             &amendment.dedup_key,
                             None,
+                            Some(amendment.classification),
+                            amendment.covered_by_bead_id.as_deref(),
+                            amendment.proposed_bead_summary.as_deref(),
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -8152,35 +8159,64 @@ fn validation_outcome(payload: &StagePayload) -> Option<ReviewOutcome> {
     }
 }
 
-/// Returns the follow-up/amendment strings that should be queued for
-/// remediation. When the payload has classified findings, only fix-now items
-/// are returned. Planned-elsewhere and propose-new-bead findings are logged
-/// and excluded from the remediation queue.
-fn validation_follow_ups(payload: &StagePayload) -> Vec<String> {
+#[derive(Debug, Clone)]
+struct ReviewFollowUp {
+    body: String,
+    classification: ReviewFindingClass,
+    covered_by_bead_id: Option<String>,
+    proposed_bead_summary: Option<String>,
+}
+
+impl ReviewFollowUp {
+    fn from_legacy(body: String) -> Self {
+        Self {
+            body,
+            classification: ReviewFindingClass::FixCurrentBead,
+            covered_by_bead_id: None,
+            proposed_bead_summary: None,
+        }
+    }
+
+    fn from_classified(finding: &ClassifiedFinding) -> Self {
+        Self {
+            body: finding.body.clone(),
+            classification: finding.classification,
+            covered_by_bead_id: finding.covered_by_bead_id.clone(),
+            proposed_bead_summary: finding.proposed_bead_summary.clone(),
+        }
+    }
+}
+
+/// Returns the follow-ups/amendments that should be queued for remediation.
+/// The current engine treats all finding classes as fix-now equivalent while
+/// preserving classification metadata for downstream routing beads.
+fn validation_follow_ups(payload: &StagePayload) -> Vec<ReviewFollowUp> {
     match payload {
         StagePayload::Validation(validation) => {
-            if validation.classified_findings.is_empty() {
-                // Non-milestone mode or LLM didn't produce classified output:
-                // treat all follow-ups as fix-now for backward compat.
-                validation.follow_up_or_amendments.clone()
-            } else {
-                // Milestone-aware mode: only fix-now findings become amendments.
-                let fix_now: Vec<String> = validation
-                    .classified_findings
-                    .iter()
-                    .filter(|f| f.classification.triggers_restart())
-                    .map(|f| f.body.clone())
-                    .collect();
-                let skipped = validation.classified_findings.len() - fix_now.len();
-                if skipped > 0 {
-                    tracing::info!(
-                        fix_now_count = fix_now.len(),
-                        skipped_count = skipped,
-                        "review classification: routing only fix-now findings to amendment queue"
-                    );
+            let mut classified_bodies = HashSet::new();
+            let mut follow_ups = validation
+                .classified_findings
+                .iter()
+                .map(|finding| {
+                    classified_bodies.insert(finding.body.as_str());
+                    if finding.classification != ReviewFindingClass::FixCurrentBead {
+                        tracing::info!(
+                            classification = %finding.classification,
+                            covered_by_bead_id = ?finding.covered_by_bead_id,
+                            proposed_bead_summary = ?finding.proposed_bead_summary,
+                            "review finding classification surfaced"
+                        );
+                    }
+                    ReviewFollowUp::from_classified(finding)
+                })
+                .collect::<Vec<_>>();
+
+            for body in &validation.follow_up_or_amendments {
+                if !classified_bodies.contains(body.as_str()) {
+                    follow_ups.push(ReviewFollowUp::from_legacy(body.clone()));
                 }
-                fix_now
             }
+            follow_ups
         }
         _ => Vec::new(),
     }
@@ -8195,7 +8231,7 @@ fn validation_findings(payload: &StagePayload) -> &[String] {
 
 /// Build typed QueuedAmendment records from follow-up strings.
 fn build_queued_amendments(
-    follow_ups: &[String],
+    follow_ups: &[ReviewFollowUp],
     source_stage: StageId,
     source_cycle: u32,
     source_completion_round: u32,
@@ -8205,9 +8241,9 @@ fn build_queued_amendments(
     follow_ups
         .iter()
         .enumerate()
-        .map(|(idx, body)| {
+        .map(|(idx, follow_up)| {
             let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
-            let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, &follow_up.body);
             QueuedAmendment {
                 amendment_id: format!(
                     "{}-{}-cr{}-amd{}",
@@ -8219,18 +8255,21 @@ fn build_queued_amendments(
                 source_stage,
                 source_cycle,
                 source_completion_round,
-                body: body.clone(),
+                body: follow_up.body.clone(),
                 created_at: now,
                 batch_sequence: (idx + 1) as u32,
                 source,
                 dedup_key,
+                classification: follow_up.classification,
+                covered_by_bead_id: follow_up.covered_by_bead_id.clone(),
+                proposed_bead_summary: follow_up.proposed_bead_summary.clone(),
             }
         })
         .collect()
 }
 
 fn build_recorded_follow_ups(
-    follow_ups: &[String],
+    follow_ups: &[ReviewFollowUp],
     source_stage: StageId,
     source_cycle: u32,
     source_completion_round: u32,
@@ -8240,9 +8279,9 @@ fn build_recorded_follow_ups(
     follow_ups
         .iter()
         .enumerate()
-        .map(|(idx, body)| {
+        .map(|(idx, follow_up)| {
             let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
-            let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, &follow_up.body);
             QueuedAmendment {
                 amendment_id: format!(
                     "{}-{}-c{}-cr{}-follow-up{}",
@@ -8255,11 +8294,14 @@ fn build_recorded_follow_ups(
                 source_stage,
                 source_cycle,
                 source_completion_round,
-                body: body.clone(),
+                body: follow_up.body.clone(),
                 created_at: now,
                 batch_sequence: (idx + 1) as u32,
                 source,
                 dedup_key,
+                classification: follow_up.classification,
+                covered_by_bead_id: follow_up.covered_by_bead_id.clone(),
+                proposed_bead_summary: follow_up.proposed_bead_summary.clone(),
             }
         })
         .collect()
@@ -8991,11 +9033,8 @@ struct FinalReviewQueuedAmendment {
     queued: QueuedAmendment,
     reviewer_sources:
         Vec<crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource>,
-    /// When set, this amendment is planned-elsewhere and should be routed to
-    /// the mapping handler instead of the amendment queue.
+    /// Legacy covered-by bead ID retained for downstream inspectability.
     mapped_to_bead_id: Option<String>,
-    /// Three-way classification for downstream routing.
-    classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification,
 }
 
 fn partition_final_review_amendments_by_route(
@@ -9004,18 +9043,10 @@ fn partition_final_review_amendments_by_route(
     Vec<&FinalReviewQueuedAmendment>,
     Vec<&FinalReviewQueuedAmendment>,
 ) {
-    let mut planned_elsewhere = Vec::new();
+    let planned_elsewhere = Vec::new();
     let mut restart_queue = Vec::new();
     for amendment in amendments {
-        match amendment.classification {
-            crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::PlannedElsewhere => {
-                planned_elsewhere.push(amendment);
-            }
-            crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::FixNow => {
-                restart_queue.push(amendment);
-            }
-            crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::ProposeNewBead => {}
-        }
+        restart_queue.push(amendment);
     }
     (planned_elsewhere, restart_queue)
 }
@@ -9879,10 +9910,12 @@ where
                     batch_sequence: (index + 1) as u32,
                     source,
                     dedup_key,
+                    classification: amendment.classification,
+                    covered_by_bead_id: amendment.covered_by_bead_id.clone(),
+                    proposed_bead_summary: amendment.proposed_bead_summary.clone(),
                 },
                 reviewer_sources: amendment.sources.clone(),
                 mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
-                classification: amendment.classification,
             }
         })
         .collect::<Vec<_>>();
@@ -10545,8 +10578,11 @@ mod tests {
     };
     use crate::contexts::workflow_composition::contracts;
     use crate::contexts::workflow_composition::panel_contracts::RecordProducer;
-    use crate::contexts::workflow_composition::payloads::StagePayload;
+    use crate::contexts::workflow_composition::payloads::{
+        ClassifiedFinding, ReviewOutcome, StagePayload, ValidationPayload,
+    };
     use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
+    use crate::contexts::workflow_composition::review_classification::ReviewFindingClass;
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{
         BackendFamily, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId,
@@ -10556,15 +10592,16 @@ mod tests {
 
     use super::{
         advance_iterative_loop_state, build_final_review_snapshot, build_prompt_review_snapshot,
-        complete_run, drift_still_satisfies_requirements, failed_invocation_id_for_stage,
-        git_change_scope_fingerprint, git_diff_fingerprint, git_repo_available_with_program,
-        invocation_id_for_stage, iterative_loop_exit_reason, mark_running_run_interrupted,
-        milestone_lineage_plan_hash, partition_final_review_amendments_by_route, pause_run,
-        preflight_check, probe_final_review_reviewers, resolution_has_drifted,
-        resolve_runtime_final_review_panel, resolve_stage_plan, resume_iteration_counters,
-        resume_run_with_retry, resume_terminal_iterative_stage_result, role_for_stage,
-        should_retry_stage_failure, stage_running_summary_for_active_run,
-        sync_milestone_bead_start, validate_iterative_minimal_loop_settings,
+        build_queued_amendments, complete_run, drift_still_satisfies_requirements,
+        failed_invocation_id_for_stage, git_change_scope_fingerprint, git_diff_fingerprint,
+        git_repo_available_with_program, invocation_id_for_stage, iterative_loop_exit_reason,
+        mark_running_run_interrupted, milestone_lineage_plan_hash,
+        partition_final_review_amendments_by_route, pause_run, preflight_check,
+        probe_final_review_reviewers, resolution_has_drifted, resolve_runtime_final_review_panel,
+        resolve_stage_plan, resume_iteration_counters, resume_run_with_retry,
+        resume_terminal_iterative_stage_result, role_for_stage, should_retry_stage_failure,
+        stage_running_summary_for_active_run, sync_milestone_bead_start,
+        validate_iterative_minimal_loop_settings, validation_follow_ups,
         FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
         IterativeInvocationSidecar, IterativeLoopExitReason, QueuedAmendment,
         RunningAttemptIdentity, StagePlan, TerminalIterativeResumeResult,
@@ -12583,7 +12620,7 @@ mod tests {
     }
 
     #[test]
-    fn final_review_routes_only_fix_now_into_restart_queue() {
+    fn final_review_routes_all_classes_into_restart_queue_for_now() {
         let queued = |id: &str, classification, mapped_to_bead_id: Option<&str>| {
             FinalReviewQueuedAmendment {
                 queued: QueuedAmendment {
@@ -12597,22 +12634,24 @@ mod tests {
                     source:
                         crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
                     dedup_key: format!("dedup-{id}"),
+                    classification,
+                    covered_by_bead_id: mapped_to_bead_id.map(str::to_owned),
+                    proposed_bead_summary: None,
                 },
                 reviewer_sources: Vec::new(),
                 mapped_to_bead_id: mapped_to_bead_id.map(str::to_owned),
-                classification,
             }
         };
 
         let amendments = vec![
             queued(
                 "fix",
-                crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::FixNow,
+                crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::FixCurrentBead,
                 None,
             ),
             queued(
                 "planned",
-                crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::PlannedElsewhere,
+                crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::CoveredByExistingBead,
                 Some("bead-elsewhere"),
             ),
             queued(
@@ -12625,10 +12664,43 @@ mod tests {
         let (planned_elsewhere, restart_queue) =
             partition_final_review_amendments_by_route(&amendments);
 
-        assert_eq!(planned_elsewhere.len(), 1);
-        assert_eq!(planned_elsewhere[0].queued.amendment_id, "planned");
-        assert_eq!(restart_queue.len(), 1);
+        assert_eq!(planned_elsewhere.len(), 0);
+        assert_eq!(restart_queue.len(), 3);
         assert_eq!(restart_queue[0].queued.amendment_id, "fix");
+        assert_eq!(restart_queue[1].queued.amendment_id, "planned");
+        assert_eq!(restart_queue[2].queued.amendment_id, "proposed");
+    }
+
+    #[test]
+    fn review_classification_reaches_queued_amendment_record_without_dropping_legacy_follow_ups() {
+        let payload = StagePayload::Validation(ValidationPayload {
+            outcome: ReviewOutcome::RequestChanges,
+            evidence: vec!["evidence".to_owned()],
+            findings_or_gaps: vec!["gap".to_owned()],
+            follow_up_or_amendments: vec!["fallback".to_owned()],
+            classified_findings: vec![ClassifiedFinding {
+                body: "covered elsewhere".to_owned(),
+                classification: ReviewFindingClass::CoveredByExistingBead,
+                covered_by_bead_id: Some("9ni.8.5".to_owned()),
+                mapped_to_bead_id: None,
+                proposed_bead_summary: None,
+            }],
+        });
+        let run_id = RunId::new("run-classification").expect("run id");
+        let follow_ups = validation_follow_ups(&payload);
+        let amendments = build_queued_amendments(&follow_ups, StageId::Review, 1, 1, &run_id);
+
+        assert_eq!(amendments.len(), 2);
+        assert_eq!(
+            amendments[0].classification,
+            ReviewFindingClass::CoveredByExistingBead
+        );
+        assert_eq!(amendments[0].covered_by_bead_id.as_deref(), Some("9ni.8.5"));
+        assert_eq!(amendments[1].body, "fallback");
+        assert_eq!(
+            amendments[1].classification,
+            ReviewFindingClass::FixCurrentBead
+        );
     }
 
     fn sample_milestone_bundle(milestone_id: &str) -> MilestoneBundle {

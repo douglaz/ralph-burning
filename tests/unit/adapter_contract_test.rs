@@ -1179,6 +1179,9 @@ fn make_amendment(id: &str, stage: ralph_burning::shared::domain::StageId) -> Qu
         batch_sequence: 1,
         source,
         dedup_key,
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }
 }
 
@@ -1200,6 +1203,9 @@ fn make_amendment_with_seq(
         batch_sequence: seq,
         source,
         dedup_key,
+        classification: Default::default(),
+        covered_by_bead_id: None,
+        proposed_bead_summary: None,
     }
 }
 

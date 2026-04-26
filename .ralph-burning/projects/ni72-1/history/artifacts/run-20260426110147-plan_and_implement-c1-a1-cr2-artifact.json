@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260426110147-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260426110147-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T14:33:42.371154346Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nResolved the two pending review findings. Final-review voter and arbiter prompt notes now state that planned-elsewhere classifications are preserved for downstream routing while current behavior remains restart-triggering/fix-now-equivalent. Review-stage remediation now merges classified_findings with any additional legacy follow_up_or_amendments, deduplicating by body and preserving unmatched legacy follow-ups as FixCurrentBead so existing behavior is not lost.\n\n## Steps\n\n0. [Completed] Inspected current classification plumbing, final-review prompt notes, ReviewFindingClass restart behavior, and review-stage follow-up queue construction.\n1. [Completed] Updated final-review voter/arbiter planned-elsewhere wording to remove the incorrect no-restart claim and describe current restart-equivalent behavior.\n2. [Completed] Updated review validation follow-up construction to preserve classified metadata while appending unmatched legacy follow_up_or_amendments as default FixCurrentBead follow-ups.\n3. [Completed] Added/updated regression coverage for classified review findings coexisting with legacy follow-ups without dropping the legacy item.\n4. [Completed] Ran focused and required validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub review_classification_reaches_queued_amendment_record_without_dropping_legacy_follow_ups -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub final_review_voter_prompt -- --nocapture` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed: lib 1292 passed; CLI 374 passed/3 ignored; run_attach_tmux 1 passed; unit 1112 passed/1 ignored; doctests 0 passed/9 ignored.\n- `nix build` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

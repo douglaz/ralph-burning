@@ -11,6 +11,7 @@
 //! 6. Continues milestone bead selection for non-final milestones
 //! 7. Records the task-to-bead linkage outcome
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -1111,10 +1112,13 @@ async fn reconcile_proposed_beads_after_success<R: ProcessRunner>(
             amendment.severity,
             amendment.rationale.as_ref(),
         ) else {
-            return Err(milestone_error(format!(
-                "accepted propose-new-bead amendment {} is missing required metadata in completion round {}",
-                amendment.amendment_id, authoritative_round
-            )));
+            tracing::info!(
+                amendment_id = amendment.amendment_id.as_str(),
+                completion_round = authoritative_round,
+                proposed_bead_summary = ?amendment.proposed_bead_summary,
+                "accepted propose_new_bead amendment lacks legacy creation metadata; leaving new-bead routing to the follow-up routing bead"
+            );
+            continue;
         };
 
         let input = ProposeNewBeadInput {
@@ -1252,6 +1256,7 @@ fn reconstruct_missing_pe_mappings(
     let rounds_to_scan: Vec<u32> = authoritative_max_round.into_iter().collect();
     for round in rounds_to_scan {
         let payload = latest_by_round[&round];
+        let legacy_planned_elsewhere_ids = legacy_planned_elsewhere_amendment_ids(&payload.payload);
 
         let aggregate: FinalReviewAggregatePayload =
             match serde_json::from_value(payload.payload.clone()) {
@@ -1260,6 +1265,19 @@ fn reconstruct_missing_pe_mappings(
             };
 
         for amendment in &aggregate.final_accepted_amendments {
+            let is_legacy_planned_elsewhere =
+                legacy_planned_elsewhere_ids.contains(&amendment.amendment_id);
+            if amendment.classification != AmendmentClassification::FixCurrentBead
+                && !is_legacy_planned_elsewhere
+            {
+                tracing::info!(
+                    amendment_id = amendment.amendment_id.as_str(),
+                    classification = %amendment.classification,
+                    mapped_to_bead_id = ?amendment.mapped_to_bead_id,
+                    "final-review classification metadata observed; planned-elsewhere reconstruction is deferred to the routing bead"
+                );
+                continue;
+            }
             let mapped_to = match amendment.mapped_to_bead_id.as_deref() {
                 Some(id) => {
                     let trimmed = id.trim();
@@ -1321,6 +1339,29 @@ fn reconstruct_missing_pe_mappings(
     }
 
     (reconstructed, authoritative_max_round)
+}
+
+fn legacy_planned_elsewhere_amendment_ids(
+    aggregate_payload: &serde_json::Value,
+) -> HashSet<String> {
+    aggregate_payload
+        .get("final_accepted_amendments")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|amendment| {
+            amendment
+                .get("classification")
+                .and_then(serde_json::Value::as_str)
+                == Some("planned-elsewhere")
+        })
+        .filter_map(|amendment| {
+            amendment
+                .get("amendment_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -4007,8 +4048,9 @@ mod tests {
         Ok(())
     }
 
-    /// Two aggregates for the same completion_round but different created_at:
-    /// only the latest aggregate's PE amendments should be reconstructed.
+    /// Two legacy aggregates for the same completion_round but different
+    /// created_at: only the latest aggregate's PE amendments should be
+    /// reconstructed.
     #[test]
     fn reconstruct_pe_mappings_deduplicates_by_round_latest_wins(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -4058,10 +4100,12 @@ mod tests {
                     normalized_body: body.to_owned(),
                     sources: vec![],
                     mapped_to_bead_id: Some(mapped_to.to_owned()),
-                    classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::PlannedElsewhere,
+                    covered_by_bead_id: Some(mapped_to.to_owned()),
+                    classification: crate::contexts::workflow_composition::panel_contracts::AmendmentClassification::FixCurrentBead,
                     rationale: None,
                     proposed_title: None,
                     proposed_scope: None,
+                    proposed_bead_summary: None,
                     severity: None,
                 }],
                 final_review_restart_count: 0,
@@ -4139,6 +4183,171 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn reconstruct_pe_mappings_ignores_new_covered_by_classification(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::FileSystem;
+        use crate::contexts::project_run_record::model::PayloadRecord;
+        use crate::contexts::workflow_composition::panel_contracts::{
+            FinalReviewAggregatePayload, FinalReviewCanonicalAmendment, RecordKind,
+        };
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let project_id = ProjectId::new("proj-covered-deferred")?;
+        let project_root = FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        let milestone_id = MilestoneId::new("ms-covered-deferred")?;
+        let now = Utc::now();
+        let aggregate = FinalReviewAggregatePayload {
+            restart_required: true,
+            force_completed: false,
+            total_reviewers: 1,
+            total_proposed_amendments: 1,
+            unique_amendment_count: 1,
+            accepted_amendment_ids: vec!["a1".to_owned()],
+            rejected_amendment_ids: vec![],
+            disputed_amendment_ids: vec![],
+            amendments: vec![],
+            final_accepted_amendments: vec![FinalReviewCanonicalAmendment {
+                amendment_id: "a1".to_owned(),
+                normalized_body: "covered by another bead".to_owned(),
+                sources: vec![],
+                mapped_to_bead_id: Some("existing-bead".to_owned()),
+                covered_by_bead_id: Some("existing-bead".to_owned()),
+                classification: AmendmentClassification::CoveredByExistingBead,
+                rationale: None,
+                proposed_title: None,
+                proposed_scope: None,
+                proposed_bead_summary: None,
+                severity: None,
+            }],
+            final_review_restart_count: 1,
+            max_restarts: 3,
+            summary: "test".to_owned(),
+            exhausted_count: 0,
+            probe_exhausted_count: 0,
+            effective_min_reviewers: 1,
+        };
+
+        let payload = PayloadRecord {
+            payload_id: "run-covered-deferred-final_review-aggregate-c1-a1-cr2-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: now,
+            payload: serde_json::to_value(&aggregate)?,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 2,
+        };
+        std::fs::write(
+            payloads_dir.join("aggregate.json"),
+            serde_json::to_string(&payload)?,
+        )?;
+
+        let (reconstructed, authoritative_max_round) = reconstruct_missing_pe_mappings(
+            base,
+            "proj-covered-deferred",
+            "active-bead",
+            &milestone_id,
+            &[],
+            "run-covered-deferred",
+        );
+
+        assert_eq!(authoritative_max_round, Some(2));
+        assert!(
+            reconstructed.is_empty(),
+            "new covered_by_existing_bead contract metadata must not activate planned-elsewhere routing yet"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn reconstruct_pe_mappings_preserves_legacy_planned_elsewhere_classification(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::adapters::fs::FileSystem;
+        use crate::contexts::project_run_record::model::PayloadRecord;
+        use crate::contexts::workflow_composition::panel_contracts::RecordKind;
+        use chrono::Utc;
+
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let project_id = ProjectId::new("proj-legacy-pe")?;
+        let project_root = FileSystem::project_root(base, &project_id);
+        let payloads_dir = project_root.join("history/payloads");
+        std::fs::create_dir_all(&payloads_dir)?;
+
+        let milestone_id = MilestoneId::new("ms-legacy-pe")?;
+        let now = Utc::now();
+        let aggregate = serde_json::json!({
+            "restart_required": false,
+            "force_completed": false,
+            "total_reviewers": 1,
+            "total_proposed_amendments": 1,
+            "unique_amendment_count": 1,
+            "accepted_amendment_ids": ["a1"],
+            "rejected_amendment_ids": [],
+            "disputed_amendment_ids": [],
+            "amendments": [],
+            "final_accepted_amendments": [
+                {
+                    "amendment_id": "a1",
+                    "normalized_body": "legacy planned elsewhere",
+                    "sources": [],
+                    "mapped_to_bead_id": "existing-bead",
+                    "classification": "planned-elsewhere"
+                }
+            ],
+            "final_review_restart_count": 0,
+            "max_restarts": 3,
+            "summary": "legacy aggregate",
+            "exhausted_count": 0,
+            "probe_exhausted_count": 0,
+            "effective_min_reviewers": 1
+        });
+
+        let payload = PayloadRecord {
+            payload_id: "run-legacy-pe-final_review-aggregate-c1-a1-cr1-payload".to_owned(),
+            stage_id: StageId::FinalReview,
+            cycle: 1,
+            attempt: 1,
+            created_at: now,
+            payload: aggregate,
+            record_kind: RecordKind::StageAggregate,
+            producer: None,
+            completion_round: 1,
+        };
+        std::fs::write(
+            payloads_dir.join("aggregate.json"),
+            serde_json::to_string(&payload)?,
+        )?;
+
+        let (reconstructed, authoritative_max_round) = reconstruct_missing_pe_mappings(
+            base,
+            "proj-legacy-pe",
+            "active-bead",
+            &milestone_id,
+            &[],
+            "run-legacy-pe",
+        );
+
+        assert_eq!(authoritative_max_round, Some(1));
+        assert_eq!(reconstructed.len(), 1);
+        assert_eq!(reconstructed[0].finding_summary, "legacy planned elsewhere");
+        assert_eq!(reconstructed[0].mapped_to_bead_id, "existing-bead");
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn reconcile_proposed_beads_after_success_creates_follow_up_from_latest_aggregate(
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -4181,12 +4390,14 @@ mod tests {
                 normalized_body: "Retry paths lack telemetry".to_owned(),
                 sources: vec![],
                 mapped_to_bead_id: None,
+                covered_by_bead_id: None,
                 classification: AmendmentClassification::ProposeNewBead,
                 rationale: Some("No existing bead covers retry observability".to_owned()),
                 proposed_title: Some("Add retry telemetry".to_owned()),
                 proposed_scope: Some(
                     "Instrument retry loops with counters and histograms".to_owned(),
                 ),
+                proposed_bead_summary: Some("Add retry telemetry".to_owned()),
                 severity: Some(
                     crate::contexts::workflow_composition::review_classification::Severity::Medium,
                 ),
@@ -4449,7 +4660,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_proposed_beads_after_success_returns_error_on_missing_metadata(
+    async fn reconcile_proposed_beads_after_success_ignores_summary_only_contract_proposals(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -4490,10 +4701,12 @@ mod tests {
                 normalized_body: "Retry paths lack telemetry".to_owned(),
                 sources: vec![],
                 mapped_to_bead_id: None,
+                covered_by_bead_id: None,
                 classification: AmendmentClassification::ProposeNewBead,
                 rationale: Some("No existing bead covers retry observability".to_owned()),
                 proposed_title: Some("Add retry telemetry".to_owned()),
                 proposed_scope: None,
+                proposed_bead_summary: Some("Add retry telemetry".to_owned()),
                 severity: Some(
                     crate::contexts::workflow_composition::review_classification::Severity::Medium,
                 ),
@@ -4526,7 +4739,7 @@ mod tests {
         let br_mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
 
-        let error = reconcile_proposed_beads_after_success(
+        let summary = reconcile_proposed_beads_after_success(
             &br_mutation,
             base,
             "active-bead",
@@ -4535,17 +4748,14 @@ mod tests {
             "proj-proposed-missing-metadata",
             "run-proposed-missing-metadata",
         )
-        .await
-        .expect_err("missing metadata should stop reconciliation");
+        .await?;
 
-        match error {
-            ReconciliationError::MilestoneUpdateFailed { details, .. } => {
-                assert!(details.contains(
-                    "accepted propose-new-bead amendment a1 is missing required metadata"
-                ));
-            }
-            other => panic!("unexpected error: {other}"),
-        }
+        assert_eq!(summary.amendments_processed, 1);
+        assert_eq!(summary.beads_created, 0);
+        let journal = FsMilestoneJournalStore.read_journal(base, &record.id)?;
+        assert!(journal
+            .iter()
+            .all(|event| event.event_type != MilestoneEventType::ProposedBeadCreated));
 
         Ok(())
     }
@@ -4592,12 +4802,14 @@ mod tests {
                 normalized_body: "Retry paths lack telemetry".to_owned(),
                 sources: vec![],
                 mapped_to_bead_id: None,
+                covered_by_bead_id: None,
                 classification: AmendmentClassification::ProposeNewBead,
                 rationale: Some("No existing bead covers retry observability".to_owned()),
                 proposed_title: Some("Add retry telemetry".to_owned()),
                 proposed_scope: Some(
                     "Instrument retry loops with counters and histograms".to_owned(),
                 ),
+                proposed_bead_summary: Some("Add retry telemetry".to_owned()),
                 severity: Some(
                     crate::contexts::workflow_composition::review_classification::Severity::Medium,
                 ),

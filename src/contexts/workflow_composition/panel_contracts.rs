@@ -10,7 +10,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::contexts::workflow_composition::review_classification::Severity;
+use crate::contexts::workflow_composition::review_classification::{
+    default_review_finding_class, ReviewFindingClass, Severity,
+};
 use crate::shared::domain::StageId;
 
 // ── Prompt-Review Contracts ────────────────────────────────────────────────
@@ -134,39 +136,32 @@ pub struct CompletionAggregatePayload {
 
 // ── Final-Review Contracts ─────────────────────────────────────────────────
 
-/// Classification category for a final-review amendment proposal.
-///
-/// Determines how the orchestration layer routes accepted amendments:
-/// - **fix-now**: triggers a completion restart to apply the fix
-/// - **planned-elsewhere**: recorded as a mapping, no restart
-/// - **propose-new-bead**: recorded for downstream bead creation, no restart
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum AmendmentClassification {
-    FixNow,
-    PlannedElsewhere,
-    ProposeNewBead,
-}
+pub use crate::contexts::workflow_composition::review_classification::ReviewFindingClass as AmendmentClassification;
 
-impl std::fmt::Display for AmendmentClassification {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::FixNow => f.write_str("fix-now"),
-            Self::PlannedElsewhere => f.write_str("planned-elsewhere"),
-            Self::ProposeNewBead => f.write_str("propose-new-bead"),
-        }
-    }
-}
-
-impl AmendmentClassification {
-    /// Whether this classification triggers a completion restart.
-    pub fn triggers_restart(self) -> bool {
-        matches!(self, Self::FixNow)
-    }
+#[derive(Debug, Clone, Deserialize)]
+struct FinalReviewProposalWire {
+    body: String,
+    #[serde(default)]
+    rationale: Option<String>,
+    #[serde(default)]
+    mapped_to_bead_id: Option<String>,
+    #[serde(default)]
+    covered_by_bead_id: Option<String>,
+    #[serde(default)]
+    classification: Option<ReviewFindingClass>,
+    #[serde(default)]
+    proposed_title: Option<String>,
+    #[serde(default)]
+    proposed_scope: Option<String>,
+    #[serde(default)]
+    proposed_bead_summary: Option<String>,
+    #[serde(default)]
+    severity: Option<Severity>,
 }
 
 /// A raw amendment proposal returned by a final-review reviewer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "FinalReviewProposalWire")]
 pub struct FinalReviewProposal {
     /// The free-form amendment body. This is canonicalized and deduplicated by
     /// the orchestration layer before voting.
@@ -174,19 +169,19 @@ pub struct FinalReviewProposal {
     /// Optional reviewer-provided rationale for why this amendment matters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rationale: Option<String>,
-    /// When set, this finding is classified as "planned-elsewhere": the concern
-    /// is valid but already covered by the referenced bead. Accepted
-    /// planned-elsewhere proposals are routed to the mapping handler instead of
-    /// the amendment queue, allowing the active bead to proceed without restart.
-    ///
-    /// Deprecated in favor of `classification` + `mapped_to_bead_id` together,
-    /// but still honored for backward compatibility.
+    /// Legacy bead ID for findings covered by another bead. Prefer
+    /// `classification` plus `covered_by_bead_id`; this remains for backward
+    /// compatibility with older payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mapped_to_bead_id: Option<String>,
-    /// Three-way classification for this amendment. When absent, inferred from
-    /// `mapped_to_bead_id`: present → planned-elsewhere, absent → fix-now.
+    /// Bead ID when `classification` is `covered_by_existing_bead`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub classification: Option<AmendmentClassification>,
+    pub covered_by_bead_id: Option<String>,
+    /// Classification for this amendment. Missing classifications default to
+    /// `fix_current_bead` for backward compatibility.
+    #[serde(default = "default_review_finding_class")]
+    #[schemars(default = "default_review_finding_class")]
+    pub classification: AmendmentClassification,
     /// Title to use when an accepted `propose-new-bead` amendment creates
     /// follow-up work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,10 +189,51 @@ pub struct FinalReviewProposal {
     /// Scope summary to preserve for accepted `propose-new-bead` amendments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_scope: Option<String>,
+    /// One-line summary when `classification` is `propose_new_bead`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_bead_summary: Option<String>,
     /// Severity used to derive bead priority for accepted `propose-new-bead`
     /// amendments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<Severity>,
+}
+
+impl From<FinalReviewProposalWire> for FinalReviewProposal {
+    fn from(raw: FinalReviewProposalWire) -> Self {
+        let mut classification = raw.classification.unwrap_or_default();
+        let covered_by_bead_id = raw
+            .covered_by_bead_id
+            .or_else(|| raw.mapped_to_bead_id.clone());
+        let proposed_bead_summary = raw.proposed_bead_summary;
+
+        match classification {
+            ReviewFindingClass::CoveredByExistingBead if covered_by_bead_id.is_none() => {
+                tracing::warn!(
+                    "covered_by_existing_bead final-review amendment missing covered_by_bead_id; falling back to fix_current_bead"
+                );
+                classification = ReviewFindingClass::FixCurrentBead;
+            }
+            ReviewFindingClass::ProposeNewBead if proposed_bead_summary.is_none() => {
+                tracing::warn!(
+                    "propose_new_bead final-review amendment missing proposed_bead_summary; falling back to fix_current_bead"
+                );
+                classification = ReviewFindingClass::FixCurrentBead;
+            }
+            _ => {}
+        }
+
+        Self {
+            body: raw.body,
+            rationale: raw.rationale,
+            mapped_to_bead_id: raw.mapped_to_bead_id,
+            covered_by_bead_id,
+            classification,
+            proposed_title: raw.proposed_title,
+            proposed_scope: raw.proposed_scope,
+            proposed_bead_summary,
+            severity: raw.severity,
+        }
+    }
 }
 
 /// Payload returned by each final-review reviewer during proposal collection.
@@ -274,8 +310,12 @@ pub struct FinalReviewCanonicalAmendment {
     /// be routed to the mapping handler instead of the amendment queue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mapped_to_bead_id: Option<String>,
-    /// Three-way classification for routing and inspectability.
-    #[serde(default = "default_fix_now")]
+    /// Bead ID when `classification` is `covered_by_existing_bead`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub covered_by_bead_id: Option<String>,
+    /// Classification for routing and inspectability.
+    #[serde(default = "default_review_finding_class")]
+    #[schemars(default = "default_review_finding_class")]
     pub classification: AmendmentClassification,
     /// Reviewer-provided rationale preserved for downstream routing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -287,14 +327,13 @@ pub struct FinalReviewCanonicalAmendment {
     /// Scope summary to preserve for accepted `propose-new-bead` amendments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposed_scope: Option<String>,
+    /// One-line summary when `classification` is `propose_new_bead`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposed_bead_summary: Option<String>,
     /// Severity used to derive bead priority for accepted `propose-new-bead`
     /// amendments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub severity: Option<Severity>,
-}
-
-fn default_fix_now() -> AmendmentClassification {
-    AmendmentClassification::FixNow
 }
 
 /// Canonical aggregate record for the final-review panel.

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260426110147-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260426110147-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T13:42:20.049792888Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nAdded review/final-review finding classification support in the current tree: a shared snake_case ReviewFindingClass, defaulted contract fields, covered_by_bead_id/proposed_bead_summary fallback warnings, prompt guidance, renderer output, amendment queue/journal propagation, INFO logging for non-default classes, and review/final_review tests for all required cases.\n\n## Steps\n\n0. [Completed] Plan: inspect existing workflow composition contracts, final_review panel contracts, prompt classification guidance, amendment queue records, and journal events before editing.\n1. [Completed] Implement shared classification enum and defaulting/fallback behavior for review findings and final-review amendment proposals.\n2. [Completed] Propagate classification metadata into queued amendment records and amendment_queued journal details while preserving current fix-now-equivalent behavior for every class.\n3. [Completed] Update prompt/rendering surfaces so reviewers see the four allowed classes and artifacts expose surfaced classification metadata.\n4. [Completed] Add/verify tests covering fix_current_bead, covered_by_existing_bead with and without target, propose_new_bead with and without summary, informational_only, and legacy omitted classification for both review and final_review shapes.\n5. [Completed] Run formatter, clippy, focused tests, full locked test suite, and Nix build validation.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub stage_contract_test -- --nocapture` passed: 38 tests.\n- `nix develop -c cargo test --locked --features test-stub workflow_panels_test -- --nocapture` passed: 47 tests.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed: lib 1286 passed/6 ignored, CLI 374 passed/3 ignored, unit integration 1112 passed/1 ignored, doctests ignored.\n- `nix build` passed.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed in the base shell or the Nix dev shell (`br: not found`).\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}
