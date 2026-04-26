@@ -2542,8 +2542,8 @@ fn build_voter_prompt(
                 .map(|id| {
                     format!(
                         "\n\n**Classification: planned-elsewhere** — mapped to bead `{id}`. \
-                         If accepted, this amendment will NOT trigger a restart; the concern \
-                         will be recorded as already covered by the mapped-to bead."
+                         If accepted, this classification is preserved for downstream routing; \
+                         current behavior still treats it as restart-triggering/fix-now-equivalent."
                     )
                 })
                 .unwrap_or_default();
@@ -2589,8 +2589,8 @@ fn build_arbiter_prompt(
                 .map(|id| {
                     format!(
                         "\n\n**Classification: planned-elsewhere** — mapped to bead `{id}`. \
-                         If accepted, this amendment will NOT trigger a restart; the concern \
-                         will be recorded as already covered by the mapped-to bead."
+                         If accepted, this classification is preserved for downstream routing; \
+                         current behavior still treats it as restart-triggering/fix-now-equivalent."
                     )
                 })
                 .unwrap_or_default();

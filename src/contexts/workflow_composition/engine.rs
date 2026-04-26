@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -8193,30 +8193,30 @@ impl ReviewFollowUp {
 fn validation_follow_ups(payload: &StagePayload) -> Vec<ReviewFollowUp> {
     match payload {
         StagePayload::Validation(validation) => {
-            if validation.classified_findings.is_empty() {
-                validation
-                    .follow_up_or_amendments
-                    .iter()
-                    .cloned()
-                    .map(ReviewFollowUp::from_legacy)
-                    .collect()
-            } else {
-                validation
-                    .classified_findings
-                    .iter()
-                    .map(|finding| {
-                        if finding.classification != ReviewFindingClass::FixCurrentBead {
-                            tracing::info!(
-                                classification = %finding.classification,
-                                covered_by_bead_id = ?finding.covered_by_bead_id,
-                                proposed_bead_summary = ?finding.proposed_bead_summary,
-                                "review finding classification surfaced"
-                            );
-                        }
-                        ReviewFollowUp::from_classified(finding)
-                    })
-                    .collect()
+            let mut classified_bodies = HashSet::new();
+            let mut follow_ups = validation
+                .classified_findings
+                .iter()
+                .map(|finding| {
+                    classified_bodies.insert(finding.body.as_str());
+                    if finding.classification != ReviewFindingClass::FixCurrentBead {
+                        tracing::info!(
+                            classification = %finding.classification,
+                            covered_by_bead_id = ?finding.covered_by_bead_id,
+                            proposed_bead_summary = ?finding.proposed_bead_summary,
+                            "review finding classification surfaced"
+                        );
+                    }
+                    ReviewFollowUp::from_classified(finding)
+                })
+                .collect::<Vec<_>>();
+
+            for body in &validation.follow_up_or_amendments {
+                if !classified_bodies.contains(body.as_str()) {
+                    follow_ups.push(ReviewFollowUp::from_legacy(body.clone()));
+                }
             }
+            follow_ups
         }
         _ => Vec::new(),
     }
@@ -12672,7 +12672,7 @@ mod tests {
     }
 
     #[test]
-    fn review_classification_reaches_queued_amendment_record() {
+    fn review_classification_reaches_queued_amendment_record_without_dropping_legacy_follow_ups() {
         let payload = StagePayload::Validation(ValidationPayload {
             outcome: ReviewOutcome::RequestChanges,
             evidence: vec!["evidence".to_owned()],
@@ -12690,12 +12690,17 @@ mod tests {
         let follow_ups = validation_follow_ups(&payload);
         let amendments = build_queued_amendments(&follow_ups, StageId::Review, 1, 1, &run_id);
 
-        assert_eq!(amendments.len(), 1);
+        assert_eq!(amendments.len(), 2);
         assert_eq!(
             amendments[0].classification,
             ReviewFindingClass::CoveredByExistingBead
         );
         assert_eq!(amendments[0].covered_by_bead_id.as_deref(), Some("9ni.8.5"));
+        assert_eq!(amendments[1].body, "fallback");
+        assert_eq!(
+            amendments[1].classification,
+            ReviewFindingClass::FixCurrentBead
+        );
     }
 
     fn sample_milestone_bundle(milestone_id: &str) -> MilestoneBundle {

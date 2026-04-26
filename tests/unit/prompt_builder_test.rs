@@ -216,7 +216,10 @@ for arg in "$@"; do
         next_is_schema=1
     fi
 done
-cat > "$PWD/claude-stdin.txt"
+: > "$PWD/claude-stdin.txt"
+while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line" >> "$PWD/claude-stdin.txt"
+done
 printf '%s' '{envelope_json}'
 "#
         ),
