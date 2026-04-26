@@ -422,11 +422,7 @@ pub(crate) async fn execute_create_from_bead_in_dir(
                 Vec::new(),
             )
         } else {
-            let bead_summaries = match load_bead_summaries(current_dir).await {
-                Ok(bead_summaries) => bead_summaries,
-                Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
-                Err(_) => BTreeMap::new(),
-            };
+            let bead_summaries = load_bead_summaries(current_dir).await?;
             let nearby_dependency_details =
                 load_nearby_dependency_details(current_dir, &milestone_id, &bead, &bead_summaries)
                     .await;

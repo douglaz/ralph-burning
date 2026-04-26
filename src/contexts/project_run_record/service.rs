@@ -425,18 +425,15 @@ pub fn create_project_from_bead_context(
         ),
     };
     if task_prompt_contract::prompt_declares_contract(&prompt_contents) {
-        let validation_result = if prompt_is_override {
-            task_prompt_contract::validate_canonical_prompt_shape(&prompt_contents)
-        } else {
-            task_prompt_contract::validate_current_canonical_prompt_shape(&prompt_contents)
-        };
-        validation_result.map_err(|errors| AppError::InvalidPrompt {
-            path: prompt_path.clone(),
-            reason: format!(
-                "canonical bead task contract violated: {}",
-                errors.join("; ")
-            ),
-        })?;
+        task_prompt_contract::validate_current_canonical_prompt_shape(&prompt_contents).map_err(
+            |errors| AppError::InvalidPrompt {
+                path: prompt_path.clone(),
+                reason: format!(
+                    "canonical bead task contract violated: {}",
+                    errors.join("; ")
+                ),
+            },
+        )?;
         if prompt_is_override {
             validate_prompt_override_nearby_work_matches_context(
                 &prompt_contents,
@@ -516,19 +513,21 @@ fn validate_prompt_override_nearby_work_matches_context(
     prompt_path: &str,
     context: &BeadProjectContext,
 ) -> AppResult<()> {
-    let Some(override_nearby_work) = task_prompt_contract::canonical_section_body(
-        prompt_contents,
-        task_prompt_contract::SECTION_NEARBY_WORK,
-    ) else {
-        return Ok(());
-    };
-
     let generated_prompt = render_bead_task_prompt(context);
     let generated_nearby_work = task_prompt_contract::canonical_section_body(
         &generated_prompt,
         task_prompt_contract::SECTION_NEARBY_WORK,
     )
     .unwrap_or_default();
+    let Some(override_nearby_work) = task_prompt_contract::canonical_section_body(
+        prompt_contents,
+        task_prompt_contract::SECTION_NEARBY_WORK,
+    ) else {
+        return Err(AppError::InvalidPrompt {
+            path: prompt_path.to_owned(),
+            reason: "canonical bead task contract violated: prompt override must include graph-derived `## Nearby work` for this bead".to_owned(),
+        });
+    };
 
     if override_nearby_work == generated_nearby_work {
         return Ok(());

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr25-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr25",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T10:01:11.837378857Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Contract-marked prompt overrides now use the current strict bead-task prompt validator, so `--prompt-file` overrides that omit `## Nearby work` are rejected instead of accepted as legacy-compatible; the override Nearby work body still must match the graph-derived context. Canonical bead prompt hydration now treats `br list`/bead-summary load failures as hard errors again, preventing project creation from silently emitting partial Nearby work context with missing sibling/related routing IDs. Updated CLI and unit regressions for both behaviors.\n\n## Steps\n\n0. [Completed] Inspected the create-from-bead hydration path, prompt override validation path, and existing regression coverage for legacy prompt overrides and `br list` failure behavior.\n1. [Completed] Changed contract-marked prompt override validation to require the current canonical prompt shape, including `## Nearby work`, and kept graph-derived Nearby work body matching for overrides that include the section.\n2. [Completed] Changed canonical bead prompt hydration to propagate `load_bead_summaries` failures instead of degrading non-corruption `br list` errors to an empty summary map.\n3. [Completed] Updated tests so canonical overrides missing Nearby work fail, `br list` hydration failures abort project creation without writing a partial project, generic non-contract prompt overrides still skip bead-summary hydration, and canonical prompt-file overrides still validate Nearby work against graph context.\n4. [Completed] Ran focused regressions and the repository validation gates required for this bead.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub create_project_from_bead_context_rejects_canonical_override_missing_nearby_work --test unit` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_fails_when_br_list_is_unavailable --test cli` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_fails_unknown_relation_status_fallback_when_br_list_is_unavailable --test cli` passed.\n- `nix develop -c cargo test --locked --features test-stub project_create_from_bead_with_canonical_prompt_file_validates_nearby_work_against_graph --test cli` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 25
+}

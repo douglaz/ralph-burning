@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 25
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-24-49fc01f4",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 24,
-        "body": "Canonical prompt overrides can still bypass the new `## Nearby work` section. In `src/contexts/project_run_record/service.rs:428-432`, contract-marked overrides are validated with the legacy-compatible shape, and `validate_prompt_override_nearby_work_matches_context` returns early when the override omits the section entirely (`src/contexts/project_run_record/service.rs:519-523`). That means `project create-from-bead --prompt-file` can still persist a bead-backed prompt with no nearby graph context at all, so downstream review/final-review stages lose the very IDs they now rely on for `planned-elsewhere` routing. Reject legacy-shape contract overrides here or auto-upgrade them so every contract prompt emitted from this path carries graph-derived nearby work.",
-        "created_at": "2026-04-26T09:21:59.518599624Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "e2ccb1f2e3ff04f4f03bfb4371cdafe4c845a54bdd1334215ea1b0b2e55bef98"
-      },
-      {
-        "amendment_id": "fr-24-06822a99",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 24,
-        "body": "Nearby-work hydration now silently degrades to partial data whenever `br list` has an I/O failure. `execute_create_from_bead` swallows every non-corruption `load_bead_summaries` error into `BTreeMap::new()` (`src/cli/project.rs:425-428`) and then continues building the prompt. But the new `related_work` category is derived entirely from `bead_summaries` label overlap (`src/cli/project.rs:3316-3349`), and sibling discovery/summary enrichment also depends on that map. On a timeout, version mismatch, or other `br list` failure, project creation still succeeds while emitting an apparently canonical prompt that is missing nearby routing context, which will push reviewers toward `fix-now`/`propose-new-bead` for work that should have been classified as already owned elsewhere. This path should fail loudly or mark the prompt as degraded instead of silently pretending the nearby context is complete.",
-        "created_at": "2026-04-26T09:21:59.518604563Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "aa46fabd7bffd5fd2c43549ccc932dfa5036fe7e3f320517b252fd5147a318f2"
-      }
-    ],
-    "processed_count": 42
+    "pending": [],
+    "processed_count": 44
   },
-  "status_summary": "running: final review restart round 25 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-26T09:08:50.801166683Z",
