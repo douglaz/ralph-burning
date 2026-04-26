@@ -2,29 +2,70 @@
   "active_run": {
     "run_id": "run-20260426110147",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 1
+      "completion_round": 2
     },
     "started_at": "2026-04-26T11:01:47.135918476Z",
     "prompt_hash_at_cycle_start": "e3f5c77991b62d52f8350c44bdbe84f232e7a800c6d0eb2b507aff0cf76f92c9",
     "prompt_hash_at_stage_start": "e3f5c77991b62d52f8350c44bdbe84f232e7a800c6d0eb2b507aff0cf76f92c9",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 0
+    "final_review_restart_count": 1
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 1,
+  "completion_rounds": 2,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-1-3c128259",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "fix-now medium: Final-review voter and arbiter prompts still tell reviewers that a mapped planned-elsewhere/covered-by amendment will not trigger a restart, but the current implementation deliberately treats every classification as restart-triggering via ReviewFindingClass::triggers_restart() and needs_restart. This can bias reviewers into accepting amendments under false routing semantics. Affected lines: src/contexts/workflow_composition/final_review.rs:2539, src/contexts/workflow_composition/final_review.rs:2545, src/contexts/workflow_composition/final_review.rs:2586, src/contexts/workflow_composition/final_review.rs:2592, src/contexts/workflow_composition/final_review.rs:2088, src/contexts/workflow_composition/review_classification.rs:44. Remediation: update the voter/arbiter note to say classification is preserved for downstream routing but currently remains fix-now-equivalent/restart-triggering, or remove the no-restart note until the later routing bead lands.",
+        "created_at": "2026-04-26T13:46:58.443957718Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "c2262fca8d1f99ab44196026d754816d20d2f3f5719479354d450678637e0b18"
+      },
+      {
+        "amendment_id": "fr-1-29020f8c",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "fix-now medium: Review-stage remediation drops legacy follow_up_or_amendments whenever classified_findings is non-empty. validation_follow_ups() switches entirely to classified_findings at src/contexts/workflow_composition/engine.rs:8196 and maps only that list at src/contexts/workflow_composition/engine.rs:8204, while the review contract still requires follow_up_or_amendments for non-approved outcomes at src/contexts/workflow_composition/contracts.rs:230. A payload containing classified metadata for one item plus additional legacy follow-ups will silently queue only the classified subset, changing existing default behavior and losing requested fixes. Remediation: either validate that classified_findings fully covers follow_up_or_amendments, or merge any unclassified follow_up_or_amendments not represented in classified_findings as FixCurrentBead before building QueuedAmendment records.",
+        "created_at": "2026-04-26T13:46:58.443962246Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "15c491947d2cba5b6746258b8eb57634fd5bf219e555685411b9faf570101131"
+      }
+    ],
     "processed_count": 0
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review"
+  "status_summary": "running: final review restart round 2 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-26T13:42:20.321356792Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.5-xhigh"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.5-xhigh"
+    }
+  }
 }
