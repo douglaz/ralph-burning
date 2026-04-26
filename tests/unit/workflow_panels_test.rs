@@ -826,8 +826,17 @@ fn find_strict_mode_violation(
 #[test]
 fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
     // Regression for bead c2e: gpt-5.5 rejects `allOf`/`anyOf` in
-    // structured-output schemas. This test snapshots the assertion that
-    // every panel_json_schema returns strict-mode-compatible JSON.
+    // structured-output schemas. This test asserts both
+    // `panel_json_schema` (the inspectable static schema) AND
+    // `processed_contract_schema_value` (the actual schema codex sends to
+    // OpenAI) are strict-mode-clean. The latter is what failed in the
+    // first c2e attempt — the static schema looked fine but the
+    // backend-processed transport schema still carried single-element
+    // `allOf` wrappers from schemars' field-metadata combination.
+    use ralph_burning::adapters::process_backend::processed_contract_schema_value;
+    use ralph_burning::contexts::agent_execution::model::InvocationContract;
+    use ralph_burning::shared::domain::BackendFamily;
+
     for stage_id in [
         StageId::FinalReview,
         StageId::Review,
@@ -839,6 +848,17 @@ fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
             if let Some((path, forbidden)) = find_strict_mode_violation(&schema, "") {
                 panic!(
                     "panel_json_schema({stage_id:?}, {role:?}) contains '{forbidden}' at path '{path}' — gpt-5.5 strict-mode structured outputs will reject this schema. Schema was: {schema:#}"
+                );
+            }
+
+            let contract = InvocationContract::Panel {
+                stage_id,
+                role: role.to_owned(),
+            };
+            let processed = processed_contract_schema_value(&contract, BackendFamily::Codex);
+            if let Some((path, forbidden)) = find_strict_mode_violation(&processed, "") {
+                panic!(
+                    "processed_contract_schema_value(Panel{{{stage_id:?}, {role:?}}}, Codex) contains '{forbidden}' at path '{path}' — codex sends THIS schema to OpenAI, and gpt-5.5 will reject it. Schema was: {processed:#}"
                 );
             }
         }

@@ -1934,7 +1934,7 @@ fn wrap_claude_structured_output_schema(schema: serde_json::Value) -> serde_json
     })
 }
 
-pub(crate) fn processed_contract_schema_value(
+pub fn processed_contract_schema_value(
     contract: &InvocationContract,
     backend_family: BackendFamily,
 ) -> serde_json::Value {
@@ -2459,6 +2459,23 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
         // Convert type arrays like ["string", "null"] to anyOf format
         normalize_nullable_type_array(map);
+
+        // Inline single-element `allOf: [<one>]` wrappers. schemars emits
+        // these whenever a field needs to combine its own description /
+        // default with the referenced type's description; gpt-5.5 strict
+        // mode rejects `allOf` entirely. A 1-element allOf has no real
+        // intersection semantics, so inlining is a lossless transform.
+        // Field-level metadata on the parent wins over inner copies.
+        if let Some(serde_json::Value::Array(items)) = map.get("allOf").cloned() {
+            if items.len() == 1 {
+                map.remove("allOf");
+                if let serde_json::Value::Object(inner) = items.into_iter().next().unwrap() {
+                    for (k, v) in inner {
+                        map.entry(k).or_insert(v);
+                    }
+                }
+            }
+        }
 
         let is_object = map.get("type").and_then(|t| t.as_str()) == Some("object");
         if is_object {
