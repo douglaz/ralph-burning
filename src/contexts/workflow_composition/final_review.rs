@@ -454,6 +454,7 @@ fn normalize_mapped_to_bead_id(id: Option<&String>) -> Option<String> {
 struct PlannedElsewhereIdCanonicalizer {
     allowed_ids: HashSet<String>,
     canonical_by_allowed_id: HashMap<String, String>,
+    ambiguous_allowed_ids: HashSet<String>,
     enforce_allowlist: bool,
 }
 
@@ -469,6 +470,7 @@ impl PlannedElsewhereIdCanonicalizer {
             task_prompt_contract::extract_planned_elsewhere_canonical_routing_bead_ids(prompt);
         let mut canonical_by_allowed_id = HashMap::new();
         let mut alias_targets: HashMap<String, Option<String>> = HashMap::new();
+        let mut ambiguous_allowed_ids = HashSet::new();
 
         for canonical_id in canonical_ids {
             let canonical_id = canonical_id.trim();
@@ -494,12 +496,15 @@ impl PlannedElsewhereIdCanonicalizer {
         for (alias, canonical_id) in alias_targets {
             if let Some(canonical_id) = canonical_id {
                 canonical_by_allowed_id.insert(alias, canonical_id);
+            } else {
+                ambiguous_allowed_ids.insert(alias);
             }
         }
 
         Self {
             allowed_ids,
             canonical_by_allowed_id,
+            ambiguous_allowed_ids,
             enforce_allowlist: true,
         }
     }
@@ -516,6 +521,9 @@ impl PlannedElsewhereIdCanonicalizer {
         let trimmed = id.trim();
         if trimmed.is_empty() || self.allowed_ids.is_empty() || !self.allowed_ids.contains(trimmed)
         {
+            return None;
+        }
+        if self.ambiguous_allowed_ids.contains(trimmed) {
             return None;
         }
         Some(
@@ -4007,6 +4015,41 @@ mod tests {
             AmendmentClassification::PlannedElsewhere
         );
         assert_eq!(merged[0].mapped_to_bead_id.as_deref(), Some("9ni.6.5"));
+    }
+
+    #[test]
+    fn ambiguous_planned_elsewhere_short_alias_is_rejected() {
+        let project_prompt = "## Already Planned Elsewhere\n- `first.alpha` (P2 task): First alpha owner\n- `second.alpha` (P2 task): Second alpha owner\n";
+        let canonicalizer = PlannedElsewhereIdCanonicalizer::from_prompt(project_prompt);
+
+        assert_eq!(
+            canonicalizer.canonicalize_allowed("first.alpha").as_deref(),
+            Some("first.alpha")
+        );
+        assert_eq!(
+            canonicalizer
+                .canonicalize_allowed("second.alpha")
+                .as_deref(),
+            Some("second.alpha")
+        );
+        assert_eq!(
+            canonicalizer.canonicalize_allowed("alpha"),
+            None,
+            "ambiguous short aliases must not fall back to a raw allowed ID"
+        );
+
+        let merged = merge_final_review_amendments_with_canonicalizer(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix shared routing", Some("alpha")),
+                proposal_record_with_mapping("reviewer-b", "fix shared routing", Some("alpha")),
+            ],
+            &canonicalizer,
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].classification, AmendmentClassification::FixNow);
+        assert_eq!(merged[0].mapped_to_bead_id, None);
     }
 
     #[test]

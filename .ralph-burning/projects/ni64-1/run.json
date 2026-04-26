@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 17
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-16-c15fd6ca",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 16,
-        "body": "finding_summary: Direct dependencies/dependents after the first 24 IDs are never refreshed with `br show`, so stale open relation or summary data can still render closed/deferred beads in `## Nearby work`. This violates the requirement that closed/deferred nearby work be filtered out.\nseverity: medium\naffected_files:\n- src/cli/project.rs:1897\n- src/cli/project.rs:2898\n- src/cli/project.rs:3315\nremediation_hint: Do not cap freshness checks for rendered direct relations; either refresh every direct relation's status before rendering, or omit uncapped direct relations when their status cannot be proven fresh.",
-        "created_at": "2026-04-26T02:04:58.472430784Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "47c5d402261440694a7a848577274ca12a9ef756f96d226305034bfe7383577e"
-      },
-      {
-        "amendment_id": "fr-16-b2192abd",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 16,
-        "body": "finding_summary: Ambiguous short aliases are still accepted for `planned-elsewhere` mappings. When two allowed canonical bead IDs share the same short alias, conflict detection drops the alias from `canonical_by_allowed_id`, but `canonicalize_allowed` falls back to returning the raw alias anyway, so reviewers can persist a non-unique `mapped_to_bead_id` like `alpha`.\nseverity: medium\naffected_files:\n- src/contexts/workflow_composition/final_review.rs:466\n- src/contexts/workflow_composition/final_review.rs:515\nremediation_hint: Track conflicting aliases explicitly and reject them during canonicalization, or remove ambiguous aliases from the allowlist instead of falling back to the trimmed raw string.",
-        "created_at": "2026-04-26T02:04:58.472435353Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "a674f8d239f15a0d0a3d0abeb7c759ed301e531f045b0cf45461c418a2a8a1ed"
-      }
-    ],
-    "processed_count": 26
+    "pending": [],
+    "processed_count": 28
   },
-  "status_summary": "running: final review restart round 17 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-26T01:54:34.767782738Z",

@@ -63,7 +63,6 @@ const PLANNED_ELSEWHERE_MAX_ITEMS: usize = 6;
 const PLANNED_ELSEWHERE_MAX_BYTES: usize = 1536;
 const PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES: usize = 240;
 const NEARBY_SIBLING_LIMIT: usize = 5;
-const NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT: usize = 24;
 const NEARBY_DETAIL_LOAD_CONCURRENCY: usize = 4;
 // Scan one sibling past the rendered limit so a stale-open sibling that is
 // closed in `br show` can be dropped without hiding the next open sibling.
@@ -1895,15 +1894,10 @@ async fn load_nearby_dependency_details(
     let mut seen = BTreeSet::new();
     let parent_epic_id = infer_parent_epic_id(bead);
     let all_direct_detail_ids = nearby_all_direct_relation_detail_candidate_ids(bead);
-    let initial_detail_ids = all_direct_detail_ids
-        .iter()
-        .take(NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT)
-        .cloned()
-        .collect::<Vec<_>>();
     load_nearby_details_for_ids(
         base_dir,
         milestone_id,
-        initial_detail_ids,
+        all_direct_detail_ids,
         &mut seen,
         &mut refresh,
         true,
@@ -2899,8 +2893,8 @@ fn nearby_entries_from_relations(
     relations: &[crate::adapters::br_models::DependencyRef],
     bead_summaries: &BTreeMap<String, BeadSummary>,
     bead_details: &BTreeMap<String, BeadDetail>,
-    _unavailable_ids: &BTreeSet<String>,
-    _require_detail_for_entries: bool,
+    unavailable_ids: &BTreeSet<String>,
+    require_detail_for_entries: bool,
     included_ids: &mut BTreeSet<String>,
 ) -> Vec<NearbyBeadEntry> {
     let mut entries = relations
@@ -2911,6 +2905,12 @@ fn nearby_entries_from_relations(
             }
             let summary = bead_summaries.get(&relation.id);
             let detail = bead_details.get(&relation.id);
+            if unavailable_ids.contains(&relation.id)
+                || (require_detail_for_entries && detail.is_none())
+            {
+                included_ids.insert(relation.id.clone());
+                return None;
+            }
             if nearby_direct_relation_status_is_omitted(relation, summary, detail) {
                 return None;
             }
@@ -3230,9 +3230,6 @@ fn nearby_direct_relation_detail_candidate_ids(
     _bead_summaries: &BTreeMap<String, BeadSummary>,
 ) -> Vec<String> {
     nearby_all_direct_relation_detail_candidate_ids(bead)
-        .into_iter()
-        .take(NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT)
-        .collect()
 }
 
 fn nearby_all_direct_relation_detail_candidate_ids(bead: &BeadDetail) -> Vec<String> {
@@ -4398,7 +4395,7 @@ mod tests {
         nearby_summary_sibling_detail_candidate_ids, planned_elsewhere_serialized_bytes,
         planned_elsewhere_serialized_bytes_without_summary, resolve_bead_plan,
         validate_milestone_plan_snapshot, warn_once_for_legacy_plan_lookup, NearbyBeadDetails,
-        PlannedElsewhereCandidate, PlannedElsewherePriority, NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT,
+        PlannedElsewhereCandidate, PlannedElsewherePriority,
         NEARBY_RELATED_WORK_DETAIL_PREFETCH_SCAN_LIMIT, NEARBY_SCOPE_SUMMARY_MAX_BYTES,
         NEARBY_TITLE_MAX_BYTES, PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
     };
@@ -4737,7 +4734,7 @@ mod tests {
     }
 
     #[test]
-    fn build_nearby_bead_context_with_refresh_preserves_direct_relation_fallbacks() {
+    fn build_nearby_bead_context_with_refresh_requires_fresh_direct_relation_details() {
         let mut bead = sample_bead();
         bead.labels = vec!["subsystem-a".to_owned()];
         bead.dependencies = vec![
@@ -4835,7 +4832,7 @@ mod tests {
         let context =
             build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &refresh);
 
-        assert_eq!(context.direct_dependencies.len(), 2);
+        assert_eq!(context.direct_dependencies.len(), 1);
         assert_eq!(
             context.direct_dependencies[0].bead_id,
             "ms-alpha.dep-loaded"
@@ -4844,19 +4841,7 @@ mod tests {
             context.direct_dependencies[0].title,
             "Loaded dependency detail title"
         );
-        assert_eq!(
-            context.direct_dependencies[1].bead_id,
-            "ms-alpha.dep-missing"
-        );
-        assert_eq!(
-            context.direct_dependencies[1].title,
-            "Missing dependency summary title"
-        );
-        assert_eq!(context.direct_dependents.len(), 1);
-        assert_eq!(
-            context.direct_dependents[0].bead_id,
-            "ms-alpha.dependent-missing"
-        );
+        assert!(context.direct_dependents.is_empty());
         assert!(context.siblings.is_empty());
         assert_eq!(context.related_work.len(), 1);
         assert_eq!(context.related_work[0].bead_id, "ms-alpha.related-missing");
@@ -5273,9 +5258,10 @@ mod tests {
     }
 
     #[test]
-    fn nearby_direct_detail_candidates_are_capped_and_status_sensitive() {
+    fn nearby_direct_detail_candidates_include_all_direct_relations() {
         let mut bead = sample_bead();
-        bead.dependencies = (1..=NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT + 2)
+        let relation_count = 26;
+        bead.dependencies = (1..=relation_count)
             .map(|index| DependencyRef {
                 id: format!("ms-alpha.dep-{index}"),
                 kind: DependencyKind::Blocks,
@@ -5312,11 +5298,11 @@ mod tests {
 
         let candidates = nearby_direct_relation_detail_candidate_ids(&bead, &bead_summaries);
 
-        assert_eq!(candidates.len(), NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT);
+        assert_eq!(candidates.len(), relation_count);
         assert_eq!(candidates[0], "ms-alpha.dep-1");
         assert!(
-            candidates.contains(&"ms-alpha.dep-2".to_owned()),
-            "direct relation detail prefetch verifies status even when summary text is not sparse"
+            candidates.contains(&"ms-alpha.dep-26".to_owned()),
+            "direct relation detail prefetch must verify every rendered direct relation"
         );
     }
 
@@ -7699,9 +7685,9 @@ case "$1" in
     ;;
   show)
     case "$2" in
-      ms-alpha.dep-07)
-        cat <<'BEAD_JSON'
-{"id":"ms-alpha.dep-07","title":"Closed direct detail","status":"closed","priority":2,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}
+      ms-alpha.dep-07|ms-alpha.dep-25)
+        cat <<BEAD_JSON
+{"id":"$2","title":"Closed direct detail","status":"closed","priority":2,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}
 BEAD_JSON
         exit 0
         ;;
@@ -7728,7 +7714,7 @@ esac
                 .expect("chmod fake br");
         }
 
-        fn install_fake_br_for_nearby_direct_failure_and_cap(base_dir: &std::path::Path) {
+        fn install_fake_br_for_nearby_direct_failure(base_dir: &std::path::Path) {
             let fake_bin = base_dir.join("fake-bin");
             std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
             let script = r#"#!/bin/sh
@@ -7946,7 +7932,7 @@ esac
         }
 
         #[tokio::test]
-        async fn load_nearby_dependency_details_refreshes_direct_relations_past_initial_cap(
+        async fn load_nearby_dependency_details_refreshes_all_direct_relations(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
             let temp_dir = tempfile::tempdir()?;
@@ -7955,7 +7941,7 @@ esac
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
             let mut bead = sample_bead();
-            bead.dependencies = (1..=8)
+            bead.dependencies = (1..=26)
                 .map(|index| DependencyRef {
                     id: format!("ms-alpha.dep-{index:02}"),
                     kind: DependencyKind::Blocks,
@@ -7990,31 +7976,31 @@ esac
                 build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &details);
 
             assert_eq!(
-                details.get("ms-alpha.dep-07").map(|detail| &detail.status),
+                details.get("ms-alpha.dep-25").map(|detail| &detail.status),
                 Some(&BeadStatus::Closed),
-                "direct status verification should not stop at the initial prefetch cap"
+                "direct status verification should not stop before later direct relations"
             );
             assert!(
                 !context
                     .direct_dependencies
                     .iter()
-                    .any(|entry| entry.bead_id == "ms-alpha.dep-07"),
+                    .any(|entry| entry.bead_id == "ms-alpha.dep-25"),
                 "detail-closed direct relations must not leak into Nearby work"
             );
             Ok(())
         }
 
         #[tokio::test]
-        async fn load_nearby_dependency_details_preserves_failed_and_capped_direct_fallbacks(
+        async fn load_nearby_dependency_details_refreshes_all_directs_and_omits_failed_directs(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
             let temp_dir = tempfile::tempdir()?;
             let base_dir = temp_dir.path();
-            install_fake_br_for_nearby_direct_failure_and_cap(base_dir);
+            install_fake_br_for_nearby_direct_failure(base_dir);
             let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
 
             let mut bead = sample_bead();
-            bead.dependencies = (1..=NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT + 2)
+            bead.dependencies = (1..=26)
                 .map(|index| DependencyRef {
                     id: format!("ms-alpha.dep-{index:02}"),
                     kind: DependencyKind::Blocks,
@@ -8048,22 +8034,14 @@ esac
             let context =
                 build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &refresh);
             let calls = std::fs::read_to_string(base_dir.join("br-calls.log"))?;
-            let capped_id = format!(
-                "ms-alpha.dep-{:02}",
-                NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT + 1
-            );
 
             assert!(
                 !refresh.unavailable_ids.contains("ms-alpha.dep-02"),
-                "transient direct detail refresh failures should fall back to relation or summary data"
+                "transient direct detail refresh failures should not be recorded as definitive unavailable beads"
             );
             assert!(
-                !refresh.unavailable_ids.contains(&capped_id),
-                "direct relations beyond the runtime refresh cap should remain renderable from relation or summary data"
-            );
-            assert!(
-                !calls.contains(&capped_id),
-                "direct relations beyond the cap must not spawn br show calls"
+                calls.contains("ms-alpha.dep-26"),
+                "direct relations must all be refreshed so later stale statuses cannot render"
             );
             let rendered_ids = context
                 .direct_dependencies
@@ -8071,8 +8049,8 @@ esac
                 .map(|entry| entry.bead_id.as_str())
                 .collect::<Vec<_>>();
             assert!(
-                rendered_ids.contains(&"ms-alpha.dep-02"),
-                "failed direct detail refreshes should still render from relation or summary data"
+                !rendered_ids.contains(&"ms-alpha.dep-02"),
+                "failed direct detail refreshes should not render from stale relation or summary data"
             );
             Ok(())
         }
