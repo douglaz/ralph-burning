@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260425091842-final_review-aggregate-c1-a1-cr15-artifact",
+  "payload_id": "run-20260425091842-final_review-aggregate-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T01:12:30.493677849Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 15/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-15-f7ae1dbe`\n\n## Rejected\n\n- `fr-15-f604e4a7`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-15-f7ae1dbe`\n\nfinding_summary: A transient `br show` failure silently deletes sibling/related nearby context instead of falling back to the already-loaded summary. Real prompt generation enables `require_detail_for_entries` (`src/cli/project.rs:1891-1894`), `collect_nearby_detail_result` records any error as `unavailable` (`src/cli/project.rs:2199-2215`), and `nearby_candidate_status_is_omitted_with_policy` then suppresses every sibling/related bead without a detail row (`src/cli/project.rs:3336-3344`). Timeouts, parse failures, or other non-not-found errors therefore shrink or empty `Nearby work` nondeterministically even when `br list` already supplied enough data to render the entry, which can misroute later planned-elsewhere decisions.\naffected_files:\n- src/cli/project.rs:1891-1894\n- src/cli/project.rs:2199-2215\n- src/cli/project.rs:3336-3344\nremediation_hint: Treat transient detail-refresh failures differently from definitive missing/closed results, and fall back to summary rendering when the refresh does not succeed.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 15
+}

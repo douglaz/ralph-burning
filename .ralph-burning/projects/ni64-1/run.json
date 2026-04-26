@@ -2,34 +2,46 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 15
+      "completion_round": 16
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 14
+    "final_review_restart_count": 15
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 15,
+  "completion_rounds": 16,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-15-f7ae1dbe",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 15,
+        "body": "finding_summary: A transient `br show` failure silently deletes sibling/related nearby context instead of falling back to the already-loaded summary. Real prompt generation enables `require_detail_for_entries` (`src/cli/project.rs:1891-1894`), `collect_nearby_detail_result` records any error as `unavailable` (`src/cli/project.rs:2199-2215`), and `nearby_candidate_status_is_omitted_with_policy` then suppresses every sibling/related bead without a detail row (`src/cli/project.rs:3336-3344`). Timeouts, parse failures, or other non-not-found errors therefore shrink or empty `Nearby work` nondeterministically even when `br list` already supplied enough data to render the entry, which can misroute later planned-elsewhere decisions.\naffected_files:\n- src/cli/project.rs:1891-1894\n- src/cli/project.rs:2199-2215\n- src/cli/project.rs:3336-3344\nremediation_hint: Treat transient detail-refresh failures differently from definitive missing/closed results, and fall back to summary rendering when the refresh does not succeed.",
+        "created_at": "2026-04-26T01:12:30.493670966Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "7e7e14ed523b118b3a5804649f09d4f5818751e649b5a386b53075b6674e8766"
+      }
+    ],
     "processed_count": 25
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 16 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-26T00:07:16.575179145Z",
+    "resolved_at": "2026-04-26T01:02:55.895338Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
