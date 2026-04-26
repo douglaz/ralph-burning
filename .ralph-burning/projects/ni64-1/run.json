@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 19
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-18-8e05743a",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "finding_summary: Direct dependencies/dependents can disappear from `Nearby work` when the per-bead refresh fails transiently and `br list` still has a stale `closed`/`deferred` summary. In `src/cli/project.rs:2906-2913`, `nearby_entries_from_relations` drops any direct relation for which `nearby_direct_relation_status_is_omitted` returns true, and `src/cli/project.rs:3310-3320` computes that omission status as `detail -> summary -> relation.status`. That ordering lets a stale summary override the focal bead's own relation status, even though the comment above the call says a missing refresh must not erase direct context. The result is that highest-priority nearby context can vanish and the reviewer/final-review prompts lose a valid planned-elsewhere target. affected_files: `src/cli/project.rs`. remediation_hint: For direct relations, trust refreshed detail when present, otherwise prefer the focal bead relation status before consulting summary status.",
-        "created_at": "2026-04-26T03:49:40.568684024Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "65e25f64a553f772be271fbab4b170c2dada55b502e9c4b900447277e68d625f"
-      },
-      {
-        "amendment_id": "fr-18-d4575b6e",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 18,
-        "body": "finding_summary: The sibling/related-work refresh budget can be spent on candidates that are already known `closed`/`deferred` in summary data, which leaves later stale-open items unrefreshed and therefore renderable as open. `src/cli/project.rs:3257-3266` and `src/cli/project.rs:3194-3201` build prefetch candidate lists with `nearby_candidate_status_is_omitted_for_prefetch`, but `src/cli/project.rs:3368-3373` only checks already-loaded detail and `unavailable_ids`; it ignores the candidate's summary/relation status. Because the stabilizing loops cap detail loads (`src/cli/project.rs:2037-2054` and `src/cli/project.rs:2066-2082`), a backlog with many summary-closed siblings or related beads can exhaust the scan cap before later stale-open candidates are verified, so `Nearby work` may still show closed beads as open. affected_files: `src/cli/project.rs`. remediation_hint: Exclude summary/relation-closed candidates from the prefetch lists and reserve the bounded detail scans for nominally-open entries whose status actually needs verification.",
-        "created_at": "2026-04-26T03:49:40.568689274Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "2ceab87de3aa32c78f955b43e8125fa2f7afc733dbe6aa35fc6c09098696c950"
-      }
-    ],
-    "processed_count": 29
+    "pending": [],
+    "processed_count": 31
   },
-  "status_summary": "running: final review restart round 19 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-26T03:39:54.791259684Z",

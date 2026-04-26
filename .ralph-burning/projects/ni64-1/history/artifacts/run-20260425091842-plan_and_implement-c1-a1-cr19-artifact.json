@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr19-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr19",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T04:31:25.278469226Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending nearby-work amendments in `src/cli/project.rs`. Direct dependency/dependent fallback status now trusts refreshed detail first, then the focal bead relation status, and only then stale `br list` summary status, so transient detail refresh failures no longer let terminal summaries erase direct Nearby work. Sibling and related-work prefetch selection now considers summary and relation terminal statuses before spending bounded detail-refresh budget, reserving refresh scans for nominally active candidates and preventing known closed/deferred candidates from crowding out later entries. Added focused regressions for direct stale-summary fallback and summary-terminal sibling/related prefetch filtering.\n\n## Steps\n\n0. [Completed] Inspected nearby-context construction, direct relation rendering, sibling/related prefetch candidate selection, and existing nearby-work tests.\n1. [Completed] Updated direct relation status precedence so missing detail refresh falls back to relation status before summary status, while loaded detail remains authoritative.\n2. [Completed] Updated sibling and related-work prefetch filtering to pass summary/relation status into the terminal-status filter before consuming bounded refresh scan slots.\n3. [Completed] Added and updated focused regression tests for stale terminal summaries on direct relations and terminal summary candidates in sibling/related prefetch lists.\n4. [Completed] Ran focused tests plus repository formatting, linting, full test, Nix build, and whitespace validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub direct_relation_fallback_prefers_relation_status_over_stale_summary --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub nearby_related_work_prefetch_candidates_skip_summary_terminal_entries --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub nearby_summary_sibling_detail_candidates_include_summary_inferred_siblings --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 19
+}
