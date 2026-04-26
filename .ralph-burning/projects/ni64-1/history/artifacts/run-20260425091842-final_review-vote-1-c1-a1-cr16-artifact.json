@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-vote-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260425091842-final_review-vote-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T02:04:58.433709960Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nBoth amendments describe real correctness gaps: nearby-work rendering can rely on unrefreshed stale relation data past the direct-detail cap, and planned-elsewhere canonicalization still accepts ambiguous short aliases instead of failing closed.\n\n## Votes\n\n- `fr-16-c15fd6ca`: Accept\n  The code only calls `br show` for the first `NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT` direct relation IDs, but `nearby_entries_from_relations` still renders later direct dependencies/dependents using summary or embedded relation status alone. This matters because the surrounding nearby-work logic already treats summary/relation status as potentially stale and relies on detail refresh to correct closed/open mismatches. As written, a later direct relation can remain renderable as open when its authoritative detail is now closed or deferred, so the filtering guarantee is not robust.\n- `fr-16-b2192abd`: Accept\n  `PlannedElsewhereIdCanonicalizer::from_prompt` intentionally drops conflicting aliases from `canonical_by_allowed_id`, but `canonicalize_allowed` first checks only membership in `allowed_ids` and then falls back to returning the raw trimmed ID when no canonical mapping exists. That means an ambiguous alias that is allowed but non-unique is still accepted and persisted as `mapped_to_bead_id`. This defeats the purpose of canonicalization and can route or record planned-elsewhere findings against an identifier that does not uniquely identify a bead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}

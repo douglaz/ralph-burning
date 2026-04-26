@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260425091842-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-26T02:02:38.738849501Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4-xhigh\n\n## Summary\n\nReviewed the full branch state against `453f57bf5a70cd69f9a3fb0345fadc4bcf80f6fb`, including the changed prompt-building and review-classification code. Targeted nearby-work tests passed, but I found two fix-now issues: the direct-relation refresh cap can leak closed/deferred nearby beads into the prompt, and ambiguous short aliases can still be accepted for `planned-elsewhere` mappings.\n\n## Amendments\n\n1. finding_summary: Direct dependencies/dependents after the first 24 IDs are never refreshed with `br show`, so stale open relation or summary data can still render closed/deferred beads in `## Nearby work`. This violates the requirement that closed/deferred nearby work be filtered out.\nseverity: medium\naffected_files:\n- src/cli/project.rs:1897\n- src/cli/project.rs:2898\n- src/cli/project.rs:3315\nremediation_hint: Do not cap freshness checks for rendered direct relations; either refresh every direct relation's status before rendering, or omit uncapped direct relations when their status cannot be proven fresh.\n   Rationale: `load_nearby_dependency_details` only prefetches the first `NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT` relation IDs, but `nearby_entries_from_relations` renders every remaining relation using summary/relation fallback. If a later direct relation has gone closed/deferred since the last `br list`, the prompt will still advertise it as active nearby work.\n2. finding_summary: Ambiguous short aliases are still accepted for `planned-elsewhere` mappings. When two allowed canonical bead IDs share the same short alias, conflict detection drops the alias from `canonical_by_allowed_id`, but `canonicalize_allowed` falls back to returning the raw alias anyway, so reviewers can persist a non-unique `mapped_to_bead_id` like `alpha`.\nseverity: medium\naffected_files:\n- src/contexts/workflow_composition/final_review.rs:466\n- src/contexts/workflow_composition/final_review.rs:515\nremediation_hint: Track conflicting aliases explicitly and reject them during canonicalization, or remove ambiguous aliases from the allowlist instead of falling back to the trimmed raw string.\n   Rationale: The new nearby-work allowlist increases the chance of alias collisions. In a prompt that contains both `ms-alpha.alpha` and `ms-beta.alpha`, `from_prompt` records the alias conflict, but `canonicalize_allowed(\"alpha\")` still succeeds and returns `alpha`. That loses target specificity and can misroute planned-elsewhere audit records.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.4-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.4-xhigh"
+  },
+  "completion_round": 16
+}
