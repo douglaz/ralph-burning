@@ -2,34 +2,68 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "final_review",
+      "stage": "plan_and_implement",
       "cycle": 1,
       "attempt": 1,
-      "completion_round": 14
+      "completion_round": 15
     },
     "started_at": "2026-04-25T09:18:42.219180501Z",
     "prompt_hash_at_cycle_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "prompt_hash_at_stage_start": "74a9bab02597b95776a812a2a42474b3c8163fd5df6325911d19bff7bf53863e",
     "qa_iterations_current_cycle": 0,
     "review_iterations_current_cycle": 0,
-    "final_review_restart_count": 13
+    "final_review_restart_count": 14
   },
   "status": "running",
   "cycle_history": [],
-  "completion_rounds": 14,
+  "completion_rounds": 15,
   "max_completion_rounds": 25,
   "rollback_point_meta": {
     "last_rollback_id": null,
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [],
+    "pending": [
+      {
+        "amendment_id": "fr-14-d0dcd9f6",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 14,
+        "body": "`src/cli/project.rs:3290-3323` hard-filters `related_work` candidates to the active milestone, so a bead in another milestone that shares the same labels/subsystem never appears in `## Nearby work`. That breaks the main purpose of this bead for cross-milestone ownership: the final-review router already accepts canonical nearby IDs from any milestone (`src/contexts/project_run_record/task_prompt_contract.rs:560-584`), but the prompt builder prevents those owners from ever being surfaced. Reviewers will misclassify those findings as `fix-now` or `propose-new-bead` because the owning bead is missing from the only prompt sections they are allowed to map against. Affected files: `src/cli/project.rs`, `src/contexts/project_run_record/task_prompt_contract.rs`. Remediation: remove the milestone-scope filter from related-work selection and keep the same-milestone restriction only for generating short aliases.",
+        "created_at": "2026-04-26T00:18:49.641678238Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "6d948121aabe190031a00aaef90c3f0dcdf0f199579496b70ad914e1c043db5d"
+      },
+      {
+        "amendment_id": "fr-14-4e7b3c48",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 14,
+        "body": "`src/cli/project.rs:1893-1904` pre-marks direct relations beyond `NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT` as unavailable, and `src/cli/project.rs:2899-2914` then drops any direct dependency/dependent whose detail was capped or whose `br show` failed. That means high-priority nearby owners can disappear from `## Nearby work` before the byte-budget logic ever runs, even though their IDs are already present on the focal bead itself. Because `planned-elsewhere` routing only whitelists IDs from `Already Planned Elsewhere` and `Nearby work`, those skipped direct relations become unroutable in review despite still being real adjacent work. Affected files: `src/cli/project.rs`. Remediation: keep rendering direct relations from bead/relation summary data when detail refresh fails or is capped, and use detail only to refine status/description when it is available.",
+        "created_at": "2026-04-26T00:18:49.641684790Z",
+        "batch_sequence": 2,
+        "source": "workflow_stage",
+        "dedup_key": "e5d147fe3bbbcd0646160ac1e95a7b06213fbf5f43ccbf0ae6dd1a478f18a12d"
+      },
+      {
+        "amendment_id": "fr-14-aed5cae4",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 14,
+        "body": "`src/cli/project.rs:418-421` now makes `project create-from-bead` fail on any `load_bead_summaries` error, and `src/cli/project.rs:1848-1853` maps a `br list` failure straight into that fatal path. Compared to the base branch's best-effort behavior, a transient `br list` problem now blocks bead-backed task creation entirely, even when `br show` can still resolve the active bead and its direct relations. That turns supplemental nearby-context hydration into a hard bootstrap dependency and makes task startup much more brittle. Affected files: `src/cli/project.rs`. Remediation: keep corrupt-record failures fatal, but degrade ordinary `br list` IO/exit failures to an empty/partial nearby context so project creation still succeeds.",
+        "created_at": "2026-04-26T00:18:49.641690321Z",
+        "batch_sequence": 3,
+        "source": "workflow_stage",
+        "dedup_key": "c6bdb2194fe2c59ea224b32169d349ad9c2983f2da79d7212393783ad497a17b"
+      }
+    ],
     "processed_count": 22
   },
-  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "status_summary": "running: final review restart round 15 -> Plan and Implement",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
-    "resolved_at": "2026-04-25T23:06:01.945215766Z",
+    "resolved_at": "2026-04-26T00:07:16.575179145Z",
     "final_review_reviewers": [
       {
         "backend_family": "codex",
