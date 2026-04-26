@@ -102,9 +102,11 @@ struct ClassifiedFindingWire {
 pub struct ClassifiedFinding {
     /// The finding body (equivalent to an item in `follow_up_or_amendments`).
     pub body: String,
-    /// How this finding should be routed.
+    /// How this finding should be routed. The `#[schemars(default = ...)]`
+    /// attribute is intentionally omitted — gpt-5.5 strict-mode structured
+    /// outputs reject the `allOf` schemars emits when an enum is paired with a
+    /// `default` function. Serde still applies the default at deserialize time.
     #[serde(default = "default_review_finding_class")]
-    #[schemars(default = "default_review_finding_class")]
     pub classification: ReviewFindingClass,
     /// Bead ID when classification is covered-by-existing-bead.
     #[serde(default, skip_serializing_if = "Option::is_none")]

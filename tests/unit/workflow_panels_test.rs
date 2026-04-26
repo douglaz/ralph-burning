@@ -781,3 +781,66 @@ fn prompt_review_decision_display_accepted() {
 fn prompt_review_decision_display_rejected() {
     assert_eq!(PromptReviewDecision::Rejected.to_string(), "Rejected");
 }
+
+// ── gpt-5.5 strict-mode JSON schema regression (bead c2e) ────────────────────
+
+/// Recursively verify that a generated JSON schema contains no `allOf`,
+/// `anyOf`, `not`, or other constructs that gpt-5.5 strict-mode structured
+/// outputs reject. Returns the first offending JSON path, if any.
+fn find_strict_mode_violation(
+    value: &serde_json::Value,
+    path: &str,
+) -> Option<(String, &'static str)> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for forbidden in ["allOf", "anyOf", "not", "if", "then", "else"] {
+                if map.contains_key(forbidden) {
+                    return Some((path.to_owned(), forbidden));
+                }
+            }
+            for (key, child) in map {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                if let Some(found) = find_strict_mode_violation(child, &child_path) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for (idx, item) in items.iter().enumerate() {
+                let child_path = format!("{path}[{idx}]");
+                if let Some(found) = find_strict_mode_violation(item, &child_path) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+#[test]
+fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
+    // Regression for bead c2e: gpt-5.5 rejects `allOf`/`anyOf` in
+    // structured-output schemas. This test snapshots the assertion that
+    // every panel_json_schema returns strict-mode-compatible JSON.
+    for stage_id in [
+        StageId::FinalReview,
+        StageId::Review,
+        StageId::PromptReview,
+        StageId::CompletionPanel,
+    ] {
+        for role in ["proposer", "voter", "arbiter", "aggregator", "primary"] {
+            let schema = panel_json_schema(stage_id, role);
+            if let Some((path, forbidden)) = find_strict_mode_violation(&schema, "") {
+                panic!(
+                    "panel_json_schema({stage_id:?}, {role:?}) contains '{forbidden}' at path '{path}' — gpt-5.5 strict-mode structured outputs will reject this schema. Schema was: {schema:#}"
+                );
+            }
+        }
+    }
+}
