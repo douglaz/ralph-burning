@@ -416,7 +416,11 @@ pub(crate) async fn execute_create_from_bead_in_dir(
                 Vec::new(),
             )
         } else {
-            let bead_summaries = load_bead_summaries(current_dir).await?;
+            let bead_summaries = match load_bead_summaries(current_dir).await {
+                Ok(bead_summaries) => bead_summaries,
+                Err(error @ AppError::CorruptRecord { .. }) => return Err(error),
+                Err(_) => BTreeMap::new(),
+            };
             let nearby_dependency_details =
                 load_nearby_dependency_details(current_dir, &milestone_id, &bead, &bead_summaries)
                     .await;
@@ -1896,12 +1900,6 @@ async fn load_nearby_dependency_details(
         .take(NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT)
         .cloned()
         .collect::<Vec<_>>();
-    refresh.unavailable_ids.extend(
-        all_direct_detail_ids
-            .iter()
-            .skip(NEARBY_DIRECT_DETAIL_PREFETCH_LIMIT)
-            .cloned(),
-    );
     load_nearby_details_for_ids(
         base_dir,
         milestone_id,
@@ -2887,8 +2885,8 @@ fn nearby_entries_from_relations(
     relations: &[crate::adapters::br_models::DependencyRef],
     bead_summaries: &BTreeMap<String, BeadSummary>,
     bead_details: &BTreeMap<String, BeadDetail>,
-    unavailable_ids: &BTreeSet<String>,
-    require_detail_for_entries: bool,
+    _unavailable_ids: &BTreeSet<String>,
+    _require_detail_for_entries: bool,
     included_ids: &mut BTreeSet<String>,
 ) -> Vec<NearbyBeadEntry> {
     let mut entries = relations
@@ -2899,17 +2897,7 @@ fn nearby_entries_from_relations(
             }
             let summary = bead_summaries.get(&relation.id);
             let detail = bead_details.get(&relation.id);
-            if require_detail_for_entries && detail.is_none() {
-                return None;
-            }
-            let status = detail
-                .map(|entry| &entry.status)
-                .or_else(|| summary.map(|entry| &entry.status))
-                .or(relation.status.as_ref());
-            if nearby_status_is_omitted(status) {
-                return None;
-            }
-            if unavailable_ids.contains(&relation.id) {
+            if nearby_direct_relation_status_is_omitted(relation, summary, detail) {
                 return None;
             }
             included_ids.insert(relation.id.clone());
@@ -3213,12 +3201,8 @@ fn nearby_initial_included_ids_after_direct_relations(
             continue;
         }
         let summary = bead_summaries.get(&relation.id);
-        if nearby_candidate_status_is_omitted(
-            &relation.id,
-            summary,
-            relation.status.as_ref(),
-            refresh,
-        ) {
+        let detail = refresh.details.get(&relation.id);
+        if nearby_direct_relation_status_is_omitted(relation, summary, detail) {
             continue;
         }
         included_ids.insert(relation.id.clone());
@@ -3290,9 +3274,7 @@ fn nearby_related_work_candidates<'a>(
     let mut candidates = bead_summaries
         .values()
         .filter_map(|summary| {
-            if summary.id == bead.id
-                || !nearby_related_work_is_milestone_scoped(&bead.id, &summary.id)
-            {
+            if summary.id == bead.id {
                 return None;
             }
             let overlap = summary
@@ -3312,24 +3294,21 @@ fn nearby_related_work_candidates<'a>(
     candidates
 }
 
-fn nearby_related_work_is_milestone_scoped(focal_bead_id: &str, candidate_bead_id: &str) -> bool {
-    match (
-        bead_id_milestone_prefix(focal_bead_id),
-        bead_id_milestone_prefix(candidate_bead_id),
-    ) {
-        (Some(focal), Some(candidate)) => focal == candidate,
-        (Some(_), None) => true,
-        (None, _) => true,
-    }
-}
-
-fn bead_id_milestone_prefix(bead_id: &str) -> Option<&str> {
-    let (prefix, short_id) = bead_id.split_once('.')?;
-    (!prefix.is_empty() && !short_id.is_empty()).then_some(prefix)
-}
-
 fn nearby_status_is_omitted(status: Option<&BeadStatus>) -> bool {
     matches!(status, Some(BeadStatus::Closed | BeadStatus::Deferred))
+}
+
+fn nearby_direct_relation_status_is_omitted(
+    relation: &crate::adapters::br_models::DependencyRef,
+    summary: Option<&BeadSummary>,
+    detail: Option<&BeadDetail>,
+) -> bool {
+    nearby_status_is_omitted(
+        detail
+            .map(|entry| &entry.status)
+            .or_else(|| summary.map(|entry| &entry.status))
+            .or(relation.status.as_ref()),
+    )
 }
 
 fn nearby_candidate_status_is_omitted(
@@ -4741,7 +4720,7 @@ mod tests {
     }
 
     #[test]
-    fn build_nearby_bead_context_with_refresh_requires_loaded_detail_entries() {
+    fn build_nearby_bead_context_with_refresh_preserves_direct_relation_fallbacks() {
         let mut bead = sample_bead();
         bead.labels = vec!["subsystem-a".to_owned()];
         bead.dependencies = vec![
@@ -4829,14 +4808,17 @@ mod tests {
         );
         let refresh = NearbyBeadDetails {
             details: BTreeMap::from([(loaded_detail.id.clone(), loaded_detail)]),
-            unavailable_ids: BTreeSet::new(),
+            unavailable_ids: BTreeSet::from([
+                "ms-alpha.dep-missing".to_owned(),
+                "ms-alpha.dependent-missing".to_owned(),
+            ]),
             require_detail_for_entries: true,
         };
 
         let context =
             build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &refresh);
 
-        assert_eq!(context.direct_dependencies.len(), 1);
+        assert_eq!(context.direct_dependencies.len(), 2);
         assert_eq!(
             context.direct_dependencies[0].bead_id,
             "ms-alpha.dep-loaded"
@@ -4845,7 +4827,19 @@ mod tests {
             context.direct_dependencies[0].title,
             "Loaded dependency detail title"
         );
-        assert!(context.direct_dependents.is_empty());
+        assert_eq!(
+            context.direct_dependencies[1].bead_id,
+            "ms-alpha.dep-missing"
+        );
+        assert_eq!(
+            context.direct_dependencies[1].title,
+            "Missing dependency summary title"
+        );
+        assert_eq!(context.direct_dependents.len(), 1);
+        assert_eq!(
+            context.direct_dependents[0].bead_id,
+            "ms-alpha.dependent-missing"
+        );
         assert!(context.siblings.is_empty());
         assert!(context.related_work.is_empty());
     }
@@ -5592,7 +5586,7 @@ mod tests {
     }
 
     #[test]
-    fn build_nearby_bead_context_excludes_foreign_milestone_related_work() {
+    fn build_nearby_bead_context_includes_foreign_milestone_related_work() {
         let mut bead = sample_bead();
         bead.labels = vec!["a".to_owned(), "b".to_owned()];
         let bead_summaries = BTreeMap::from([
@@ -5622,8 +5616,14 @@ mod tests {
 
         let context = build_nearby_bead_context(&bead, &bead_summaries);
 
-        assert_eq!(context.related_work.len(), 1);
-        assert_eq!(context.related_work[0].bead_id, "ms-alpha.bead-3");
+        assert_eq!(
+            context
+                .related_work
+                .iter()
+                .map(|entry| entry.bead_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["other-ms.bead-3", "ms-alpha.bead-3"]
+        );
     }
 
     #[test]
@@ -7946,7 +7946,7 @@ esac
         }
 
         #[tokio::test]
-        async fn load_nearby_dependency_details_omits_failed_and_capped_direct_refreshes(
+        async fn load_nearby_dependency_details_preserves_failed_and_capped_direct_fallbacks(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
             let temp_dir = tempfile::tempdir()?;
@@ -7999,19 +7999,21 @@ esac
                 "failed direct detail refreshes should be marked unavailable"
             );
             assert!(
-                refresh.unavailable_ids.contains(&capped_id),
-                "direct relations beyond the runtime refresh cap should be marked unavailable"
+                !refresh.unavailable_ids.contains(&capped_id),
+                "direct relations beyond the runtime refresh cap should remain renderable from relation or summary data"
             );
             assert!(
                 !calls.contains(&capped_id),
                 "direct relations beyond the cap must not spawn br show calls"
             );
+            let rendered_ids = context
+                .direct_dependencies
+                .iter()
+                .map(|entry| entry.bead_id.as_str())
+                .collect::<Vec<_>>();
             assert!(
-                !context
-                    .direct_dependencies
-                    .iter()
-                    .any(|entry| entry.bead_id == "ms-alpha.dep-02" || entry.bead_id == capped_id),
-                "unverified direct relations should not render from stale summary data"
+                rendered_ids.contains(&"ms-alpha.dep-02"),
+                "failed direct detail refreshes should still render from relation or summary data"
             );
             Ok(())
         }

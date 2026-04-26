@@ -4847,7 +4847,7 @@ fn project_create_from_bead_sets_active_milestone_for_run_without_id() {
 }
 
 #[test]
-fn project_create_from_bead_fails_when_br_list_is_unavailable() {
+fn project_create_from_bead_degrades_when_br_list_is_unavailable() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let fake_br = write_editor_script(
@@ -4921,18 +4921,20 @@ exit 1
         .expect("run project create-from-bead");
 
     assert!(
-        !output.status.success(),
-        "create-from-bead should fail when canonical prompt hydration cannot load br list"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("failed to load bead summaries"),
-        "stderr: {stderr}"
+        output.status.success(),
+        "create-from-bead should degrade when supplemental br list hydration fails: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        !project_root(temp_dir.path(), "missing-br-list-project").exists(),
-        "create-from-bead must not create a canonical project with degraded Nearby work"
+        project_root(temp_dir.path(), "missing-br-list-project").exists(),
+        "create-from-bead should still create the project from br show direct context"
     );
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "missing-br-list-project").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(prompt.contains("## Nearby work"));
+    assert!(prompt.contains("ms-alpha.bead-3"));
 }
 
 #[test]
@@ -5031,7 +5033,7 @@ exit 1
 }
 
 #[test]
-fn project_create_from_bead_rejects_unknown_relation_status_fallback_when_br_list_is_unavailable() {
+fn project_create_from_bead_allows_unknown_relation_status_fallback_when_br_list_is_unavailable() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
     let fake_br = write_editor_script(
@@ -5103,18 +5105,17 @@ exit 1
         .expect("run project create-from-bead");
 
     assert!(
-        !output.status.success(),
-        "create-from-bead should fail rather than emit relation prompts with unknown statuses"
+        output.status.success(),
+        "create-from-bead should degrade to relation fallback when br list is unavailable: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("failed to load bead summaries"),
-        "stderr: {stderr}"
-    );
-    assert!(
-        !project_root(temp_dir.path(), "missing-br-list-unknown-status-project").exists(),
-        "create-from-bead must not create a canonical project with degraded relation context"
-    );
+    let prompt = fs::read_to_string(
+        project_root(temp_dir.path(), "missing-br-list-unknown-status-project").join("prompt.md"),
+    )
+    .expect("read prompt");
+    assert!(prompt.contains("## Nearby work"));
+    assert!(prompt.contains("ms-alpha.bead-1"));
+    assert!(prompt.contains("ms-alpha.bead-3"));
 }
 
 #[test]
