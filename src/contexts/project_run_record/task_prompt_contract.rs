@@ -207,6 +207,14 @@ fn prompt_authoritative_section_titles(prompt: &str) -> Vec<&'static str> {
             .collect();
     }
 
+    if canonical_section_body(prompt, SECTION_NEARBY_WORK).is_none() {
+        return BEAD_TASK_PROMPT_SECTION_TITLES
+            .iter()
+            .copied()
+            .filter(|section| *section != SECTION_NEARBY_WORK)
+            .collect();
+    }
+
     BEAD_TASK_PROMPT_SECTION_TITLES.to_vec()
 }
 
@@ -243,6 +251,54 @@ pub fn prompt_declares_contract(prompt: &str) -> bool {
 /// Return whether the prompt declares the canonical bead task prompt contract.
 pub fn prompt_uses_contract(prompt: &str) -> bool {
     has_top_level_contract_marker(prompt)
+}
+
+/// Extract a top-level markdown section body from a canonical task prompt.
+///
+/// The returned body starts immediately after the matching `## ...` heading and
+/// ends before the next top-level `## ...` heading outside fenced blocks.
+pub fn canonical_section_body<'a>(prompt: &'a str, section_title: &str) -> Option<&'a str> {
+    let section_header = format!("## {section_title}");
+    let mut active_fence = None;
+    let mut offset = 0usize;
+    let mut body_start = None;
+
+    for segment in prompt.split_inclusive('\n') {
+        let line = segment.trim_end_matches('\n').trim_end_matches('\r');
+        let trimmed_end = line.trim_end();
+        let leading_spaces = trimmed_end.chars().take_while(|ch| *ch == ' ').count();
+        let heading_line = if leading_spaces <= 3 {
+            &trimmed_end[leading_spaces..]
+        } else {
+            trimmed_end
+        };
+
+        if let Some(opening) = active_fence {
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            offset += segment.len();
+            continue;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            active_fence = Some(opening);
+            offset += segment.len();
+            continue;
+        }
+
+        if body_start.is_some() && leading_spaces <= 3 && heading_line.starts_with("## ") {
+            return body_start.map(|start| &prompt[start..offset]);
+        }
+
+        if leading_spaces <= 3 && heading_line == section_header {
+            body_start = Some(offset + segment.len());
+        }
+
+        offset += segment.len();
+    }
+
+    body_start.map(|start| &prompt[start..])
 }
 
 /// Guidance injected into workflow stage prompts when the project prompt uses
@@ -796,6 +852,20 @@ mod tests {
 
         assert!(guidance.contains("legacy v1 shape without `Nearby work`"));
         assert!(!guidance.contains("- `Nearby work`"));
+    }
+
+    #[test]
+    fn prompt_review_guidance_for_malformed_prompt_without_nearby_work_does_not_preserve_it() {
+        let prompt = format!(
+            "# Drifted Prompt\n\n{}\n\n## Acceptance Criteria\n\nLater section only.",
+            contract_marker()
+        );
+
+        let guidance = prompt_review_consumer_guidance_for_prompt(&prompt);
+
+        assert!(guidance.contains("## Task Prompt Contract"));
+        assert!(!guidance.contains("- `Nearby work`"));
+        assert!(!guidance.contains("Preserve the graph-derived `Nearby work` body verbatim"));
     }
 
     #[test]

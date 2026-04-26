@@ -376,59 +376,7 @@ fn canonical_contract_drift_concerns(original_prompt: &str, refined_prompt: &str
 }
 
 fn nearby_work_section_body(prompt: &str) -> Option<&str> {
-    canonical_section_body(prompt, task_prompt_contract::SECTION_NEARBY_WORK)
-}
-
-fn canonical_section_body<'a>(prompt: &'a str, section_title: &str) -> Option<&'a str> {
-    let section_header = format!("## {section_title}");
-    let mut active_fence = None;
-    let mut offset = 0usize;
-    let mut body_start = None;
-
-    for segment in prompt.split_inclusive('\n') {
-        let line = segment.trim_end_matches('\n').trim_end_matches('\r');
-        let heading_line = line.trim_end();
-
-        if let Some(opening) = active_fence {
-            if crate::contexts::project_run_record::fence_util::closes_fence(line, opening) {
-                active_fence = None;
-            }
-            offset += segment.len();
-            continue;
-        }
-
-        if let Some(opening) =
-            crate::contexts::project_run_record::fence_util::opening_fence_delimiter(line)
-        {
-            active_fence = Some(opening);
-            offset += segment.len();
-            continue;
-        }
-
-        if body_start.is_some() && heading_line.starts_with("## ") {
-            return body_start.map(|start| &prompt[start..offset]);
-        }
-
-        if heading_line == section_header {
-            body_start = Some(offset + segment.len());
-        }
-
-        offset += segment.len();
-    }
-
-    if offset < prompt.len() {
-        let segment = &prompt[offset..];
-        let line = segment.trim_end_matches('\r');
-        let heading_line = line.trim_end();
-        if body_start.is_some() && heading_line.starts_with("## ") {
-            return body_start.map(|start| &prompt[start..offset]);
-        }
-        if heading_line == section_header {
-            body_start = Some(prompt.len());
-        }
-    }
-
-    body_start.map(|start| &prompt[start..])
+    task_prompt_contract::canonical_section_body(prompt, task_prompt_contract::SECTION_NEARBY_WORK)
 }
 
 fn build_prompt_review_member_prompt(

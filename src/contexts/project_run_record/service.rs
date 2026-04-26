@@ -437,6 +437,13 @@ pub fn create_project_from_bead_context(
                 errors.join("; ")
             ),
         })?;
+        if prompt_is_override {
+            validate_prompt_override_nearby_work_matches_context(
+                &prompt_contents,
+                &prompt_path,
+                &context,
+            )?;
+        }
     }
     let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
 
@@ -502,6 +509,35 @@ pub fn create_project_from_bead_context(
         input,
         serde_json::Value::Object(initial_details),
     )
+}
+
+fn validate_prompt_override_nearby_work_matches_context(
+    prompt_contents: &str,
+    prompt_path: &str,
+    context: &BeadProjectContext,
+) -> AppResult<()> {
+    let Some(override_nearby_work) = task_prompt_contract::canonical_section_body(
+        prompt_contents,
+        task_prompt_contract::SECTION_NEARBY_WORK,
+    ) else {
+        return Ok(());
+    };
+
+    let generated_prompt = render_bead_task_prompt(context);
+    let generated_nearby_work = task_prompt_contract::canonical_section_body(
+        &generated_prompt,
+        task_prompt_contract::SECTION_NEARBY_WORK,
+    )
+    .unwrap_or_default();
+
+    if override_nearby_work == generated_nearby_work {
+        return Ok(());
+    }
+
+    Err(AppError::InvalidPrompt {
+        path: prompt_path.to_owned(),
+        reason: "canonical bead task contract violated: prompt override `## Nearby work` must match the graph-derived nearby work for this bead".to_owned(),
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

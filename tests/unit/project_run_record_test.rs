@@ -2611,6 +2611,36 @@ fn create_project_from_bead_context_accepts_legacy_canonical_override_missing_ne
 }
 
 #[test]
+fn create_project_from_bead_context_rejects_prompt_override_that_invents_nearby_work() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let marker =
+        ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker();
+
+    let error = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("fake-nearby-work").unwrap()),
+            prompt_override: Some(format!(
+                "{marker}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Nearby work\n\n### Related work\n- `ms-alpha.fake` [open] Fabricated nearby owner\n  Scope: Not graph-derived.\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH"
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect_err("contract override must not invent graph-derived nearby work");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidPrompt { ref path, ref reason }
+            if path == "<prompt override>"
+                && reason.contains("prompt override `## Nearby work` must match")
+    ));
+}
+
+#[test]
 fn create_project_from_bead_context_allows_generic_override_that_quotes_marker() {
     let store = RecordingProjectStore::empty();
     let journal_store = FakeJournalStore;
