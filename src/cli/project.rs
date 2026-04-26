@@ -2893,8 +2893,8 @@ fn nearby_entries_from_relations(
     relations: &[crate::adapters::br_models::DependencyRef],
     bead_summaries: &BTreeMap<String, BeadSummary>,
     bead_details: &BTreeMap<String, BeadDetail>,
-    unavailable_ids: &BTreeSet<String>,
-    require_detail_for_entries: bool,
+    _unavailable_ids: &BTreeSet<String>,
+    _require_detail_for_entries: bool,
     included_ids: &mut BTreeSet<String>,
 ) -> Vec<NearbyBeadEntry> {
     let mut entries = relations
@@ -2905,12 +2905,10 @@ fn nearby_entries_from_relations(
             }
             let summary = bead_summaries.get(&relation.id);
             let detail = bead_details.get(&relation.id);
-            if unavailable_ids.contains(&relation.id)
-                || (require_detail_for_entries && detail.is_none())
-            {
-                included_ids.insert(relation.id.clone());
-                return None;
-            }
+            // Direct relations are authoritative context from the focal bead.
+            // A refresh detail refines stale metadata when available, but a
+            // missing refresh must not erase a dependency/dependent that the
+            // focal bead already exposes.
             if nearby_direct_relation_status_is_omitted(relation, summary, detail) {
                 return None;
             }
@@ -4734,7 +4732,7 @@ mod tests {
     }
 
     #[test]
-    fn build_nearby_bead_context_with_refresh_requires_fresh_direct_relation_details() {
+    fn build_nearby_bead_context_with_refresh_preserves_direct_relation_fallbacks() {
         let mut bead = sample_bead();
         bead.labels = vec!["subsystem-a".to_owned()];
         bead.dependencies = vec![
@@ -4776,7 +4774,7 @@ mod tests {
                     "Missing dependency summary title",
                     BeadStatus::Open,
                     &[],
-                    Some("Do not render without authoritative detail."),
+                    Some("Render dependency from summary when detail refresh is unavailable."),
                     None,
                 ),
             ),
@@ -4787,7 +4785,7 @@ mod tests {
                     "Missing dependent summary title",
                     BeadStatus::Open,
                     &[],
-                    Some("Do not render without authoritative detail."),
+                    Some("Render dependent from summary when detail refresh is unavailable."),
                     None,
                 ),
             ),
@@ -4832,7 +4830,7 @@ mod tests {
         let context =
             build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &refresh);
 
-        assert_eq!(context.direct_dependencies.len(), 1);
+        assert_eq!(context.direct_dependencies.len(), 2);
         assert_eq!(
             context.direct_dependencies[0].bead_id,
             "ms-alpha.dep-loaded"
@@ -4841,7 +4839,19 @@ mod tests {
             context.direct_dependencies[0].title,
             "Loaded dependency detail title"
         );
-        assert!(context.direct_dependents.is_empty());
+        assert_eq!(
+            context.direct_dependencies[1].bead_id,
+            "ms-alpha.dep-missing"
+        );
+        assert_eq!(
+            context.direct_dependencies[1].scope_summary,
+            "Render dependency from summary when detail refresh is unavailable."
+        );
+        assert_eq!(context.direct_dependents.len(), 1);
+        assert_eq!(
+            context.direct_dependents[0].bead_id,
+            "ms-alpha.dependent-missing"
+        );
         assert!(context.siblings.is_empty());
         assert_eq!(context.related_work.len(), 1);
         assert_eq!(context.related_work[0].bead_id, "ms-alpha.related-missing");
@@ -4849,6 +4859,74 @@ mod tests {
             context.related_work[0].scope_summary,
             "Render from summary when detail refresh is transiently unavailable."
         );
+    }
+
+    #[test]
+    fn direct_relation_fallbacks_remain_planned_elsewhere_routing_ids() {
+        let mut bead = sample_bead();
+        bead.dependencies = vec![DependencyRef {
+            id: "ms-alpha.dep-missing".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Missing dependency relation title".to_owned()),
+            status: Some(BeadStatus::Open),
+        }];
+        bead.dependents = vec![DependencyRef {
+            id: "ms-alpha.dependent-missing".to_owned(),
+            kind: DependencyKind::Blocks,
+            title: Some("Missing dependent relation title".to_owned()),
+            status: Some(BeadStatus::Open),
+        }];
+        let bead_summaries = BTreeMap::from([
+            (
+                "ms-alpha.dep-missing".to_owned(),
+                summary(
+                    "ms-alpha.dep-missing",
+                    "Missing dependency summary title",
+                    BeadStatus::Open,
+                    &[],
+                    Some("Dependency should remain routeable after refresh failure."),
+                    None,
+                ),
+            ),
+            (
+                "ms-alpha.dependent-missing".to_owned(),
+                summary(
+                    "ms-alpha.dependent-missing",
+                    "Missing dependent summary title",
+                    BeadStatus::Open,
+                    &[],
+                    Some("Dependent should remain routeable after refresh failure."),
+                    None,
+                ),
+            ),
+        ]);
+        let refresh = NearbyBeadDetails {
+            details: BTreeMap::new(),
+            unavailable_ids: BTreeSet::from([
+                "ms-alpha.dep-missing".to_owned(),
+                "ms-alpha.dependent-missing".to_owned(),
+            ]),
+            require_detail_for_entries: true,
+        };
+
+        let context =
+            build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &refresh);
+        let nearby_work =
+            crate::contexts::project_run_record::task_prompt_contract::render_nearby_bead_context(
+                &context,
+            );
+        let prompt = format!(
+            "# Ralph Task Prompt\n\n- Milestone: `ms-alpha`\n\n## Nearby work\n\n{nearby_work}\n\n## Must-Do Scope\n\nCurrent work."
+        );
+        let routing_ids =
+            crate::contexts::project_run_record::task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(&prompt);
+
+        assert!(nearby_work.contains("### Direct dependencies"));
+        assert!(nearby_work.contains("### Direct dependents"));
+        assert!(routing_ids.contains("ms-alpha.dep-missing"));
+        assert!(routing_ids.contains("dep-missing"));
+        assert!(routing_ids.contains("ms-alpha.dependent-missing"));
+        assert!(routing_ids.contains("dependent-missing"));
     }
 
     #[test]
@@ -7991,7 +8069,7 @@ esac
         }
 
         #[tokio::test]
-        async fn load_nearby_dependency_details_refreshes_all_directs_and_omits_failed_directs(
+        async fn load_nearby_dependency_details_refreshes_all_directs_and_preserves_failed_direct_fallbacks(
         ) -> Result<(), Box<dyn std::error::Error>> {
             let _path_lock = lock_path_mutex();
             let temp_dir = tempfile::tempdir()?;
@@ -8049,8 +8127,8 @@ esac
                 .map(|entry| entry.bead_id.as_str())
                 .collect::<Vec<_>>();
             assert!(
-                !rendered_ids.contains(&"ms-alpha.dep-02"),
-                "failed direct detail refreshes should not render from stale relation or summary data"
+                rendered_ids.contains(&"ms-alpha.dep-02"),
+                "failed direct detail refreshes should fall back to relation or summary data"
             );
             Ok(())
         }

@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 18
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-17-4f24006f",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 17,
-        "body": "`src/cli/project.rs:2892-2912` drops a direct dependency/dependent from `## Nearby work` whenever its fresh `br show` detail is missing, even if the focal bead already carries that relation's id/title/status and `br list` supplied a summary. In the degraded paths this branch explicitly tries to support (`br list` unavailable, transient `br show` failure), the prompt can therefore render `No nearby open work was found.` while the old dependency block still lists those beads. Because final-review planned-elsewhere routing only allowlists IDs extracted from `Nearby work` / `Already Planned Elsewhere` (`src/contexts/workflow_composition/final_review.rs:467-470`), those omitted direct relations can no longer be mapped as planned-elsewhere. Fall back to relation/summary data for direct nearby entries when detail refresh is unavailable, and use fresh detail only to override stale status/description when it exists.",
-        "created_at": "2026-04-26T03:00:42.513212558Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "8970ca50de28fc78aa66b99c0266e2e155363c6afe5c0c7c1cd5c0782dbe4a4e"
-      }
-    ],
-    "processed_count": 28
+    "pending": [],
+    "processed_count": 29
   },
-  "status_summary": "running: final review restart round 18 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-26T02:47:16.112331368Z",
