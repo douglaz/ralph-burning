@@ -2209,11 +2209,25 @@ async fn collect_nearby_detail_result(
                 refresh.unavailable_ids.remove(&bead_id);
                 refresh.details.insert(bead_id, detail);
             }
-            Err(_) if record_unavailable => {
+            Err(error)
+                if record_unavailable
+                    && nearby_detail_refresh_error_is_definitive_missing(&error) =>
+            {
                 refresh.unavailable_ids.insert(bead_id);
             }
             Err(_) => {}
         }
+    }
+}
+
+fn nearby_detail_refresh_error_is_definitive_missing(error: &AppError) -> bool {
+    match error {
+        AppError::Io(error) => {
+            let message = error.to_string();
+            message.contains("bead not found")
+                || message.contains("br show returned no matching bead")
+        }
+        _ => false,
     }
 }
 
@@ -3339,7 +3353,10 @@ fn nearby_candidate_status_is_omitted_with_policy(
     if matches!(status_policy, NearbyStatusPolicy::Prefetch) {
         return nearby_candidate_status_is_omitted_for_prefetch(bead_id, refresh);
     }
-    if refresh.require_detail_for_entries && !refresh.details.contains_key(bead_id) {
+    if refresh.require_detail_for_entries
+        && !refresh.details.contains_key(bead_id)
+        && summary.is_none()
+    {
         return true;
     }
 
@@ -4795,7 +4812,7 @@ mod tests {
                     "Missing related summary title",
                     BeadStatus::Open,
                     &["subsystem-a"],
-                    Some("Do not render without authoritative detail."),
+                    Some("Render from summary when detail refresh is transiently unavailable."),
                     None,
                 ),
             ),
@@ -4841,7 +4858,12 @@ mod tests {
             "ms-alpha.dependent-missing"
         );
         assert!(context.siblings.is_empty());
-        assert!(context.related_work.is_empty());
+        assert_eq!(context.related_work.len(), 1);
+        assert_eq!(context.related_work[0].bead_id, "ms-alpha.related-missing");
+        assert_eq!(
+            context.related_work[0].scope_summary,
+            "Render from summary when detail refresh is transiently unavailable."
+        );
     }
 
     #[test]
@@ -7886,6 +7908,43 @@ esac
                 .expect("chmod fake br");
         }
 
+        fn install_fake_br_for_nearby_transient_detail_failures(base_dir: &std::path::Path) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    case "$2" in
+      ms-alpha.epic-1)
+        cat <<'BEAD_JSON'
+{"id":"ms-alpha.epic-1","title":"Parent epic","status":"in_progress","priority":1,"bead_type":"epic","labels":[],"dependencies":[],"dependents":[{"id":"ms-alpha.sibling-1","kind":"parent_child","title":"Summary sibling","status":"open"}],"acceptance_criteria":[]}
+BEAD_JSON
+        exit 0
+        ;;
+      ms-alpha.sibling-1|ms-alpha.related-1)
+        echo "temporary detail refresh failure: $2" >&2
+        exit 1
+        ;;
+    esac
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#;
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         #[tokio::test]
         async fn load_nearby_dependency_details_refreshes_direct_relations_past_initial_cap(
         ) -> Result<(), Box<dyn std::error::Error>> {
@@ -7995,8 +8054,8 @@ esac
             );
 
             assert!(
-                refresh.unavailable_ids.contains("ms-alpha.dep-02"),
-                "failed direct detail refreshes should be marked unavailable"
+                !refresh.unavailable_ids.contains("ms-alpha.dep-02"),
+                "transient direct detail refresh failures should fall back to relation or summary data"
             );
             assert!(
                 !refresh.unavailable_ids.contains(&capped_id),
@@ -8419,6 +8478,73 @@ esac
                     "ms-alpha.related-06",
                     "ms-alpha.related-07"
                 ]
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_nearby_dependency_details_falls_back_to_summary_after_transient_detail_failures(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+            install_fake_br_for_nearby_transient_detail_failures(base_dir);
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let mut bead = sample_bead();
+            bead.labels = vec!["a".to_owned()];
+            let bead_summaries = BTreeMap::from([
+                (
+                    "ms-alpha.sibling-1".to_owned(),
+                    summary(
+                        "ms-alpha.sibling-1",
+                        "Summary sibling",
+                        BeadStatus::Open,
+                        &[],
+                        Some("Summary sibling scope should survive transient detail failure."),
+                        Some("ms-alpha.epic-1"),
+                    ),
+                ),
+                (
+                    "ms-alpha.related-1".to_owned(),
+                    summary(
+                        "ms-alpha.related-1",
+                        "Summary related",
+                        BeadStatus::Open,
+                        &["a"],
+                        Some("Summary related scope should survive transient detail failure."),
+                        None,
+                    ),
+                ),
+            ]);
+
+            let milestone_id = MilestoneId::new("ms-alpha")?;
+            let refresh =
+                load_nearby_dependency_details(base_dir, &milestone_id, &bead, &bead_summaries)
+                    .await;
+            let context =
+                build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &refresh);
+
+            assert!(
+                refresh.unavailable_ids.is_empty(),
+                "transient refresh failures should not be recorded as definitive unavailable beads: {:?}",
+                refresh.unavailable_ids
+            );
+            assert_eq!(
+                context
+                    .siblings
+                    .iter()
+                    .map(|entry| entry.bead_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["ms-alpha.sibling-1"]
+            );
+            assert_eq!(
+                context
+                    .related_work
+                    .iter()
+                    .map(|entry| entry.bead_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["ms-alpha.related-1"]
             );
             Ok(())
         }

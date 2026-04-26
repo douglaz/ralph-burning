@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 16
@@ -23,22 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-15-f7ae1dbe",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 15,
-        "body": "finding_summary: A transient `br show` failure silently deletes sibling/related nearby context instead of falling back to the already-loaded summary. Real prompt generation enables `require_detail_for_entries` (`src/cli/project.rs:1891-1894`), `collect_nearby_detail_result` records any error as `unavailable` (`src/cli/project.rs:2199-2215`), and `nearby_candidate_status_is_omitted_with_policy` then suppresses every sibling/related bead without a detail row (`src/cli/project.rs:3336-3344`). Timeouts, parse failures, or other non-not-found errors therefore shrink or empty `Nearby work` nondeterministically even when `br list` already supplied enough data to render the entry, which can misroute later planned-elsewhere decisions.\naffected_files:\n- src/cli/project.rs:1891-1894\n- src/cli/project.rs:2199-2215\n- src/cli/project.rs:3336-3344\nremediation_hint: Treat transient detail-refresh failures differently from definitive missing/closed results, and fall back to summary rendering when the refresh does not succeed.",
-        "created_at": "2026-04-26T01:12:30.493670966Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "7e7e14ed523b118b3a5804649f09d4f5818751e649b5a386b53075b6674e8766"
-      }
-    ],
-    "processed_count": 25
+    "pending": [],
+    "processed_count": 26
   },
-  "status_summary": "running: final review restart round 16 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-26T01:02:55.895338Z",
