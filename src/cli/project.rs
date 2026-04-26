@@ -64,10 +64,12 @@ const PLANNED_ELSEWHERE_MAX_BYTES: usize = 1536;
 const PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES: usize = 240;
 const NEARBY_SIBLING_LIMIT: usize = 5;
 const NEARBY_DETAIL_LOAD_CONCURRENCY: usize = 4;
-// Scan one sibling past the rendered limit so a stale-open sibling that is
-// closed in `br show` can be dropped without hiding the next open sibling.
+// Scan beyond the rendered limit so stale summaries, or parent-detail
+// relations without status, can be refreshed and dropped without hiding later
+// open siblings. This remains bounded to avoid turning nearby context
+// hydration into a full-backlog detail load.
 const NEARBY_SIBLING_DETAIL_PREFETCH_SCAN_LIMIT: usize = NEARBY_SIBLING_LIMIT + 1;
-const NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN: usize = NEARBY_SIBLING_LIMIT * 2;
+const NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN: usize = NEARBY_SIBLING_LIMIT * 10;
 const NEARBY_RELATED_WORK_LIMIT: usize = 3;
 const NEARBY_RELATED_WORK_DETAIL_PREFETCH_SCAN_LIMIT: usize = NEARBY_RELATED_WORK_LIMIT + 1;
 const NEARBY_RELATED_WORK_DETAIL_PREFETCH_MAX_SCAN: usize = NEARBY_RELATED_WORK_LIMIT * 4;
@@ -2041,24 +2043,46 @@ async fn load_nearby_sibling_render_details_until_stable(
     seen: &mut BTreeSet<String>,
     refresh: &mut NearbyBeadDetails,
 ) {
-    load_nearby_render_details_until_stable(
-        base_dir,
-        milestone_id,
-        seen,
-        refresh,
-        NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN,
-        |refresh| {
-            nearby_sibling_candidate_ids_for_limit(
-                bead,
-                bead_summaries,
-                refresh,
-                included_ids,
-                NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN,
-                NearbyStatusPolicy::Prefetch,
-            )
-        },
-    )
-    .await;
+    let mut detail_loads = 0;
+    loop {
+        if nearby_sibling_candidate_ids_for_limit(
+            bead,
+            bead_summaries,
+            refresh,
+            included_ids,
+            NEARBY_SIBLING_LIMIT,
+            NearbyStatusPolicy::Render,
+        )
+        .len()
+            >= NEARBY_SIBLING_LIMIT
+        {
+            break;
+        }
+
+        let remaining = NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN.saturating_sub(detail_loads);
+        if remaining == 0 {
+            break;
+        }
+
+        let ids_to_load = nearby_sibling_candidate_ids_for_limit(
+            bead,
+            bead_summaries,
+            refresh,
+            included_ids,
+            NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN,
+            NearbyStatusPolicy::Prefetch,
+        )
+        .into_iter()
+        .filter(|id| !refresh.details.contains_key(id) && !seen.contains(id))
+        .take(remaining.min(NEARBY_SIBLING_DETAIL_PREFETCH_SCAN_LIMIT))
+        .collect::<Vec<_>>();
+        if ids_to_load.is_empty() {
+            break;
+        }
+
+        detail_loads += ids_to_load.len();
+        load_nearby_details_for_ids(base_dir, milestone_id, ids_to_load, seen, refresh, true).await;
+    }
 }
 
 async fn load_nearby_related_work_render_details_until_stable(
@@ -3389,8 +3413,8 @@ fn nearby_candidate_status_is_omitted_with_policy(
 
 fn nearby_candidate_status_is_omitted_for_prefetch(
     bead_id: &str,
-    _summary: Option<&BeadSummary>,
-    _relation_status: Option<&BeadStatus>,
+    summary: Option<&BeadSummary>,
+    relation_status: Option<&BeadStatus>,
     refresh: &NearbyBeadDetails,
 ) -> bool {
     if refresh.unavailable_ids.contains(bead_id) {
@@ -3398,6 +3422,9 @@ fn nearby_candidate_status_is_omitted_for_prefetch(
     }
     if let Some(detail) = refresh.details.get(bead_id) {
         return nearby_status_is_omitted(Some(&detail.status));
+    }
+    if summary.is_none() {
+        return nearby_status_is_omitted(relation_status);
     }
     false
 }
@@ -4420,12 +4447,13 @@ mod tests {
         load_nearby_dependency_details, map_br_list_error,
         nearby_direct_relation_detail_candidate_ids, nearby_related_work_detail_candidate_ids,
         nearby_related_work_detail_candidate_ids_with_limit,
-        nearby_summary_sibling_detail_candidate_ids, planned_elsewhere_serialized_bytes,
-        planned_elsewhere_serialized_bytes_without_summary, resolve_bead_plan,
-        validate_milestone_plan_snapshot, warn_once_for_legacy_plan_lookup, NearbyBeadDetails,
-        PlannedElsewhereCandidate, PlannedElsewherePriority,
+        nearby_sibling_candidate_ids_for_limit, nearby_summary_sibling_detail_candidate_ids,
+        planned_elsewhere_serialized_bytes, planned_elsewhere_serialized_bytes_without_summary,
+        resolve_bead_plan, validate_milestone_plan_snapshot, warn_once_for_legacy_plan_lookup,
+        NearbyBeadDetails, NearbyStatusPolicy, PlannedElsewhereCandidate, PlannedElsewherePriority,
         NEARBY_RELATED_WORK_DETAIL_PREFETCH_SCAN_LIMIT, NEARBY_SCOPE_SUMMARY_MAX_BYTES,
-        NEARBY_TITLE_MAX_BYTES, PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
+        NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN, NEARBY_TITLE_MAX_BYTES,
+        PLANNED_ELSEWHERE_MAX_BYTES, PLANNED_ELSEWHERE_SUMMARY_MAX_BYTES,
     };
     use std::collections::{BTreeMap, BTreeSet};
     use std::path::Path;
@@ -5871,6 +5899,50 @@ mod tests {
         assert_eq!(
             candidates,
             vec!["ms-alpha.bead-1", "ms-alpha.bead-3", "ms-alpha.bead-4"]
+        );
+    }
+
+    #[test]
+    fn nearby_parent_detail_only_sibling_prefetch_skips_relation_terminal_entries() {
+        let bead = sample_bead();
+        let mut parent_detail = sample_bead();
+        parent_detail.id = "ms-alpha.epic-1".to_owned();
+        parent_detail.dependents = (1..=15)
+            .map(|index| DependencyRef {
+                id: format!("ms-alpha.bead-{index:02}"),
+                kind: DependencyKind::ParentChild,
+                title: Some(format!("Sibling {index:02}")),
+                status: Some(if index <= 10 {
+                    BeadStatus::Closed
+                } else {
+                    BeadStatus::Open
+                }),
+            })
+            .collect();
+        let refresh = NearbyBeadDetails {
+            details: BTreeMap::from([("ms-alpha.epic-1".to_owned(), parent_detail)]),
+            unavailable_ids: BTreeSet::new(),
+            require_detail_for_entries: true,
+        };
+
+        let candidates = nearby_sibling_candidate_ids_for_limit(
+            &bead,
+            &BTreeMap::new(),
+            &refresh,
+            &BTreeSet::new(),
+            NEARBY_SIBLING_DETAIL_PREFETCH_MAX_SCAN,
+            NearbyStatusPolicy::Prefetch,
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                "ms-alpha.bead-11",
+                "ms-alpha.bead-12",
+                "ms-alpha.bead-13",
+                "ms-alpha.bead-14",
+                "ms-alpha.bead-15",
+            ]
         );
     }
 
@@ -7955,6 +8027,53 @@ esac
                 .expect("chmod fake br");
         }
 
+        fn install_fake_br_for_parent_detail_only_sibling_scan(base_dir: &std::path::Path) {
+            let fake_bin = base_dir.join("fake-bin");
+            std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+            let script = r#"#!/bin/sh
+case "$1" in
+  --version)
+    echo "br test stub"
+    exit 0
+    ;;
+  show)
+    case "$2" in
+      ms-alpha.epic-1)
+        cat <<'BEAD_JSON'
+{"id":"ms-alpha.epic-1","title":"Parent epic","status":"in_progress","priority":1,"bead_type":"epic","labels":[],"dependencies":[],"dependents":[{"id":"ms-alpha.bead-01","kind":"parent_child","title":"Sibling 01"},{"id":"ms-alpha.bead-02","kind":"parent_child","title":"Sibling 02"},{"id":"ms-alpha.bead-03","kind":"parent_child","title":"Sibling 03"},{"id":"ms-alpha.bead-04","kind":"parent_child","title":"Sibling 04"},{"id":"ms-alpha.bead-05","kind":"parent_child","title":"Sibling 05"},{"id":"ms-alpha.bead-06","kind":"parent_child","title":"Sibling 06"},{"id":"ms-alpha.bead-07","kind":"parent_child","title":"Sibling 07"},{"id":"ms-alpha.bead-08","kind":"parent_child","title":"Sibling 08"},{"id":"ms-alpha.bead-09","kind":"parent_child","title":"Sibling 09"},{"id":"ms-alpha.bead-10","kind":"parent_child","title":"Sibling 10"},{"id":"ms-alpha.bead-11","kind":"parent_child","title":"Sibling 11"},{"id":"ms-alpha.bead-12","kind":"parent_child","title":"Sibling 12"},{"id":"ms-alpha.bead-13","kind":"parent_child","title":"Sibling 13"},{"id":"ms-alpha.bead-14","kind":"parent_child","title":"Sibling 14"},{"id":"ms-alpha.bead-15","kind":"parent_child","title":"Sibling 15"}],"acceptance_criteria":[]}
+BEAD_JSON
+        exit 0
+        ;;
+      ms-alpha.bead-0*|ms-alpha.bead-10)
+        id="$2"
+        cat <<BEAD_JSON
+{"id":"$id","title":"Closed sibling","status":"closed","priority":2,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}
+BEAD_JSON
+        exit 0
+        ;;
+      ms-alpha.bead-11|ms-alpha.bead-12|ms-alpha.bead-13|ms-alpha.bead-14|ms-alpha.bead-15)
+        id="$2"
+        cat <<BEAD_JSON
+{"id":"$id","title":"Open sibling","status":"open","priority":2,"bead_type":"task","labels":[],"dependencies":[],"dependents":[],"acceptance_criteria":[]}
+BEAD_JSON
+        exit 0
+        ;;
+    esac
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+  *)
+    echo "unexpected: $*" >&2
+    exit 1
+    ;;
+esac
+"#;
+            let br_path = fake_bin.join("br");
+            std::fs::write(&br_path, script).expect("write fake br");
+            std::fs::set_permissions(&br_path, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod fake br");
+        }
+
         fn install_fake_br_for_nearby_direct_prefetch(base_dir: &std::path::Path) {
             let fake_bin = base_dir.join("fake-bin");
             std::fs::create_dir_all(&fake_bin).expect("create fake bin dir");
@@ -8427,6 +8546,46 @@ esac
             assert!(
                 details.contains_key("ms-alpha.bead-7"),
                 "detail-only closed siblings should not consume the sibling prefetch limit"
+            );
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn load_nearby_dependency_details_scans_parent_detail_only_siblings_until_render_limit(
+        ) -> Result<(), Box<dyn std::error::Error>> {
+            let _path_lock = lock_path_mutex();
+            let temp_dir = tempfile::tempdir()?;
+            let base_dir = temp_dir.path();
+            install_fake_br_for_parent_detail_only_sibling_scan(base_dir);
+            let _path_guard = PathGuard::prepend(&base_dir.join("fake-bin"));
+
+            let bead = sample_bead();
+            let bead_summaries = BTreeMap::new();
+            let milestone_id = MilestoneId::new("ms-alpha")?;
+            let details =
+                load_nearby_dependency_details(base_dir, &milestone_id, &bead, &bead_summaries)
+                    .await;
+            let context =
+                build_nearby_bead_context_with_detail_refresh(&bead, &bead_summaries, &details);
+
+            assert_eq!(
+                details.get("ms-alpha.bead-10").map(|detail| &detail.status),
+                Some(&BeadStatus::Closed)
+            );
+            assert_eq!(
+                context
+                    .siblings
+                    .iter()
+                    .map(|entry| entry.bead_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![
+                    "ms-alpha.bead-11",
+                    "ms-alpha.bead-12",
+                    "ms-alpha.bead-13",
+                    "ms-alpha.bead-14",
+                    "ms-alpha.bead-15",
+                ],
+                "parent-detail-only siblings should keep scanning past closed details until five renderable siblings are available"
             );
             Ok(())
         }

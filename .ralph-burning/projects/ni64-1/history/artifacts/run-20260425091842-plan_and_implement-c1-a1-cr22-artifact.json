@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr22-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr22",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T07:19:24.442893044Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the two pending nearby-work amendments. Planned-elsewhere/Nearby-work bead ID extraction now ignores canonical-looking section headers and bullets inside fenced blocks or indented examples, with focused regression coverage for fenced injected `## Nearby work` / `## Already Planned Elsewhere` sections. Parent-detail-only sibling refresh now scans in bounded batches until five renderable non-terminal siblings are available, using relation status when present and fresh detail status when status is absent, so closed parent-child siblings no longer consume the initial scan window and hide later open siblings.\n\n## Steps\n\n0. [Completed] Inspected prompt contract bead-ID extraction, fenced/indented heading handling, nearby sibling prefetch selection, and current nearby-context regression coverage.\n1. [Completed] Kept planned-elsewhere/Nearby-work extraction constrained to top-level canonical sections outside fenced blocks and added regression coverage for fenced section-header injection.\n2. [Completed] Updated sibling detail prefetch to continue bounded refresh batches until the render limit has five non-terminal sibling candidates, with a larger bounded scan budget for stale or statusless parent-detail relations.\n3. [Completed] Added focused regression coverage for parent-detail-only siblings where the first ten fetched sibling details are closed and the next five are open.\n4. [Completed] Ran focused tests plus formatting, linting, full test suite, Nix build, and whitespace validation gates.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub extract_planned_elsewhere_routing_bead_ids --lib` passed: 5 tests.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details --lib` passed: 10 tests.\n- `nix develop -c cargo test --locked --features test-stub load_nearby_dependency_details_scans_parent_detail_only_siblings_until_render_limit --lib` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 22
+}

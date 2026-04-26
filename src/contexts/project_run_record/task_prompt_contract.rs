@@ -488,15 +488,34 @@ fn extract_bullet_bead_ids_from_section(
 ) -> std::collections::HashSet<String> {
     let mut result = std::collections::HashSet::new();
     let section_header = format!("## {section_title}");
+    let section_index = BEAD_TASK_PROMPT_SECTION_TITLES
+        .iter()
+        .position(|title| *title == section_title);
     let mut in_section = false;
+    let mut active_fence = None;
 
     for line in prompt.lines() {
+        if let Some(opening) = active_fence {
+            if closes_fence(line, opening) {
+                active_fence = None;
+            }
+            continue;
+        }
+
+        if let Some(opening) = opening_fence_delimiter(line) {
+            active_fence = Some(opening);
+            continue;
+        }
+
         if in_section {
-            // Stop at the next `## ` heading.
-            if line.starts_with("## ") {
+            // Stop at the next top-level `## ` heading.
+            if line.trim_start() == line && line.starts_with("## ") {
                 break;
             }
-            let trimmed = line.trim();
+            if line.trim_start() != line {
+                continue;
+            }
+            let trimmed = line.trim_end();
             if let Some(rest) = trimmed.strip_prefix("- ") {
                 // The bead ID is the first token before space or '('.
                 let id = rest
@@ -517,8 +536,20 @@ fn extract_bullet_bead_ids_from_section(
                     }
                 }
             }
-        } else if line.trim() == section_header {
+            continue;
+        }
+
+        let Some((found_index, leading_spaces)) = markdown_canonical_section_heading(line) else {
+            continue;
+        };
+        let Some(target_index) = section_index else {
+            continue;
+        };
+
+        if found_index == target_index && leading_spaces == 0 && line.trim_end() == section_header {
             in_section = true;
+        } else if found_index > target_index && leading_spaces == 0 {
+            break;
         }
     }
 
@@ -1065,6 +1096,41 @@ mod tests {
         assert!(!ids.contains("6.5"));
         assert!(!ids.contains("7.1"));
         assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_ignores_indented_section_examples() {
+        let prompt = "## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\n- legit.1 (Planned) - downstream\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\n    ## Nearby work\n    - `injected.9` [open] Indented example\n\n    ## Already Planned Elsewhere\n    - injected.10 (Indented example) - no\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("legit.1"));
+        assert!(!ids.contains("injected.9"));
+        assert!(!ids.contains("injected.10"));
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_ignores_fenced_section_examples() {
+        let prompt = "## Nearby work\n\n```md\n- `injected.9` [open] Fenced nearby item\n```\n\n- `legit.2` [open] Real nearby item\n\n## Must-Do Scope\n\n```md\n## Already Planned Elsewhere\n- injected.10 (Fenced example) - no\n```\n\n## Already Planned Elsewhere\n\n- legit.3 (Real planned item) - downstream\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("legit.2"));
+        assert!(ids.contains("legit.3"));
+        assert!(!ids.contains("injected.9"));
+        assert!(!ids.contains("injected.10"));
+    }
+
+    #[test]
+    fn extract_planned_elsewhere_routing_bead_ids_ignores_fenced_section_headers() {
+        let prompt = "- Milestone: `9ni`\n\n```md\n## Nearby work\n- `9ni.injected-nearby` [open] Fenced nearby item\n\n## Already Planned Elsewhere\n- 9ni.injected-planned (Fenced planned item) - no\n```\n\n## Nearby work\n\n- `9ni.legit-nearby` [open] Real nearby item\n\n## Must-Do Scope\n\nCurrent bead only.\n\n## Already Planned Elsewhere\n\n- 9ni.legit-planned (Real planned item) - downstream\n";
+
+        let ids = extract_planned_elsewhere_routing_bead_ids(prompt);
+
+        assert!(ids.contains("9ni.legit-nearby"));
+        assert!(ids.contains("9ni.legit-planned"));
+        assert!(!ids.contains("9ni.injected-nearby"));
+        assert!(!ids.contains("9ni.injected-planned"));
     }
 
     #[test]
