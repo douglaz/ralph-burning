@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260425091842-plan_and_implement-c1-a1-cr21-artifact",
+  "payload_id": "run-20260425091842-plan_and_implement-c1-a1-cr21",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-26T06:13:57.759249015Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending amendments. Final-review planned-elsewhere canonicalization now builds short-alias targets only from canonical bead IDs that are actually allowed to provide aliases, preserving the Nearby work same-milestone safety rule so foreign nearby beads cannot make a local short alias ambiguous. Prompt-review Nearby work body extraction now normalizes heading lines with trailing whitespace the same way the canonical prompt validator does, so valid contract-marked prompts with headings like `## Nearby work ` still receive verbatim Nearby work drift protection. Added focused regression tests for both cases.\n\n## Steps\n\n0. [Completed] Inspected the affected final-review canonicalizer, prompt contract ID extractors, prompt-review Nearby work drift guard, and current local diff.\n1. [Completed] Added prompt-contract extraction for canonical bead IDs that may provide short-form aliases, preserving broad aliases for Already Planned Elsewhere while restricting Nearby work aliases to the active milestone.\n2. [Completed] Updated `PlannedElsewhereIdCanonicalizer` to build ambiguous short-alias tracking from the safe alias-target set instead of every canonical nearby ID.\n3. [Completed] Updated prompt-review canonical section extraction to compare trimmed heading lines, matching the validator's trailing-whitespace tolerance.\n4. [Completed] Added regression coverage for foreign nearby IDs not poisoning a local safe alias and for rewritten Nearby work being detected when the original heading has trailing space.\n5. [Completed] Ran focused and full repository validation gates, including the authoritative Nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub foreign_nearby_work_id_does_not_poison_safe_local_short_alias --lib` passed.\n- `nix develop -c cargo test --locked --features test-stub canonical_contract_drift_flags_rewritten_nearby_work_with_trailing_heading_space --lib` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 21
+}

@@ -468,6 +468,8 @@ impl PlannedElsewhereIdCanonicalizer {
         let allowed_ids = task_prompt_contract::extract_planned_elsewhere_routing_bead_ids(prompt);
         let canonical_ids =
             task_prompt_contract::extract_planned_elsewhere_canonical_routing_bead_ids(prompt);
+        let alias_target_canonical_ids =
+            task_prompt_contract::extract_planned_elsewhere_alias_target_canonical_bead_ids(prompt);
         let mut canonical_by_allowed_id = HashMap::new();
         let mut alias_targets: HashMap<String, Option<String>> = HashMap::new();
         let mut ambiguous_allowed_ids = HashSet::new();
@@ -478,7 +480,13 @@ impl PlannedElsewhereIdCanonicalizer {
                 continue;
             }
             canonical_by_allowed_id.insert(canonical_id.to_owned(), canonical_id.to_owned());
+        }
 
+        for canonical_id in alias_target_canonical_ids {
+            let canonical_id = canonical_id.trim();
+            if canonical_id.is_empty() || !allowed_ids.contains(canonical_id) {
+                continue;
+            }
             if let Some(short_id) = task_prompt_contract::strip_milestone_prefix(canonical_id) {
                 if allowed_ids.contains(short_id) {
                     alias_targets
@@ -4015,6 +4023,46 @@ mod tests {
             AmendmentClassification::PlannedElsewhere
         );
         assert_eq!(merged[0].mapped_to_bead_id.as_deref(), Some("9ni.6.5"));
+    }
+
+    #[test]
+    fn foreign_nearby_work_id_does_not_poison_safe_local_short_alias() {
+        let project_prompt = "- Milestone: `current-ms`\n\n## Nearby work\n\n### Related work\n- `current-ms.bead-4` [open] Local nearby owner\n  Scope: Owns local adjacent findings.\n- `other-ms.bead-4` [open] Foreign nearby owner\n  Scope: Owns cross-milestone adjacent findings.\n";
+        let canonicalizer = PlannedElsewhereIdCanonicalizer::from_prompt(project_prompt);
+
+        assert_eq!(
+            canonicalizer.canonicalize_allowed("bead-4").as_deref(),
+            Some("current-ms.bead-4")
+        );
+        assert_eq!(
+            canonicalizer
+                .canonicalize_allowed("other-ms.bead-4")
+                .as_deref(),
+            Some("other-ms.bead-4")
+        );
+
+        let merged = merge_final_review_amendments_with_canonicalizer(
+            1,
+            &[
+                proposal_record_with_mapping("reviewer-a", "fix adjacent routing", Some("bead-4")),
+                proposal_record_with_mapping(
+                    "reviewer-b",
+                    "fix adjacent routing",
+                    Some("current-ms.bead-4"),
+                ),
+            ],
+            &canonicalizer,
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].classification,
+            AmendmentClassification::PlannedElsewhere
+        );
+        assert_eq!(
+            merged[0].mapped_to_bead_id.as_deref(),
+            Some("current-ms.bead-4")
+        );
     }
 
     #[test]

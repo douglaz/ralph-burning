@@ -584,6 +584,25 @@ pub fn extract_planned_elsewhere_canonical_routing_bead_ids(
     ids
 }
 
+/// Extract canonical bead IDs that may provide short-form routing aliases.
+///
+/// Already-planned-elsewhere items keep their existing broad short-alias
+/// behavior. Nearby-work items only provide short aliases when their milestone
+/// prefix matches the active prompt milestone, matching
+/// [`extract_planned_elsewhere_routing_bead_ids`].
+pub fn extract_planned_elsewhere_alias_target_canonical_bead_ids(
+    prompt: &str,
+) -> std::collections::HashSet<String> {
+    let mut ids = extract_pe_bead_ids_internal(prompt, false);
+    let prompt_milestone_id = extract_prompt_milestone_id(prompt);
+    ids.extend(
+        extract_nearby_bead_ids_internal(prompt, false)
+            .into_iter()
+            .filter(|id| nearby_short_alias_is_safe(prompt_milestone_id.as_deref(), id)),
+    );
+    ids
+}
+
 /// Strip the milestone-id prefix from a canonical bead ID.
 ///
 /// Canonical bead IDs have the form `{milestone_id}.{short_id}` where

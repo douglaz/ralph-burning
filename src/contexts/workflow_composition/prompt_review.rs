@@ -387,6 +387,7 @@ fn canonical_section_body<'a>(prompt: &'a str, section_title: &str) -> Option<&'
 
     for segment in prompt.split_inclusive('\n') {
         let line = segment.trim_end_matches('\n').trim_end_matches('\r');
+        let heading_line = line.trim_end();
 
         if let Some(opening) = active_fence {
             if crate::contexts::project_run_record::fence_util::closes_fence(line, opening) {
@@ -404,11 +405,11 @@ fn canonical_section_body<'a>(prompt: &'a str, section_title: &str) -> Option<&'
             continue;
         }
 
-        if body_start.is_some() && line.starts_with("## ") {
+        if body_start.is_some() && heading_line.starts_with("## ") {
             return body_start.map(|start| &prompt[start..offset]);
         }
 
-        if line == section_header {
+        if heading_line == section_header {
             body_start = Some(offset + segment.len());
         }
 
@@ -418,10 +419,11 @@ fn canonical_section_body<'a>(prompt: &'a str, section_title: &str) -> Option<&'
     if offset < prompt.len() {
         let segment = &prompt[offset..];
         let line = segment.trim_end_matches('\r');
-        if body_start.is_some() && line.starts_with("## ") {
+        let heading_line = line.trim_end();
+        if body_start.is_some() && heading_line.starts_with("## ") {
             return body_start.map(|start| &prompt[start..offset]);
         }
-        if line == section_header {
+        if heading_line == section_header {
             body_start = Some(prompt.len());
         }
     }
@@ -790,6 +792,17 @@ mod tests {
         let refined = CURRENT_CANONICAL_PROMPT.replace("ms-alpha.real", "ms-alpha.fake");
 
         let concerns = canonical_contract_drift_concerns(CURRENT_CANONICAL_PROMPT, &refined);
+
+        assert_eq!(concerns.len(), 1);
+        assert!(concerns[0].contains("Preserve graph-derived `## Nearby work` verbatim"));
+    }
+
+    #[test]
+    fn canonical_contract_drift_flags_rewritten_nearby_work_with_trailing_heading_space() {
+        let original = CURRENT_CANONICAL_PROMPT.replace("## Nearby work", "## Nearby work ");
+        let refined = original.replace("ms-alpha.real", "ms-alpha.fake");
+
+        let concerns = canonical_contract_drift_concerns(&original, &refined);
 
         assert_eq!(concerns.len(), 1);
         assert!(concerns[0].contains("Preserve graph-derived `## Nearby work` verbatim"));
