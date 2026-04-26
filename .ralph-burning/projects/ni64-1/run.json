@@ -2,7 +2,7 @@
   "active_run": {
     "run_id": "run-20260425091842",
     "stage_cursor": {
-      "stage": "plan_and_implement",
+      "stage": "final_review",
       "cycle": 1,
       "attempt": 1,
       "completion_round": 14
@@ -23,33 +23,10 @@
     "rollback_count": 0
   },
   "amendment_queue": {
-    "pending": [
-      {
-        "amendment_id": "fr-13-64fbce41",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 13,
-        "body": "finding_summary: Nearby-work detail refresh silently discards every `br show` failure and then renders from stale summary/relation data as if the refresh succeeded, which can reintroduce closed/deferred beads or outdated titles/descriptions into `Nearby work`. `src/cli/project.rs:2133-2156` converts each `load_bead_detail` error to `None`, while `src/cli/project.rs:2776-2837` and `src/cli/project.rs:3171-3203` fall back to summary/relation status whenever detail is missing. affected_files: `src/cli/project.rs:2133-2156`, `src/cli/project.rs:2776-2837`, `src/cli/project.rs:3171-3203`. remediation_hint: propagate nearby detail-load failures, or conservatively omit entries whose authoritative detail could not be loaded instead of silently trusting stale summary data.",
-        "created_at": "2026-04-25T23:15:44.760855408Z",
-        "batch_sequence": 1,
-        "source": "workflow_stage",
-        "dedup_key": "38e247df129e259ec6af56965c384286866d5f98fcd1182915d9b601dea2526a"
-      },
-      {
-        "amendment_id": "fr-13-7bb1dc84",
-        "source_stage": "final_review",
-        "source_cycle": 1,
-        "source_completion_round": 13,
-        "body": "finding_summary: Nearby-work hydration now fans out one unbounded `br show` call per direct dependency/dependent before any production cap is applied, so highly connected beads can spawn dozens or hundreds of subprocesses during project creation. `src/cli/project.rs:1875-1886` feeds all IDs from `nearby_all_direct_relation_detail_candidate_ids`, `src/cli/project.rs:3076-3090` has no runtime limit, and `src/cli/project.rs:2133-2150` launches them all concurrently via `FuturesUnordered`. affected_files: `src/cli/project.rs:1875-1886`, `src/cli/project.rs:2133-2150`, `src/cli/project.rs:3076-3090`. remediation_hint: enforce a real runtime cap and/or semaphore around per-bead detail fetches, and prefer summary data for noncritical candidates.",
-        "created_at": "2026-04-25T23:15:44.760859295Z",
-        "batch_sequence": 2,
-        "source": "workflow_stage",
-        "dedup_key": "bf1a5cc9aaa7fe68ba483267634ddb4a3e972f59dae1752b257889ee73917c5b"
-      }
-    ],
-    "processed_count": 20
+    "pending": [],
+    "processed_count": 22
   },
-  "status_summary": "running: final review restart round 14 -> Plan and Implement",
+  "status_summary": "running: completed Plan and Implement, next Final Review",
   "last_stage_resolution_snapshot": {
     "stage_id": "final_review",
     "resolved_at": "2026-04-25T23:06:01.945215766Z",
