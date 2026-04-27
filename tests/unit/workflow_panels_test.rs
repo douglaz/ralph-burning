@@ -807,6 +807,26 @@ fn find_strict_mode_violation(
                     return Some((path.to_owned(), forbidden));
                 }
             }
+            // gpt-5.5 strict mode rejects `oneOf` at field-property
+            // level when used to represent a string enum (schemars
+            // derives `enum Foo { A, B }` into `oneOf: [{enum:[a],
+            // type:string}, {enum:[b], type:string}]`). The post-processor
+            // collapses that into `{enum:[a,b], type:string}`. Flag any
+            // `oneOf` whose variants are all single-element enum schemas
+            // — that's the schemars idiom that should have been
+            // collapsed.
+            if let Some(serde_json::Value::Array(items)) = map.get("oneOf") {
+                let all_single_enums = !items.is_empty()
+                    && items.iter().all(|item| {
+                        item.as_object()
+                            .and_then(|o| o.get("enum"))
+                            .and_then(|e| e.as_array())
+                            .is_some_and(|arr| arr.len() == 1)
+                    });
+                if all_single_enums {
+                    return Some((path.to_owned(), "oneOf-of-single-enums"));
+                }
+            }
             for (key, child) in map {
                 let child_path = if path.is_empty() {
                     key.clone()

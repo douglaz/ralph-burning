@@ -2455,6 +2455,38 @@ fn normalize_nullable_type_array(map: &mut serde_json::Map<String, serde_json::V
 /// violates OpenAI's strict-mode contract. Additionally, `schemars` 0.8
 /// represents `Option<T>` as `{"type": ["T", "null"]}` which is incompatible
 /// with OpenAI strict mode's requirement for single-string `type` values.
+/// Detect schemars' "string enum" idiom: `oneOf: [{enum:[<one>], type:"string"}, ...]`.
+/// Each variant must be a single-value enum sharing the same primitive type
+/// (typically "string"). Returns `Some((values, type))` if the pattern
+/// matches, else `None`. Variant-level descriptions are intentionally
+/// dropped — they're not common and not transport-load-bearing for the
+/// string-enum case.
+fn unify_single_enum_oneof(
+    variants: &[serde_json::Value],
+) -> Option<(Vec<serde_json::Value>, String)> {
+    if variants.is_empty() {
+        return None;
+    }
+    let mut shared_type: Option<String> = None;
+    let mut values: Vec<serde_json::Value> = Vec::with_capacity(variants.len());
+    for variant in variants {
+        let map = variant.as_object()?;
+        let ty = map.get("type")?.as_str()?.to_owned();
+        let enum_arr = map.get("enum")?.as_array()?;
+        if enum_arr.len() != 1 {
+            return None;
+        }
+        let value = enum_arr.first()?.clone();
+        match &shared_type {
+            None => shared_type = Some(ty),
+            Some(existing) if *existing == ty => {}
+            Some(_) => return None,
+        }
+        values.push(value);
+    }
+    Some((values, shared_type.unwrap_or_else(|| "string".to_owned())))
+}
+
 pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
         // Convert type arrays like ["string", "null"] to anyOf format
@@ -2474,6 +2506,24 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
                         map.entry(k).or_insert(v);
                     }
                 }
+            }
+        }
+
+        // Collapse `oneOf: [{enum: [<single>], type: T}, ...]` into a
+        // unified `{enum: [<all>], type: T}`. schemars derives Rust enums
+        // (e.g. `enum Status { Open, Closed }`) into one-element-enum
+        // variants wrapped in oneOf — gpt-5.5 strict mode rejects that
+        // shape at field-property level even though it accepts oneOf for
+        // tagged unions at top level. The collapsed form is semantically
+        // identical for the string-enum case.
+        if let Some(serde_json::Value::Array(items)) = map.get("oneOf").cloned() {
+            if let Some(unified) = unify_single_enum_oneof(&items) {
+                map.remove("oneOf");
+                let (values, ty) = unified;
+                map.entry("enum".to_owned())
+                    .or_insert(serde_json::Value::Array(values));
+                map.entry("type".to_owned())
+                    .or_insert(serde_json::Value::String(ty));
             }
         }
 
