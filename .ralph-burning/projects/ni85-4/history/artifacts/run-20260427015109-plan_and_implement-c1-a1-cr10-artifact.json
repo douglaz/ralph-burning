@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr10-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr10",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T13:36:28.297298131Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated both pending review-classification issues. Final-review canonical amendments now preserve reviewer source occurrence counts through terminal reconciliation, so threshold-gated `propose_new_bead` records are emitted when one deduplicated amendment represents multiple reviewer findings. QuickDev review routing now treats deferred-only `ConditionallyApproved` outcomes like deferred-only `RequestChanges`: no remediation cycle, no `apply_fixes` invocation, and a `stage_skipped` event before advancing to final review. Added focused regressions for both behaviors and updated the shared skip reason text.\n\n## Steps\n\n0. [Completed] Inspected the dirty worktree and the affected terminal reconciliation, workflow engine routing, and workflow-engine regression tests while preserving live orchestration state.\n1. [Completed] Added `occurrence_count` to terminal review findings, using final-review `sources.len().max(1)` for canonical amendments and `1` for raw review findings, then summed those counts for proposal thresholding and NDJSON `count`.\n2. [Completed] Updated deferred-only review handling so remediation-trigger stages explicitly log and defer `ConditionallyApproved` non-fix classifications without starting a remediation cycle.\n3. [Completed] Updated `skip_next_apply_fixes_reason` so both `ConditionallyApproved` and `RequestChanges` deferred-only classified findings skip `apply_fixes`, and added unit plus QuickDev workflow coverage.\n4. [Completed] Ran focused regressions, formatting, clippy, full test suite, Nix build, whitespace check, and attempted bead linting.\n5. [Skipped] Attempted bead backlog linting with `br lint`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub classification_propose_new_bead_counts_final_review_sources -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub quick_dev_review_conditionally_approved_with_only_deferred_classifications_skips_apply_fixes -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub conditionally_approved_non_fix_only_review_classification_skips_apply_fixes -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 10
+}

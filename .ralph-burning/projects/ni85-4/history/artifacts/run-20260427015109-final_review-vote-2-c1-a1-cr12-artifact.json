@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr12-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T16:03:29.368232825Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccept both amendments: they each address concrete correctness and robustness defects rather than style or scope concerns.\n\n## Votes\n\n- `fr-12-5ad51964`: Accept\n  Good catch: the current raw-string check can be bypassed via aliases, causing writes/comments to mutate the active bead after resolving target IDs. A post-resolution canonical match against detail.id is required to enforce the explicit non-self-modification invariant.\n- `fr-12-44266bfb`: Accept\n  Using only one min(amendment_id) to detect an already handled bucket makes the dedupe non-idempotent across retry IDs; equivalent proposals can be reinserted repeatedly. Reconciliation should key on summary/proposal identity, not a single historic amendment_id token.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 12
+}

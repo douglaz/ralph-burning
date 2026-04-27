@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T12:47:02.377529837Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nOne potential issue found: the CLI terminal reconciliation path is threading `project_id` as `task_id`, which can produce incorrect attribution in reconciliation diagnostics and reconciliation logs.\n\n## Amendments\n\n1. In `src/cli/run.rs`, terminal reconciliation now passes `project_id` where a task-scoped identifier is expected twice: 1) `close_cli_terminal_bead(..., project_id.as_str(), ...)` at line 1071, and 2) `reconcile_terminal_review_classifications(..., project_id.as_str(), project_id.as_str(), ...)` at line 1117. This can mislabel reconciliation errors/metrics with the project ID instead of the bead-task context, which makes failure triage and Br mutation records misleading when one task affects multiple projects or when operators depend on task_id for routing. If task_id is intentionally unavailable in CLI path, pass a task-scoped identifier (e.g. the task source context) rather than the project ID.\n   Classification: fix_current_bead\n   Rationale: Only metadata context is affected (not correctness of state transitions), but it undermines operational observability for terminal reconciliation and can hinder post-failure diagnosis.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 9
+}

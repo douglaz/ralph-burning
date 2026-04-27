@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T03:58:34.472466860Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccept. This amendment addresses a concrete strict-schema compatibility issue rather than stylistic cleanup.\n\n## Votes\n\n- `fr-1-30741257`: Accept\n  Field/property-level schemas containing `oneOf` wrappers of single-element enums are not accepted in OpenAI strict mode for structured outputs, so dropping this transform reintroduces a real runtime regression. Restoring enum collapse to `enum` + `type` preserves semantics for the schemars-generated case and improves compatibility with minimal behavioral risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

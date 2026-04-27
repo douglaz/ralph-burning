@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T08:10:55.956351066Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound two correctness issues in the classification routing/reconciliation path. Targeted tests for covered-by comments, propose-new threshold, and non-fix queue filtering passed under `nix develop`.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/payloads.rs:125` only treats `covered_by_bead_id` / `proposed_bead_summary` as missing when the option is `None`, so whitespace-only values keep the finding classified as `covered_by_existing_bead` or `propose_new_bead`. With `triggers_restart()` now false for those classes (`src/contexts/workflow_composition/review_classification.rs:45`), the engine suppresses immediate remediation, but terminal reconciliation later trims and skips the blank target/summary (`src/contexts/automation_runtime/success_reconciliation.rs:1281`, `src/contexts/automation_runtime/success_reconciliation.rs:1219`). That can silently drop a review finding. Normalize required classification fields with `trim()` during `ClassifiedFindingWire` conversion or semantic validation, and downgrade/error before suppressing restart.\n   Classification: fix_current_bead\n2. `src/contexts/workflow_composition/engine.rs:5473` handles non-fix `ReviewOutcome::RequestChanges` by logging only. After that arm, the generic cursor advancement still runs (`src/contexts/workflow_composition/engine.rs:5653`), so quick-dev runs advance from `review` into `apply_fixes` even when all review findings were `covered_by_existing_bead`, `propose_new_bead`, or `informational_only`. That still routes non-fix feedback through the implementer/fix stage. When there are no restart-triggering follow-ups, skip `apply_fixes` or otherwise treat the review as pass-through for stage advancement.\n   Classification: fix_current_bead\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

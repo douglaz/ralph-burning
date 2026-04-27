@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T13:43:26.719820904Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. They each address real correctness/robustness defects that can cause false failures or mis-attributed reconciliation state without adding functional behavior.\n\n## Votes\n\n- `fr-10-c43dddd4`: Accept\n  `existing_markers_seen` is only an idempotency signal, not evidence that this call made a mutation. Calling `sync_own_dirty_if_beads_healthy` unconditionally for marker-only findings can fail due unrelated pending/foreign mutation state and break replay. Gating sync on actual posted comments or verified own pending mutations is the safer behavior.\n- `fr-10-4816d9d7`: Accept\n  `reconcile_proposed_bead_records` performs I/O (`proposed-beads.ndjson`) before classifying/thresholding proposals. This means no-op paths (`FixCurrentBead`, `InformationalOnly`, or below-threshold groups) can fail on unrelated file errors. Deferring file reads until at least one proposal group meets threshold preserves idempotent/no-op behavior.\n- `fr-10-41a341a5`: Accept\n  `reconcile_cli_terminal_bead_state` passes `project_id` where `task_id` should be passed. The CLI path thus mislabels task context in terminal reconciliation error/warning/metadata paths. Correcting the second argument restores proper task attribution and idempotent tracking consistency.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 10
+}

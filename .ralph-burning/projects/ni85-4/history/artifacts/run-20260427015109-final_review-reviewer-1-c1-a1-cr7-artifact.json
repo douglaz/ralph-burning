@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T10:58:54.226145697Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound two correctness issues in terminal reconciliation. I also ran targeted classification and CLI sync tests under nix; those passed.\n\n## Amendments\n\n1. High: In the CLI terminal path, `sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation` first calls `sync_terminal_milestone_task_with_options` and only then closes the bead (`src/cli/run.rs:1002`, `src/cli/run.rs:1013`). For completed runs, that sync path records the bead task as succeeded and may advance the controller before `close_cli_terminal_bead` runs (`src/cli/run.rs:1758`, `src/cli/run.rs:1776`). If `br update --status=closed` or the follow-up sync fails, the command returns an error after milestone state already says the bead succeeded, leaving the bead open while the milestone has advanced. Close and flush the bead before recording success, matching the daemon success ordering.\n   Classification: fix_current_bead\n   Rationale: This violates the true-success reconciliation contract and can leave durable milestone state inconsistent with the beads graph.\n2. Medium: `is_missing_bead_error` treats any `br show` exit output containing `not found` as a missing target bead (`src/contexts/automation_runtime/success_reconciliation.rs:1247`). The covered-by-existing path then logs and skips the required comment (`src/contexts/automation_runtime/success_reconciliation.rs:1299`). This can silently drop reconciliation when `br show` failed for a different reason such as a missing/corrupt bead database path. Restrict this to bead/issue-not-found messages or reuse the existing stricter missing-bead detector.\n   Classification: fix_current_bead\n   Rationale: A non-target lookup failure should not be converted into a successful skip, because it loses required reconciliation side effects.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 7
+}

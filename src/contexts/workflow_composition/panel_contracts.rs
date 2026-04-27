@@ -204,21 +204,35 @@ pub struct FinalReviewProposal {
 impl From<FinalReviewProposalWire> for FinalReviewProposal {
     fn from(raw: FinalReviewProposalWire) -> Self {
         let mut classification = raw.classification.unwrap_or_default();
-        let covered_by_bead_id = raw
-            .covered_by_bead_id
-            .or_else(|| raw.mapped_to_bead_id.clone());
-        let proposed_bead_summary = raw.proposed_bead_summary;
+        let covered_by_bead_id = normalize_required_classification_field(
+            raw.covered_by_bead_id.as_deref(),
+            "covered_by_bead_id",
+        )
+        .or_else(|| {
+            normalize_required_classification_field(
+                raw.mapped_to_bead_id.as_deref(),
+                "mapped_to_bead_id",
+            )
+        });
+        let mapped_to_bead_id = normalize_required_classification_field(
+            raw.mapped_to_bead_id.as_deref(),
+            "mapped_to_bead_id",
+        );
+        let proposed_bead_summary = normalize_required_classification_field(
+            raw.proposed_bead_summary.as_deref(),
+            "proposed_bead_summary",
+        );
 
         match classification {
             ReviewFindingClass::CoveredByExistingBead if covered_by_bead_id.is_none() => {
                 tracing::warn!(
-                    "covered_by_existing_bead final-review amendment missing covered_by_bead_id; falling back to fix_current_bead"
+                    "covered_by_existing_bead final-review amendment missing nonblank covered_by_bead_id; falling back to fix_current_bead"
                 );
                 classification = ReviewFindingClass::FixCurrentBead;
             }
             ReviewFindingClass::ProposeNewBead if proposed_bead_summary.is_none() => {
                 tracing::warn!(
-                    "propose_new_bead final-review amendment missing proposed_bead_summary; falling back to fix_current_bead"
+                    "propose_new_bead final-review amendment missing nonblank proposed_bead_summary; falling back to fix_current_bead"
                 );
                 classification = ReviewFindingClass::FixCurrentBead;
             }
@@ -228,7 +242,7 @@ impl From<FinalReviewProposalWire> for FinalReviewProposal {
         Self {
             body: raw.body,
             rationale: raw.rationale,
-            mapped_to_bead_id: raw.mapped_to_bead_id,
+            mapped_to_bead_id,
             covered_by_bead_id,
             classification,
             proposed_title: raw.proposed_title,
@@ -236,6 +250,22 @@ impl From<FinalReviewProposalWire> for FinalReviewProposal {
             proposed_bead_summary,
             severity: raw.severity,
         }
+    }
+}
+
+fn normalize_required_classification_field(
+    value: Option<&str>,
+    field_name: &str,
+) -> Option<String> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        tracing::warn!(
+            field = field_name,
+            "final-review amendment classification field is blank after trimming"
+        );
+        None
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 

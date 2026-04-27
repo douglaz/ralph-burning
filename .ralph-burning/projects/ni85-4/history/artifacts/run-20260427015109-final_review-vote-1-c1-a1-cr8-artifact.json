@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T11:59:20.742521133Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted three amendments identifying real ordering, routing, and pre-mutation safety defects. Rejected the threshold-count amendment because final-review sources represent distinct reviewer proposal occurrences preserved after canonical deduplication.\n\n## Votes\n\n- `fr-8-7db5f4b9`: Accept\n  The close happens before lineage reconciliation is proven. Since the sync path can return Ok(false) for completed runs with disabled or blocked repair, or with no repairable lineage, the CLI can close the bead without a durable milestone success record.\n- `fr-8-471e75fb`: Accept\n  The legacy fallback can turn a differently worded deferred finding into FixCurrentBead, causing restart/apply_fixes even when classified_findings already made the routing decision. Classified findings should be authoritative once present.\n- `fr-8-11d38423`: Accept\n  The covered_by_existing_bead path mutates via comment_bead before checking bead export health, unlike the planned-elsewhere safety pattern. A pre-mutation guard is needed to avoid writing into unsafe .beads state.\n- `fr-8-884b6983`: Reject\n  FinalReviewCanonicalAmendment.sources are preserved reviewer proposal occurrences after deduplication, not arbitrary source citations. Counting them maintains the number of independent raw findings that would otherwise be collapsed, while grouping still uses case-insensitive proposal summary equality.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 8
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr13-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T17:04:24.151830603Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 13/25\n\n## Accepted\n\n- `fr-13-b98b7c57`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-13-b98b7c57`\n\n**Classification:** fix_current_bead\n\nIn `src/contexts/automation_runtime/success_reconciliation.rs:1064-1073` and `1459-1468`, `TerminalReviewFinding::from_final_review` converts a single final-review amendment into `occurrence_count = amendment.sources.len().max(1)`, and thresholding in `reconcile_proposed_bead_records` sums `occurrence_count` across findings. This makes one amendment with two sources count as 2 and cross the default threshold 2, causing a `proposed-beads.ndjson` record even though only one finding exists. The contract says to propose only when the same `proposed_bead_summary` appears in N or more findings (not sources), so this over-triggers at run time.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

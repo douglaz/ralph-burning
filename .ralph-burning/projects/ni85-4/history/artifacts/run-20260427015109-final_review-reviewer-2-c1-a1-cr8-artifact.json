@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T11:52:06.070661374Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound 1 correctness issue in terminal reconciliation: proposal threshold is inflated by final-review source cardinality, causing over-triggering of proposed-bead records.\n\n## Amendments\n\n1. In `src/contexts/automation_runtime/success_reconciliation.rs`, thresholding for `propose_new_bead` uses `source_occurrences` instead of counting findings: `TerminalReviewFinding::from_final_review` sets `source_occurrences` to `amendment.sources.len()` (line 1056), and `reconcile_proposed_bead_records` sums `source_occurrences` to compute `occurrence_count` (line 1407). A single final-review finding with multiple sources can therefore meet threshold 2+ and emit a proposal record, which violates the contract requirement to gate on the number of findings (case-insensitive summary equality), not source count.\n   Classification: fix_current_bead\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 8
+}

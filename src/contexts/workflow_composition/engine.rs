@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -4890,7 +4890,8 @@ where
                     }
                 }
                 ReviewOutcome::ConditionallyApproved | ReviewOutcome::RequestChanges
-                    if semantics.late_stages.contains(&stage_id) =>
+                    if semantics.late_stages.contains(&stage_id)
+                        && has_restart_triggering_follow_up(&bundle.payload) =>
                 {
                     // Late-stage conditional approval or request changes:
                     // Queue durable amendments, advance completion round, restart from planning.
@@ -4941,9 +4942,9 @@ where
 
                     let follow_ups = validation_follow_ups(&bundle.payload);
 
-                    // Keep this compatibility hook for later routing beads. In
-                    // the current engine every class still restarts like a
-                    // fix-current finding, so this usually records nothing.
+                    // Keep this observability hook for non-fix classifications.
+                    // They are recorded in final-review aggregates and
+                    // reconciled at terminal state, not queued for remediation.
                     if let StagePayload::Validation(ref validation) = bundle.payload {
                         let deferred: Vec<_> = validation
                             .classified_findings
@@ -5232,6 +5233,15 @@ where
                     cursor = next_cursor;
                     continue;
                 }
+                ReviewOutcome::ConditionallyApproved | ReviewOutcome::RequestChanges
+                    if semantics.late_stages.contains(&stage_id)
+                        && has_deferred_classified_finding(&bundle.payload) =>
+                {
+                    tracing::info!(
+                        stage = %stage_id,
+                        "late-stage non-fix review classifications deferred without completion-round restart"
+                    );
+                }
                 ReviewOutcome::ConditionallyApproved if semantics.late_stages.is_empty() => {
                     // Docs/CI flows do not enter completion rounds, but their follow-ups
                     // still need to be preserved in canonical snapshot state.
@@ -5272,9 +5282,20 @@ where
                         .await;
                     }
                 }
+                ReviewOutcome::ConditionallyApproved
+                    if semantics.remediation_trigger_stages.contains(&stage_id)
+                        && has_deferred_classified_finding(&bundle.payload)
+                        && !has_restart_triggering_follow_up(&bundle.payload) =>
+                {
+                    tracing::info!(
+                        stage = %stage_id,
+                        "non-fix review classifications deferred without remediation cycle"
+                    );
+                }
                 ReviewOutcome::ConditionallyApproved => {}
                 ReviewOutcome::RequestChanges
-                    if semantics.remediation_trigger_stages.contains(&stage_id) =>
+                    if semantics.remediation_trigger_stages.contains(&stage_id)
+                        && has_restart_triggering_follow_up(&bundle.payload) =>
                 {
                     let current = current_active_run(snapshot)?;
                     let (next_iteration, max_iterations, counter_label) =
@@ -5459,6 +5480,15 @@ where
                     cursor = next_cursor;
                     continue;
                 }
+                ReviewOutcome::RequestChanges
+                    if semantics.remediation_trigger_stages.contains(&stage_id)
+                        && has_deferred_classified_finding(&bundle.payload) =>
+                {
+                    tracing::info!(
+                        stage = %stage_id,
+                        "non-fix review classifications deferred without remediation cycle"
+                    );
+                }
                 ReviewOutcome::RequestChanges | ReviewOutcome::Rejected => {
                     let failure = AppError::InvocationFailed {
                         backend: stage_entry.target.backend.family.to_string(),
@@ -5532,15 +5562,11 @@ where
             }
         }
 
-        // ── Skip ApplyFixes when review approved with no findings ──────
-        let skip_next_apply_fixes = validation_outcome(&bundle.payload)
-            == Some(ReviewOutcome::Approved)
-            && validation_findings(&bundle.payload).is_empty()
-            && validation_follow_ups(&bundle.payload).is_empty()
-            && stage_plan.get(stage_index + 1).map(|entry| entry.stage_id)
-                == Some(StageId::ApplyFixes);
-
-        if skip_next_apply_fixes {
+        // ── Skip ApplyFixes when there is nothing current-bead-scoped to fix ──────
+        if let Some(skip_reason) = skip_next_apply_fixes_reason(
+            &bundle.payload,
+            stage_plan.get(stage_index + 1).map(|entry| entry.stage_id),
+        ) {
             let _ = log_write.append_runtime_log(
                 base_dir,
                 project_id,
@@ -5548,7 +5574,7 @@ where
                     timestamp: Utc::now(),
                     level: LogLevel::Info,
                     source: "engine".to_owned(),
-                    message: "skipping apply_fixes: review approved with no findings".to_owned(),
+                    message: format!("skipping apply_fixes: {skip_reason}"),
                 },
             );
             *seq += 1;
@@ -5558,7 +5584,7 @@ where
                 run_id,
                 StageId::ApplyFixes,
                 cursor.cycle,
-                "review approved with no findings",
+                skip_reason,
             );
             let skipped_line = journal::serialize_event(&skipped_event)?;
             if let Err(error) = journal_store.append_event(base_dir, project_id, &skipped_line) {
@@ -8188,17 +8214,13 @@ impl ReviewFollowUp {
 }
 
 /// Returns the follow-ups/amendments that should be queued for remediation.
-/// The current engine treats all finding classes as fix-now equivalent while
-/// preserving classification metadata for downstream routing beads.
 fn validation_follow_ups(payload: &StagePayload) -> Vec<ReviewFollowUp> {
     match payload {
         StagePayload::Validation(validation) => {
-            let mut classified_bodies = HashSet::new();
             let mut follow_ups = validation
                 .classified_findings
                 .iter()
                 .map(|finding| {
-                    classified_bodies.insert(finding.body.as_str());
                     if finding.classification != ReviewFindingClass::FixCurrentBead {
                         tracing::info!(
                             classification = %finding.classification,
@@ -8211,14 +8233,37 @@ fn validation_follow_ups(payload: &StagePayload) -> Vec<ReviewFollowUp> {
                 })
                 .collect::<Vec<_>>();
 
-            for body in &validation.follow_up_or_amendments {
-                if !classified_bodies.contains(body.as_str()) {
-                    follow_ups.push(ReviewFollowUp::from_legacy(body.clone()));
+            for legacy in &validation.follow_up_or_amendments {
+                let normalized_legacy = legacy.trim();
+                if normalized_legacy.is_empty()
+                    || follow_ups
+                        .iter()
+                        .any(|follow_up| follow_up.body.trim() == normalized_legacy)
+                {
+                    continue;
                 }
+                follow_ups.push(ReviewFollowUp::from_legacy(legacy.clone()));
             }
+
             follow_ups
         }
         _ => Vec::new(),
+    }
+}
+
+fn has_restart_triggering_follow_up(payload: &StagePayload) -> bool {
+    validation_follow_ups(payload)
+        .iter()
+        .any(|follow_up| follow_up.classification.triggers_restart())
+}
+
+fn has_deferred_classified_finding(payload: &StagePayload) -> bool {
+    match payload {
+        StagePayload::Validation(validation) => validation
+            .classified_findings
+            .iter()
+            .any(|finding| !finding.classification.triggers_restart()),
+        _ => false,
     }
 }
 
@@ -8227,6 +8272,37 @@ fn validation_findings(payload: &StagePayload) -> &[String] {
         StagePayload::Validation(validation) => &validation.findings_or_gaps,
         _ => &[],
     }
+}
+
+fn skip_next_apply_fixes_reason(
+    payload: &StagePayload,
+    next_stage: Option<StageId>,
+) -> Option<&'static str> {
+    if next_stage != Some(StageId::ApplyFixes) {
+        return None;
+    }
+
+    if validation_outcome(payload) == Some(ReviewOutcome::Approved)
+        && validation_findings(payload).is_empty()
+        && validation_follow_ups(payload).is_empty()
+    {
+        return Some("review approved with no findings");
+    }
+
+    if matches!(
+        validation_outcome(payload),
+        Some(
+            ReviewOutcome::Approved
+                | ReviewOutcome::ConditionallyApproved
+                | ReviewOutcome::RequestChanges
+        )
+    ) && has_deferred_classified_finding(payload)
+        && !has_restart_triggering_follow_up(payload)
+    {
+        return Some("review only has deferred non-fix classifications");
+    }
+
+    None
 }
 
 /// Build typed QueuedAmendment records from follow-up strings.
@@ -8240,6 +8316,7 @@ fn build_queued_amendments(
     let now = Utc::now();
     follow_ups
         .iter()
+        .filter(|follow_up| follow_up.classification.triggers_restart())
         .enumerate()
         .map(|(idx, follow_up)| {
             let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
@@ -8278,6 +8355,7 @@ fn build_recorded_follow_ups(
     let now = Utc::now();
     follow_ups
         .iter()
+        .filter(|follow_up| follow_up.classification.triggers_restart())
         .enumerate()
         .map(|(idx, follow_up)| {
             let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
@@ -9046,7 +9124,9 @@ fn partition_final_review_amendments_by_route(
     let planned_elsewhere = Vec::new();
     let mut restart_queue = Vec::new();
     for amendment in amendments {
-        restart_queue.push(amendment);
+        if amendment.queued.classification.triggers_restart() {
+            restart_queue.push(amendment);
+        }
     }
     (planned_elsewhere, restart_queue)
 }
@@ -10594,14 +10674,15 @@ mod tests {
         advance_iterative_loop_state, build_final_review_snapshot, build_prompt_review_snapshot,
         build_queued_amendments, complete_run, drift_still_satisfies_requirements,
         failed_invocation_id_for_stage, git_change_scope_fingerprint, git_diff_fingerprint,
-        git_repo_available_with_program, invocation_id_for_stage, iterative_loop_exit_reason,
+        git_repo_available_with_program, has_deferred_classified_finding,
+        has_restart_triggering_follow_up, invocation_id_for_stage, iterative_loop_exit_reason,
         mark_running_run_interrupted, milestone_lineage_plan_hash,
         partition_final_review_amendments_by_route, pause_run, preflight_check,
         probe_final_review_reviewers, resolution_has_drifted, resolve_runtime_final_review_panel,
         resolve_stage_plan, resume_iteration_counters, resume_run_with_retry,
         resume_terminal_iterative_stage_result, role_for_stage, should_retry_stage_failure,
-        stage_running_summary_for_active_run, sync_milestone_bead_start,
-        validate_iterative_minimal_loop_settings, validation_follow_ups,
+        skip_next_apply_fixes_reason, stage_running_summary_for_active_run,
+        sync_milestone_bead_start, validate_iterative_minimal_loop_settings, validation_follow_ups,
         FinalReviewQueuedAmendment, InterruptedRunContext, InterruptedRunUpdate,
         IterativeInvocationSidecar, IterativeLoopExitReason, QueuedAmendment,
         RunningAttemptIdentity, StagePlan, TerminalIterativeResumeResult,
@@ -12620,7 +12701,7 @@ mod tests {
     }
 
     #[test]
-    fn final_review_routes_all_classes_into_restart_queue_for_now() {
+    fn final_review_routes_only_fix_current_into_restart_queue() {
         let queued = |id: &str, classification, mapped_to_bead_id: Option<&str>| {
             FinalReviewQueuedAmendment {
                 queued: QueuedAmendment {
@@ -12665,19 +12746,17 @@ mod tests {
             partition_final_review_amendments_by_route(&amendments);
 
         assert_eq!(planned_elsewhere.len(), 0);
-        assert_eq!(restart_queue.len(), 3);
+        assert_eq!(restart_queue.len(), 1);
         assert_eq!(restart_queue[0].queued.amendment_id, "fix");
-        assert_eq!(restart_queue[1].queued.amendment_id, "planned");
-        assert_eq!(restart_queue[2].queued.amendment_id, "proposed");
     }
 
     #[test]
-    fn review_classification_reaches_queued_amendment_record_without_dropping_legacy_follow_ups() {
+    fn classified_review_findings_merge_non_duplicate_legacy_follow_ups() {
         let payload = StagePayload::Validation(ValidationPayload {
             outcome: ReviewOutcome::RequestChanges,
             evidence: vec!["evidence".to_owned()],
             findings_or_gaps: vec!["gap".to_owned()],
-            follow_up_or_amendments: vec!["fallback".to_owned()],
+            follow_up_or_amendments: vec!["fix the current bead".to_owned()],
             classified_findings: vec![ClassifiedFinding {
                 body: "covered elsewhere".to_owned(),
                 classification: ReviewFindingClass::CoveredByExistingBead,
@@ -12690,16 +12769,179 @@ mod tests {
         let follow_ups = validation_follow_ups(&payload);
         let amendments = build_queued_amendments(&follow_ups, StageId::Review, 1, 1, &run_id);
 
-        assert_eq!(amendments.len(), 2);
+        assert_eq!(follow_ups.len(), 2);
+        assert_eq!(amendments.len(), 1);
+        assert_eq!(amendments[0].body, "fix the current bead");
+        assert!(has_restart_triggering_follow_up(&payload));
+    }
+
+    #[test]
+    fn classified_review_findings_do_not_duplicate_matching_legacy_follow_ups() {
+        let payload = StagePayload::Validation(ValidationPayload {
+            outcome: ReviewOutcome::RequestChanges,
+            evidence: vec!["evidence".to_owned()],
+            findings_or_gaps: vec!["gap".to_owned()],
+            follow_up_or_amendments: vec![" covered elsewhere ".to_owned()],
+            classified_findings: vec![ClassifiedFinding {
+                body: "covered elsewhere".to_owned(),
+                classification: ReviewFindingClass::CoveredByExistingBead,
+                covered_by_bead_id: Some("9ni.8.5".to_owned()),
+                mapped_to_bead_id: None,
+                proposed_bead_summary: None,
+            }],
+        });
+        let run_id = RunId::new("run-classification-dedupe").expect("run id");
+        let follow_ups = validation_follow_ups(&payload);
+        let amendments = build_queued_amendments(&follow_ups, StageId::Review, 1, 1, &run_id);
+
+        assert_eq!(follow_ups.len(), 1);
+        assert!(amendments.is_empty());
+        assert!(!has_restart_triggering_follow_up(&payload));
+    }
+
+    #[test]
+    fn non_fix_only_review_classification_defers_without_restart_trigger() {
+        let payload = StagePayload::Validation(ValidationPayload {
+            outcome: ReviewOutcome::RequestChanges,
+            evidence: vec!["evidence".to_owned()],
+            findings_or_gaps: vec!["gap".to_owned()],
+            follow_up_or_amendments: Vec::new(),
+            classified_findings: vec![
+                ClassifiedFinding {
+                    body: "covered elsewhere".to_owned(),
+                    classification: ReviewFindingClass::CoveredByExistingBead,
+                    covered_by_bead_id: Some("9ni.8.5".to_owned()),
+                    mapped_to_bead_id: None,
+                    proposed_bead_summary: None,
+                },
+                ClassifiedFinding {
+                    body: "future work".to_owned(),
+                    classification: ReviewFindingClass::ProposeNewBead,
+                    covered_by_bead_id: None,
+                    mapped_to_bead_id: None,
+                    proposed_bead_summary: Some("Add future work".to_owned()),
+                },
+            ],
+        });
+        let run_id = RunId::new("run-classification-deferred").expect("run id");
+        let follow_ups = validation_follow_ups(&payload);
+        let amendments = build_queued_amendments(&follow_ups, StageId::Review, 1, 1, &run_id);
+
+        assert!(amendments.is_empty());
+        assert!(!has_restart_triggering_follow_up(&payload));
+        assert!(has_deferred_classified_finding(&payload));
+    }
+
+    #[test]
+    fn non_fix_only_review_classification_skips_apply_fixes() {
+        let payload = StagePayload::Validation(ValidationPayload {
+            outcome: ReviewOutcome::RequestChanges,
+            evidence: vec!["evidence".to_owned()],
+            findings_or_gaps: vec!["gap".to_owned()],
+            follow_up_or_amendments: Vec::new(),
+            classified_findings: vec![ClassifiedFinding {
+                body: "covered elsewhere".to_owned(),
+                classification: ReviewFindingClass::CoveredByExistingBead,
+                covered_by_bead_id: Some("9ni.8.5".to_owned()),
+                mapped_to_bead_id: None,
+                proposed_bead_summary: None,
+            }],
+        });
+
         assert_eq!(
-            amendments[0].classification,
-            ReviewFindingClass::CoveredByExistingBead
+            skip_next_apply_fixes_reason(&payload, Some(StageId::ApplyFixes)),
+            Some("review only has deferred non-fix classifications")
         );
-        assert_eq!(amendments[0].covered_by_bead_id.as_deref(), Some("9ni.8.5"));
-        assert_eq!(amendments[1].body, "fallback");
+    }
+
+    #[test]
+    fn conditionally_approved_non_fix_only_review_classification_skips_apply_fixes() {
+        let payload = StagePayload::Validation(ValidationPayload {
+            outcome: ReviewOutcome::ConditionallyApproved,
+            evidence: vec!["evidence".to_owned()],
+            findings_or_gaps: vec!["gap".to_owned()],
+            follow_up_or_amendments: Vec::new(),
+            classified_findings: vec![ClassifiedFinding {
+                body: "covered elsewhere".to_owned(),
+                classification: ReviewFindingClass::CoveredByExistingBead,
+                covered_by_bead_id: Some("9ni.8.5".to_owned()),
+                mapped_to_bead_id: None,
+                proposed_bead_summary: None,
+            }],
+        });
+
         assert_eq!(
-            amendments[1].classification,
-            ReviewFindingClass::FixCurrentBead
+            skip_next_apply_fixes_reason(&payload, Some(StageId::ApplyFixes)),
+            Some("review only has deferred non-fix classifications")
+        );
+    }
+
+    #[test]
+    fn approved_non_fix_only_review_classification_skips_apply_fixes() {
+        let payload = StagePayload::Validation(ValidationPayload {
+            outcome: ReviewOutcome::Approved,
+            evidence: vec!["evidence".to_owned()],
+            findings_or_gaps: Vec::new(),
+            follow_up_or_amendments: Vec::new(),
+            classified_findings: vec![
+                ClassifiedFinding {
+                    body: "covered elsewhere".to_owned(),
+                    classification: ReviewFindingClass::CoveredByExistingBead,
+                    covered_by_bead_id: Some("9ni.8.5".to_owned()),
+                    mapped_to_bead_id: None,
+                    proposed_bead_summary: None,
+                },
+                ClassifiedFinding {
+                    body: "future work".to_owned(),
+                    classification: ReviewFindingClass::ProposeNewBead,
+                    covered_by_bead_id: None,
+                    mapped_to_bead_id: None,
+                    proposed_bead_summary: Some("Add future work".to_owned()),
+                },
+                ClassifiedFinding {
+                    body: "observation".to_owned(),
+                    classification: ReviewFindingClass::InformationalOnly,
+                    covered_by_bead_id: None,
+                    mapped_to_bead_id: None,
+                    proposed_bead_summary: None,
+                },
+            ],
+        });
+
+        assert_eq!(
+            skip_next_apply_fixes_reason(&payload, Some(StageId::ApplyFixes)),
+            Some("review only has deferred non-fix classifications")
+        );
+    }
+
+    #[test]
+    fn mixed_fix_and_non_fix_review_classification_does_not_skip_apply_fixes() {
+        let payload = StagePayload::Validation(ValidationPayload {
+            outcome: ReviewOutcome::RequestChanges,
+            evidence: vec!["evidence".to_owned()],
+            findings_or_gaps: vec!["gap".to_owned()],
+            follow_up_or_amendments: Vec::new(),
+            classified_findings: vec![
+                ClassifiedFinding {
+                    body: "covered elsewhere".to_owned(),
+                    classification: ReviewFindingClass::CoveredByExistingBead,
+                    covered_by_bead_id: Some("9ni.8.5".to_owned()),
+                    mapped_to_bead_id: None,
+                    proposed_bead_summary: None,
+                },
+                ClassifiedFinding {
+                    body: "fix here".to_owned(),
+                    classification: ReviewFindingClass::FixCurrentBead,
+                    covered_by_bead_id: None,
+                    mapped_to_bead_id: None,
+                    proposed_bead_summary: None,
+                },
+            ],
+        });
+
+        assert_eq!(
+            skip_next_apply_fixes_reason(&payload, Some(StageId::ApplyFixes)),
+            None
         );
     }
 

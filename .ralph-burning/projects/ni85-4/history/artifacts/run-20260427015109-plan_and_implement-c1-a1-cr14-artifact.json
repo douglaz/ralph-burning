@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr14-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr14",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T17:52:35.687826613Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending proposal-threshold overcount in `src/contexts/automation_runtime/success_reconciliation.rs`. Terminal review findings no longer carry a source-derived `occurrence_count`; `propose_new_bead` thresholding and emitted `count` now use the number of findings in each normalized summary group, so one final-review amendment with multiple reviewer sources does not cross threshold 2 by itself. Updated the focused regression to assert that no `proposed-beads.ndjson` file is written for a single amendment with two sources.\n\n## Steps\n\n0. [Completed] Inspected the affected terminal reconciliation code, proposal thresholding path, current diff, and focused proposal tests while preserving unrelated live orchestration state.\n1. [Completed] Removed source-count based proposal occurrence tracking from terminal review findings and made thresholding count findings directly.\n2. [Completed] Updated the final-review sources regression so one amendment with two sources remains below the default threshold and writes no NDJSON proposal record.\n3. [Completed] Ran focused regression, formatting, clippy, full test suite, Nix build, whitespace validation, and attempted bead linting.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub classification_propose_new_bead_does_not_count_final_review_sources -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T03:59:38.873218345Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n\n## Accepted\n\n- `fr-1-30741257`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-30741257`\n\n**Classification:** fix_current_bead\n\nsrc/adapters/process_backend.rs:2463-2533 removed the `unify_single_enum_oneof` transform from `enforce_strict_mode_schema`. That function now only handles nullable normalization and single-element `allOf`, then recurses, so schemas can retain field-level `oneOf` single-element-enum patterns (`oneOf: [{enum:[\"A\"], type:\"string\"}, ...]`) that OpenAI strict mode rejects for field/property schemas. This reintroduces a runtime schema-compatibility regression affecting structured-output calls; restore `oneOf` string-enum collapse here (or equivalent).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

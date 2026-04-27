@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr16-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr16",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T19:37:34.924666017Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending ApplyFixes routing issue for approved reviews with only deferred or informational classified findings. The skip logic now treats Approved, ConditionallyApproved, and RequestChanges review outcomes the same when classified findings contain no restart-triggering current-bead follow-up, so deferred-only approved reviews advance without invoking ApplyFixes. Added focused unit and QuickDev workflow coverage for the approved deferred-only case.\n\n## Steps\n\n0. [Completed] Inspected the current dirty worktree and the affected review follow-up routing in `src/contexts/workflow_composition/engine.rs` while preserving live orchestration state.\n1. [Completed] Extended deferred-only ApplyFixes skip handling to include `ReviewOutcome::Approved` when no restart-triggering follow-up exists.\n2. [Completed] Added focused regression coverage in engine unit tests and QuickDev workflow tests proving approved reviews with only covered-by/proposed/informational classifications skip ApplyFixes.\n3. [Completed] Ran targeted tests, formatting, clippy, the full test suite, Nix build, whitespace validation, and attempted bead linting.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub approved_non_fix_only_review_classification_skips_apply_fixes -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub quick_dev_review_approved_with_only_deferred_classifications_skips_apply_fixes -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` and `nix develop -c br lint` failed to start: `br` is not installed.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH, including inside `nix develop`.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 16
+}

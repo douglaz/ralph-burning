@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr13-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T16:45:00.839346183Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the two pending review-classification reconciliation issues in `src/contexts/automation_runtime/success_reconciliation.rs`. Covered-by reconciliation now uses canonical/alias-aware bead reference matching before and after `br show`, so a target that resolves to the active bead is skipped without mutating the current bead. Proposed-bead reconciliation now reads existing handoff records by normalized summary as well as amendment id, preventing duplicate `proposed-beads.ndjson` entries for the same summary when retry/run amendment ids differ. Added focused regressions for resolved self-target aliases and existing-summary proposal idempotency.\n\n## Steps\n\n0. [Completed] Inspected the dirty worktree and affected reconciliation code/tests while preserving unrelated live orchestration state.\n1. [Completed] Implemented canonical/alias-aware self-target detection for `covered_by_existing_bead`, including a post-resolution guard against `detail.id` matching the active bead.\n2. [Completed] Implemented proposal handoff idempotency by indexing existing `proposed-beads.ndjson` records by normalized summary in addition to amendment id.\n3. [Completed] Added focused regression coverage for resolved current-bead aliases and summary-level proposal replay idempotency.\n4. [Completed] Ran targeted tests, formatting, clippy, full test suite, Nix build, whitespace validation, and attempted bead linting.\n5. [Skipped] Attempted bead backlog linting with `br lint`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub classification_covered_by_existing_bead_skips_resolved_current_bead_alias -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub classification_propose_new_bead_existing_summary_is_idempotent -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 13
+}

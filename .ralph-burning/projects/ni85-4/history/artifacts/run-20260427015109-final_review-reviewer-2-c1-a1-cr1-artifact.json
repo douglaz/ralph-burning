@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T03:58:25.449447752Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound 1 high-severity issue: reintroduce single-enum `oneOf` collapse in strict-mode schema enforcement to prevent OpenAI strict-mode schema rejection.\n\n## Amendments\n\n1. src/adapters/process_backend.rs:2463-2533 removed the `unify_single_enum_oneof` transform from `enforce_strict_mode_schema`. That function now only handles nullable normalization and single-element `allOf`, then recurses, so schemas can retain field-level `oneOf` single-element-enum patterns (`oneOf: [{enum:[\"A\"], type:\"string\"}, ...]`) that OpenAI strict mode rejects for field/property schemas. This reintroduces a runtime schema-compatibility regression affecting structured-output calls; restore `oneOf` string-enum collapse here (or equivalent).\n   Classification: fix_current_bead\n   Rationale: This is a behavior regression from the previous strict-mode contract fix and can block valid model invocations. Restore before merge.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T17:59:05.973553954Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound two correctness issues in proposed-bead reconciliation: final-review duplicate sources are undercounted for thresholding, and NDJSON idempotency is broader than the specified amendment_id marker.\n\n## Amendments\n\n1. src/contexts/automation_runtime/success_reconciliation.rs:1168 records one TerminalReviewFinding per accepted canonical final-review amendment, then src/contexts/automation_runtime/success_reconciliation.rs:1457 applies the threshold to that count. Duplicate reviewer findings are merged into one canonical amendment with multiple sources in src/contexts/workflow_composition/final_review.rs:681, so two reviewers proposing the same body/summary do not meet the default threshold of 2 and no proposed-beads.ndjson record is written.\n   Classification: fix_current_bead\n   Rationale: Threshold gating is supposed to count findings with the same proposed_bead_summary, not post-dedup canonical amendments.\n2. src/contexts/automation_runtime/success_reconciliation.rs:1207 tracks existing summary_keys and src/contexts/automation_runtime/success_reconciliation.rs:1483 skips any later threshold-met group with the same normalized summary. The idempotency requirement only says to skip records whose amendment_id is already present; this broader summary-level skip suppresses distinct later terminal runs or current beads with a new amendment_id but the same summary, so their source_run_id/current_bead_id/count handoff is never appended.\n   Classification: fix_current_bead\n   Rationale: Over-broad idempotency can drop legitimate proposed-bead records beyond replay deduplication.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 14
+}

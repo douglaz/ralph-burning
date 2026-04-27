@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T06:18:30.653333770Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented and verified terminal review-classification reconciliation. Non-fix classifications no longer trigger fix-now restarts, success reconciliation closes bead-backed runs with `br update --status=closed`, terminal success and failure both run classification reconciliation, `covered_by_existing_bead` posts idempotent target-bead comments with amendment markers/source run/current bead and normalized 3-line bodies, `propose_new_bead` writes threshold-gated idempotent records to `proposed-beads.ndjson` instead of creating beads, and `workflow.new_bead_proposal_threshold` is available in config with default 2. This round also tightened covered-by comment formatting for multiline findings.\n\n## Steps\n\n0. [Completed] Inspected current routing, success/failure reconciliation, config, and tests against the pending amendments.\n1. [Completed] Confirmed and preserved the existing reconciliation implementation for restart routing, terminal success/failure hooks, proposal NDJSON handoff, and config plumbing.\n2. [Completed] Patched covered-by comment rendering to collapse multiline finding summaries so comments stay within the required three-line shape.\n3. [Completed] Updated the covered-by regression test to assert multiline findings are normalized in the posted comment body.\n4. [Completed] Ran focused classification tests, formatting, clippy, full test suite, Nix build, diff whitespace check, and attempted bead linting.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub classification_ -- --nocapture` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree contains live `.ralph-burning/` orchestration-state modifications that were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

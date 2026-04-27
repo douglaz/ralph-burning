@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T07:21:35.619363605Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the amendment; the described retry hole is a real durability/idempotency bug in covered_by_existing_bead reconciliation.\n\n## Votes\n\n- `fr-4-542a8476`: Accept\n  The code skips posting when the local comment already contains the exact amendment marker and only flushes when comments_posted > 0. Because sync_flush leaves the local mutation marker dirty on failure while the local bead detail can already show the comment, a retry can return Ok without retrying the required flush. That can falsely mark reconciliation complete while the comment remains unflushed. The fix should retry a guarded own-dirty flush when an existing marker is observed or after the loop whenever this adapter has recoverable pending mutations.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T03:59:38.849502239Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the sole amendment as a valid strict-mode schema regression fix.\n\n## Votes\n\n- `fr-1-30741257`: Accept\n  This is a real runtime compatibility issue: schemars can emit Rust enum fields as oneOf arrays of single-value enum variants, and strict-mode structured-output schemas reject that property-level shape. Collapsing the recognized pattern to a single enum with a shared type is semantically equivalent for this case while leaving non-matching oneOf constructs intact, so restoring the transform is correct and maintainable.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

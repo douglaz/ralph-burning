@@ -374,13 +374,29 @@ fn review_finding_covered_by_existing_bead_round_trips() {
     let finding = parsed_review_finding(json!({
         "body": "Covered elsewhere.",
         "classification": "covered_by_existing_bead",
-        "covered_by_bead_id": "9ni.8.5"
+        "covered_by_bead_id": " 9ni.8.5 "
     }));
     assert_eq!(
         finding.classification,
         ReviewFindingClass::CoveredByExistingBead
     );
     assert_eq!(finding.covered_by_bead_id.as_deref(), Some("9ni.8.5"));
+}
+
+#[test]
+fn review_finding_covered_by_existing_bead_blank_id_falls_back_and_warns() {
+    let capture = log_capture();
+    let finding = capture.in_scope(|| {
+        parsed_review_finding(json!({
+            "body": "Blank target.",
+            "classification": "covered_by_existing_bead",
+            "covered_by_bead_id": " \t "
+        }))
+    });
+
+    assert_eq!(finding.classification, ReviewFindingClass::FixCurrentBead);
+    assert_eq!(finding.covered_by_bead_id, None);
+    capture.assert_event_has_fields(&[("level", "WARN")]);
 }
 
 #[test]
@@ -402,7 +418,7 @@ fn review_finding_propose_new_bead_round_trips() {
     let finding = parsed_review_finding(json!({
         "body": "Missing substantial follow-up.",
         "classification": "propose_new_bead",
-        "proposed_bead_summary": "Add the missing follow-up"
+        "proposed_bead_summary": " Add the missing follow-up "
     }));
     assert_eq!(finding.classification, ReviewFindingClass::ProposeNewBead);
     assert_eq!(
@@ -426,6 +442,22 @@ fn review_finding_propose_new_bead_without_summary_falls_back_and_warns() {
 }
 
 #[test]
+fn review_finding_propose_new_bead_blank_summary_falls_back_and_warns() {
+    let capture = log_capture();
+    let finding = capture.in_scope(|| {
+        parsed_review_finding(json!({
+            "body": "Missing substantial follow-up.",
+            "classification": "propose_new_bead",
+            "proposed_bead_summary": "\n  "
+        }))
+    });
+
+    assert_eq!(finding.classification, ReviewFindingClass::FixCurrentBead);
+    assert_eq!(finding.proposed_bead_summary, None);
+    capture.assert_event_has_fields(&[("level", "WARN")]);
+}
+
+#[test]
 fn review_finding_informational_only_round_trips() {
     let finding = parsed_review_finding(json!({
         "body": "No action needed.",
@@ -435,7 +467,7 @@ fn review_finding_informational_only_round_trips() {
         finding.classification,
         ReviewFindingClass::InformationalOnly
     );
-    assert!(finding.classification.triggers_restart());
+    assert!(!finding.classification.triggers_restart());
 }
 
 #[test]

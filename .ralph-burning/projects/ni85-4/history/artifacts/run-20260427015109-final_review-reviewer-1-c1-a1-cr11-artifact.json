@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T14:59:18.858666456Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against 26edf3340c5c84297ede274973eeba3b7085ad30, excluding live .ralph-burning state. Found three correctness issues. Verification run: nix build, cargo fmt --check, cargo clippy --locked -- -D warnings, and cargo test --locked --features test-stub all completed successfully.\n\n## Amendments\n\n1. src/contexts/workflow_composition/engine.rs:8217 now treats `classified_findings` as authoritative and returns at 8235-8237 whenever any classified item exists, so legacy `follow_up_or_amendments` are dropped instead of merged. Combined with the skip path at 8288-8294, a review payload containing one deferred classified finding plus an ordinary fix-now follow-up can skip `apply_fixes` and advance without remediation. This changes the `fix_current_bead` amendment flow; keep merging non-duplicate legacy follow-ups as fix-current items while filtering only non-fix classifications out of the immediate queue.\n   Classification: fix_current_bead\n   Rationale: Can silently drop required current-bead fixes from mixed or partially migrated review payloads.\n2. src/contexts/automation_runtime/success_reconciliation.rs:484-490 treats a failed `br update --status=closed` as success if a follow-up read sees the bead closed, but src/adapters/br_process.rs:1335-1345 clears the pending mutation record on that failed update. In that false-failure case, `sync_after_close` has no durable pending record to flush, so the run can record success while the local bead close is never pushed. Restore a pending `update_bead_status(..., \"closed\")` record before accepting the observed closed state; mirror the same recovery in the CLI terminal close path at src/cli/run.rs:1220-1229.\n   Classification: fix_current_bead\n   Rationale: The codebase already handles false-failed `br update` for claims; the new close path needs the same crash-safe sync guarantee.\n3. src/contexts/automation_runtime/success_reconciliation.rs:1278-1283 accepts a `covered_by_existing_bead` target without checking whether it is the current `bead_id`, and 1320-1327 then posts the reconciliation comment to that target. If a reviewer accidentally points `covered_by_bead_id` or legacy `mapped_to_bead_id` at the active bead, this path modifies the current bead even though the contract says covered-by-existing must not modify it. Add a warn-and-skip guard when the normalized target matches the current bead.\n   Classification: fix_current_bead\n   Rationale: Prevents invalid review metadata from violating the no-current-bead-modification acceptance rule.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 11
+}

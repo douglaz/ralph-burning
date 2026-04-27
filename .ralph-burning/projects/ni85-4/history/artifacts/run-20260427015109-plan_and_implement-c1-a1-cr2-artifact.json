@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T04:36:48.466355324Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending strict-schema amendment for `src/adapters/process_backend.rs` by confirming the `oneOf` single-element enum collapse path is present in `enforce_strict_mode_schema` and adding a focused regression test that fails if review-classification schemas retain the OpenAI-incompatible field-level `oneOf` shape. The reconciliation implementation from the prior stage remains intact; this round specifically hardens the schema compatibility regression called out by review.\n\n## Steps\n\n0. [Completed] Inspected the pending amendment target and verified the strict-mode schema transformer contains the `unify_single_enum_oneof` collapse path before recursive schema traversal.\n1. [Completed] Added a regression test covering review-classification-style `oneOf` single-element enum variants and asserting they collapse to a single string enum schema.\n2. [Completed] Ran formatting, linting, targeted regression, full test, and Nix build verification on the current tree.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub enforce_strict_mode_collapses_one_of_single_enum_variants -- --nocapture` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n\n## Outstanding Risks\n\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not edited intentionally.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

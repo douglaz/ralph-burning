@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr8-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T11:55:43.948264856Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll four amendments should be accepted; each addresses a concrete correctness/safety defect in mutation or classification flow rather than spec drift.\n\n## Votes\n\n- `fr-8-7db5f4b9`: Accept\n  Closing a bead before terminal lineage reconciliation is confirmed can mark unreconciled work as closed; gating close behind the existing reconcileability check is required to avoid stale terminal state.\n- `fr-8-471e75fb`: Accept\n  Letting legacy follow-up backfill override non-empty classified findings can drive apply_fixes for findings that were explicitly classified as covered/proposed, creating conflicting behavior; classified output must be authoritative.\n- `fr-8-11d38423`: Accept\n  Posting covered_by_existing_bead comments before bead-health validation mutates external state despite a malformed/conflicted .beads file; adding a pre-mutation health guard aligns with existing safe mutation patterns and prevents inconsistent side effects.\n- `fr-8-884b6983`: Accept\n  Using source_occurrences for propose_new_bead threshold can overcount a single finding with multiple sources and emit proposals too early; thresholding should be based on distinct findings (summary-equivalent grouping) as the contract intends.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 8
+}

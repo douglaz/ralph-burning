@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-arbiter-c1-a1-cr8-artifact",
+  "payload_id": "run-20260427015109-final_review-arbiter-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T11:59:37.188930817Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the disputed amendment because the cited implementation can promote a single final-review finding with multiple sources into a threshold-qualified proposal, contrary to the finding-count threshold contract.\n\n## Rulings\n\n- `fr-8-884b6983`: Accept\n  The amendment identifies a real contract mismatch as stated: the threshold is supposed to gate on the number of findings grouped by case-insensitive summary equality, but the implementation derives occurrence_count from source_occurrences. Since from_final_review initializes source_occurrences from amendment.sources.len(), one canonical final-review finding with multiple sources can satisfy a threshold of 2 without there being two findings in the grouped set. The rejecting vote depends on treating sources as independent raw finding occurrences, but the disputed contract is finding-count based rather than source-count based.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 8
+}

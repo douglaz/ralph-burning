@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T08:15:27.202730261Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 5/25\n\n## Accepted\n\n- `fr-5-11b7e87a`\n- `fr-5-d1eb97ee`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-5-c9eb564e`\n\n## Final Accepted Amendments\n\n### `fr-5-11b7e87a`\n\n**Classification:** fix_current_bead\n\n`src/contexts/workflow_composition/payloads.rs:125` only treats `covered_by_bead_id` / `proposed_bead_summary` as missing when the option is `None`, so whitespace-only values keep the finding classified as `covered_by_existing_bead` or `propose_new_bead`. With `triggers_restart()` now false for those classes (`src/contexts/workflow_composition/review_classification.rs:45`), the engine suppresses immediate remediation, but terminal reconciliation later trims and skips the blank target/summary (`src/contexts/automation_runtime/success_reconciliation.rs:1281`, `src/contexts/automation_runtime/success_reconciliation.rs:1219`). That can silently drop a review finding. Normalize required classification fields with `trim()` during `ClassifiedFindingWire` conversion or semantic validation, and downgrade/error before suppressing restart.\n\n### `fr-5-d1eb97ee`\n\n**Classification:** fix_current_bead\n\n`src/contexts/workflow_composition/engine.rs:5473` handles non-fix `ReviewOutcome::RequestChanges` by logging only. After that arm, the generic cursor advancement still runs (`src/contexts/workflow_composition/engine.rs:5653`), so quick-dev runs advance from `review` into `apply_fixes` even when all review findings were `covered_by_existing_bead`, `propose_new_bead`, or `informational_only`. That still routes non-fix feedback through the implementer/fix stage. When there are no restart-triggering follow-ups, skip `apply_fixes` or otherwise treat the review as pass-through for stage advancement.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

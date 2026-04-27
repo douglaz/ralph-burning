@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr9-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T12:50:30.706990032Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll three proposed amendments identify concrete behavior defects with observable correctness/robustness impact on review flow and audit fidelity; all are accepted.\n\n## Votes\n\n- `fr-9-0e5d39d3`: Accept\n  Dropping per-amendment source occurrences and computing proposal threshold from unique canonical findings undercounts actual reviewer consensus. This can prevent threshold-based artifact generation (e.g., `proposed-beads.ndjson`) when multiple reviewers agree on the same summary, which is a correctness bug affecting workflow output.\n- `fr-9-73b0f6b1`: Accept\n  Handling deferred-only paths only for `RequestChanges` leaves `ConditionallyApproved` with non-fix findings on the normal apply path, causing QuickDev to enter `apply_fixes` and send non-fix feedback to implementer logic. This is a state-machine correctness issue and can misroute actions and user-visible behavior.\n- `fr-9-4ac78d1f`: Accept\n  Passing `project_id` where a task-scoped identifier is expected is a clear identifier-context bug. It can misattribute reconciliation errors/metrics and Br mutations to the wrong scope, degrading triage and routing. A task/task-source identifier should be used instead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 9
+}

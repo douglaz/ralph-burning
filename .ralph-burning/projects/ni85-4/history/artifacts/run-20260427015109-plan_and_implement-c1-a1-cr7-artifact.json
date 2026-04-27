@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T10:53:01.366161559Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the direct CLI terminal-sync bypass for bead-backed runs. The `run`, `resume`, and `run sync-milestone` paths now route terminal milestone synchronization through a CLI terminal reconciliation wrapper that runs only after durable terminal state is synced, closes successful bead-backed runs via `br update --status=closed`, leaves failed bead-backed runs in progress with a warning, and invokes `reconcile_terminal_review_classifications` so covered-by comments and threshold-gated `proposed-beads.ndjson` records are produced for operator-driven runs too. Added CLI regression coverage for completed sync bead closure and failed sync review-classification proposal reconciliation.\n\n## Steps\n\n0. [Completed] Inspected the pending amendment, existing direct CLI terminal-sync implementation, terminal reconciliation helpers, and current worktree state while preserving live orchestration state.\n1. [Completed] Added a CLI terminal reconciliation wrapper around milestone sync and continued selection so direct `run`, `resume`, and `run sync-milestone` flows execute terminal classification reconciliation before returning to the operator.\n2. [Completed] Added direct CLI success handling that closes bead-backed tasks through a mutation adapter and guarded bead sync, while failed runs remain in progress and log a warning.\n3. [Completed] Threaded stable CLI reconciliation adapter IDs into start, resume, and sync-milestone paths to preserve idempotent pending-mutation recovery across retries.\n4. [Completed] Added CLI regression tests proving completed terminal sync calls `br update ... --status=closed` and failed terminal sync reconciles proposal classifications without closing the bead.\n5. [Completed] Ran targeted regression tests, formatting, clippy, full test suite, Nix build, whitespace validation, and attempted bead linting.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub run_sync_milestone_repairs_completed_bead_backed_project -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub run_sync_milestone_reconciles_failed_terminal_review_classifications -- --nocapture` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 7
+}

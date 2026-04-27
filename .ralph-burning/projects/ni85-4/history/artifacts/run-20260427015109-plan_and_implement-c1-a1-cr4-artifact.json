@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T07:07:13.660042462Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending review-classification reconciliation findings in `src/contexts/automation_runtime/success_reconciliation.rs`. Terminal reconciliation now walks committed review-stage classified findings and the latest final-review aggregate for each completion round, proposal thresholding counts underlying source occurrences rather than canonical amendment rows, covered-by comment and flush failures now return reconciliation errors except for the specified missing-target skip path, and covered-by idempotency now requires an exact `amendment_id=...` marker line. Added/verified focused regression coverage for review-stage reconciliation, per-round final-review reconciliation, final-review source counting, exact marker idempotency, substring non-suppression, and comment/sync failure propagation.\n\n## Steps\n\n0. [Completed] Inspected current worktree state and reconciliation implementation while preserving unrelated live orchestration state.\n1. [Completed] Confirmed terminal finding collection covers review payloads plus latest final-review aggregate per completion round.\n2. [Completed] Confirmed proposal thresholding uses summed source occurrences and writes one idempotent NDJSON handoff record per threshold-met summary.\n3. [Completed] Confirmed covered-by reconciliation returns errors for comment and sync failures while still skipping missing target beads with a warning.\n4. [Completed] Confirmed exact amendment marker matching prevents substring-based false idempotency skips.\n5. [Completed] Ran focused and full validation gates, including the repository Nix build.\n6. [Skipped] Attempted bead backlog linting.\n\n## Validation Evidence\n\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --locked --features test-stub classification_ -- --nocapture` passed: 22 passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not edited intentionally.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 4
+}

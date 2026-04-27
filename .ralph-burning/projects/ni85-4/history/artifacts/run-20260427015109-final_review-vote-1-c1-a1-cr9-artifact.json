@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr9-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T12:53:33.582720567Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted two amendments that identify real reconciliation/control-flow defects; rejected the CLI task-id amendment because the CLI path intentionally uses project_id as its task-scoped identifier.\n\n## Votes\n\n- `fr-9-0e5d39d3`: Accept\n  The code collapses final-review canonical amendments to one TerminalReviewFinding and does not preserve source occurrence count, while the proposal threshold is applied to findings.len(). That makes threshold behavior depend on whether reviewers used identical normalized bodies, causing a false negative for the same proposed bead from multiple reviewers.\n- `fr-9-73b0f6b1`: Accept\n  ConditionallyApproved is caught by a no-op match arm before the remediation/deferred handling for review stages, and skip_next_apply_fixes_reason only recognizes RequestChanges. In QuickDev, that allows deferred-only classified feedback to advance into apply_fixes despite having no fix-current-bead work.\n- `fr-9-4ac78d1f`: Reject\n  In the CLI bead-backed flow, project_id is consistently used as the task-scoped identifier for controller and lineage operations, and TaskSource does not carry a separate task_id. Passing project_id into these reconciliation helpers is therefore consistent with surrounding CLI behavior rather than a proven mislabeling defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 9
+}

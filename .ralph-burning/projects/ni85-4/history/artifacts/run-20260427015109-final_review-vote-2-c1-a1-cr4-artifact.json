@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr4-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T07:21:12.232284400Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccept.\n\n## Votes\n\n- `fr-4-542a8476`: Accept\n  The bug is real: `reconcile_covered_by_existing_beads` only calls `sync_flush` when `comments_posted > 0`, so a replay can skip posting because local/state-side marker exists while the prior `comment_bead` mutation remains dirty from a failed flush. This returns success without persisting required mutations. Flushing owned dirty state via the guarded replay-safe path is necessary for correctness and robust failure recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 4
+}

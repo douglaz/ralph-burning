@@ -1241,6 +1241,8 @@ pub struct WorkflowSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_completion_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_bead_proposal_threshold: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_change_action: Option<PromptChangeAction>,
     #[serde(default, skip_serializing_if = "IterativeMinimalSettings::is_empty")]
     pub iterative_minimal: IterativeMinimalSettings,
@@ -1257,6 +1259,7 @@ impl WorkflowSettings {
             && self.max_qa_iterations.is_none()
             && self.max_review_iterations.is_none()
             && self.max_completion_rounds.is_none()
+            && self.new_bead_proposal_threshold.is_none()
             && self.prompt_change_action.is_none()
             && self.iterative_minimal.is_empty()
             && self.extra.is_empty()
@@ -1579,6 +1582,7 @@ pub struct EffectiveRunPolicy {
     pub max_qa_iterations: u32,
     pub max_review_iterations: u32,
     pub max_completion_rounds: u32,
+    pub new_bead_proposal_threshold: u32,
     pub prompt_change_action: PromptChangeAction,
     pub iterative_minimal: EffectiveIterativeMinimalPolicy,
 }

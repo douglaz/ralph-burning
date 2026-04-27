@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T04:43:15.210631341Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAll proposed amendments are technically valid against the inspected code. The current implementation still routes non-fix final-review classifications through restart/fix paths, lacks the requested covered-by comment reconciliation, still auto-creates proposed beads, has no configurable proposal threshold, and does not run classification side-effect reconciliation on terminal failure.\n\n## Votes\n\n- `fr-2-1417c860`: Accept\n  Confirmed. `triggers_restart()` always returns true and `partition_final_review_amendments_by_route` sends every accepted amendment to the restart queue, so covered/proposed/informational classifications are treated as current-bead remediation instead of routed or ignored.\n- `fr-2-fbb1acf7`: Accept\n  Confirmed. Success reconciliation only verifies legacy planned-elsewhere mappings; new `covered_by_existing_bead` aggregates are skipped, and the existing comment text has no amendment-id or source-run marker for idempotent target-bead comments.\n- `fr-2-6472393d`: Accept\n  Confirmed. `reconcile_proposed_beads_after_success` calls `handle_propose_new_bead`, which mutates `.beads` by creating beads/dependencies. There is no threshold grouping, no `proposed-beads.ndjson` handoff, and no config setting for the threshold.\n- `fr-2-cf0e6f80`: Accept\n  Confirmed. Failure reconciliation only records failure accounting and does not scan final-review aggregate findings or run covered/proposed classification side effects, so terminal failed runs can leave accepted classifications unreconciled.\n- `fr-2-b3bcff0a`: Accept\n  Confirmed. The threshold field is absent from `WorkflowSettings`, `known_config_keys`, `apply_to_document`, and effective config lookup, so `rb config get/set` cannot expose or drive the setting.\n- `fr-2-f08079ce`: Accept\n  Confirmed. The terminal replay reconstruction path explicitly skips new `covered_by_existing_bead` classifications, and the legacy planned-elsewhere comment path lacks amendment-id idempotency, so RunCompleted replay does not create deduped target-bead comments for covered-by findings.\n- `fr-2-1df65d88`: Accept\n  Confirmed. Proposed-bead reconciliation directly invokes the legacy bead-creation handler for accepted `ProposeNewBead` amendments instead of emitting proposal handoff records.\n- `fr-2-d0a81694`: Accept\n  Confirmed. Accepted proposal amendments are processed one by one with no normalized-summary grouping, N-of threshold check, or `proposed-beads.ndjson` dedupe by `amendment_id`; the existing creation replay idempotency does not implement the requested proposal semantics.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

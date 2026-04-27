@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T10:57:15.515541035Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound 2 correctness issues in this branch: incorrect task_id argument in CLI terminal classification reconciliation, and threshold counting over-counting final-review sources rather than findings.\n\n## Amendments\n\n1. `src/cli/run.rs:1084` passes `project_id` as the `task_id` argument when calling `reconcile_terminal_review_classifications` in `reconcile_cli_terminal_bead_state`. This function expects the task id (for reconciliation context/error logging), so operator-visible reconciliation diagnostics can be attributed to the wrong task.\n   Classification: fix_current_bead\n   Rationale: Use `&task_source.task_id` instead of `project_id.as_str()` at call-site, matching the existing daemon path and keeping traceability consistent.\n2. `src/contexts/automation_runtime/success_reconciliation.rs:1055` stores `source_occurrences` as `amendment.sources.len().max(1)` for final-review findings, and `reconcile_proposed_bead_records` sums `source_occurrences` for threshold checks. This counts reviewer sources as multiple findings.\n   Classification: fix_current_bead\n   Rationale: The requirement says propose-new-bead threshold is based on number of findings (N identical summaries). A single finding with multiple sources should not satisfy threshold N=2 by itself; count findings, not source entries, to avoid spurious proposal records.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-arbiter-c1-a1-cr5-artifact",
+  "payload_id": "run-20260427015109-final_review-arbiter-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T08:15:27.161437762Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nRejected the disputed amendment because source counting preserves pre-dedup reviewer finding occurrences and is backed by an explicit regression test.\n\n## Rulings\n\n- `fr-5-c9eb564e`: Reject\n  The evidence favors the existing behavior being intentional, not a bug. Final-review merging deduplicates identical amendment bodies into one canonical row while preserving each reviewer occurrence in `sources`, so `source_occurrences = amendment.sources.len().max(1)` represents the raw reviewer findings that were collapsed during canonicalization. This is explicitly covered by `classification_propose_new_bead_counts_final_review_sources`, which expects one canonical amendment with two sources to write a proposal record with `count == 2`. Counting only canonical rows would undercount identical findings raised independently by multiple reviewers and would prevent that documented threshold case from firing.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

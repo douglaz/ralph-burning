@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T18:57:37.830390359Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against 26edf3340c5c84297ede274973eeba3b7085ad30, excluding .ralph-burning runtime state. Ran nix develop -c cargo fmt --check and nix develop -c cargo test --locked --features test-stub classification_ --lib; both passed.\n\n## Amendments\n\n1. src/contexts/workflow_composition/engine.rs:8285 only skips ApplyFixes for an approved review when validation_follow_ups() is empty, but validation_follow_ups() includes informational_only, covered_by_existing_bead, and propose_new_bead classified findings from lines 8217-8233 even though those classifications are later filtered out of queued amendments. An Approved review that records only deferred or informational classified findings will therefore enter ApplyFixes with nothing current-bead-scoped to fix, violating the no-op/deferred routing contract. Extend the deferred-only skip at lines 8292-8298 to cover Approved reviews when there is no restart-triggering follow-up.\n   Classification: fix_current_bead\n   Rationale: Prevents informational and non-fix review findings from invoking the current-bead amendment flow.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 15
+}

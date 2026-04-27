@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr11-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T15:01:18.689822146Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAll four amendments identify real correctness or operability issues in the current code paths and should be accepted.\n\n## Votes\n\n- `fr-11-8084c200`: Accept\n  `validation_follow_ups` returns classified findings as soon as any exist, so legacy fix-now follow-ups can be ignored. That makes the skip condition treat a mixed deferred-plus-fix payload as deferred-only and bypass remediation.\n- `fr-11-bf9189d2`: Accept\n  The pending mutation record is cleared on failed `br update`, but the code can then accept the observed closed state as success. Without restoring the pending close record, the follow-up sync may see no owned dirty mutation and skip flushing an actual local bead close.\n- `fr-11-54224b48`: Accept\n  `covered_by_existing_bead` is explicitly a route away from the active bead. Posting the reconciliation comment when the target normalizes to the current bead violates that contract and mutates the active bead through malformed or mistaken reviewer metadata.\n- `fr-11-08e3954e`: Accept\n  The CLI terminal reconciliation call passes `project_id` where the API records `task_id`, and the error and sync paths propagate that value. Since concrete task ids are available in related terminal sync handling, using the project id weakens traceability when multiple executions share a project or bead.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 11
+}

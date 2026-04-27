@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr14-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T18:08:52.136058406Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 14/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-14-bdf15f64`\n- `fr-14-984575b1`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-14-bdf15f64`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/automation_runtime/success_reconciliation.rs:1168 records one TerminalReviewFinding per accepted canonical final-review amendment, then src/contexts/automation_runtime/success_reconciliation.rs:1457 applies the threshold to that count. Duplicate reviewer findings are merged into one canonical amendment with multiple sources in src/contexts/workflow_composition/final_review.rs:681, so two reviewers proposing the same body/summary do not meet the default threshold of 2 and no proposed-beads.ndjson record is written.\n\n### `fr-14-984575b1`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/automation_runtime/success_reconciliation.rs:1207 tracks existing summary_keys and src/contexts/automation_runtime/success_reconciliation.rs:1483 skips any later threshold-met group with the same normalized summary. The idempotency requirement only says to skip records whose amendment_id is already present; this broader summary-level skip suppresses distinct later terminal runs or current beads with a new amendment_id but the same summary, so their source_run_id/current_bead_id/count handoff is never appended.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 14
+}

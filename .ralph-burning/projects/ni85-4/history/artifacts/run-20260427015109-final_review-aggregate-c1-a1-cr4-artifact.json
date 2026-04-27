@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T07:21:35.657217637Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n\n## Accepted\n\n- `fr-4-542a8476`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-542a8476`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/automation_runtime/success_reconciliation.rs:1313-1318 and 1339-1344 can mark a covered_by_existing_bead comment as reconciled even after a prior sync failure. If the first attempt posts the comment locally and `sync_flush` fails, the failure-path retry from src/contexts/automation_runtime/daemon_loop.rs:2569-2578 sees the local `amendment_id` marker, skips posting, skips sync because `comments_posted == 0`, and returns Ok while the required comment may still be unflushed. Flush own pending mutations even when the marker already exists, preferably with the guarded own-dirty sync path.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}
