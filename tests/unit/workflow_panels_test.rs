@@ -786,14 +786,23 @@ fn prompt_review_decision_display_rejected() {
 
 /// Recursively verify that a generated JSON schema contains no `allOf`,
 /// `anyOf`, `not`, or other constructs that gpt-5.5 strict-mode structured
-/// outputs reject. Returns the first offending JSON path, if any.
+/// outputs reject. Also flags unresolved `$ref` keys (post-processing must
+/// inline every reference: gpt-5.5 rejects them with "reference to
+/// component … which was not found in the schema"). Returns the first
+/// offending JSON path, if any.
 fn find_strict_mode_violation(
     value: &serde_json::Value,
     path: &str,
 ) -> Option<(String, &'static str)> {
     match value {
         serde_json::Value::Object(map) => {
-            for forbidden in ["allOf", "anyOf", "not", "if", "then", "else"] {
+            // anyOf is intentionally NOT flagged here — gpt-5.5 strict
+            // mode accepts `anyOf` for the nullable-field idiom (e.g.
+            // `Option<T>` becomes `{"anyOf": [{"type": "T"}, {"type":
+            // "null"}]}`) which is the only way to express nullability
+            // in strict mode. allOf and unresolved $ref are the real
+            // blockers from the ni85 failures.
+            for forbidden in ["allOf", "not", "if", "then", "else", "$ref"] {
                 if map.contains_key(forbidden) {
                     return Some((path.to_owned(), forbidden));
                 }
@@ -837,6 +846,10 @@ fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
     use ralph_burning::contexts::agent_execution::model::InvocationContract;
     use ralph_burning::shared::domain::BackendFamily;
 
+    // Only assert on `processed_contract_schema_value` — that's the schema
+    // codex actually writes to disk and sends to OpenAI. The static
+    // `panel_json_schema` is allowed to contain `$ref`s and `definitions`;
+    // they get inlined by the strict-mode post-processor before transport.
     for stage_id in [
         StageId::FinalReview,
         StageId::Review,
@@ -844,13 +857,6 @@ fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
         StageId::CompletionPanel,
     ] {
         for role in ["proposer", "voter", "arbiter", "aggregator", "primary"] {
-            let schema = panel_json_schema(stage_id, role);
-            if let Some((path, forbidden)) = find_strict_mode_violation(&schema, "") {
-                panic!(
-                    "panel_json_schema({stage_id:?}, {role:?}) contains '{forbidden}' at path '{path}' — gpt-5.5 strict-mode structured outputs will reject this schema. Schema was: {schema:#}"
-                );
-            }
-
             let contract = InvocationContract::Panel {
                 stage_id,
                 role: role.to_owned(),
@@ -861,6 +867,27 @@ fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
                     "processed_contract_schema_value(Panel{{{stage_id:?}, {role:?}}}, Codex) contains '{forbidden}' at path '{path}' — codex sends THIS schema to OpenAI, and gpt-5.5 will reject it. Schema was: {processed:#}"
                 );
             }
+        }
+    }
+
+    // Sanity-check stage contracts too — same rules apply when the
+    // implementer / qa / completion-judge stage payload is sent.
+    for stage_id in [
+        StageId::Planning,
+        StageId::Implementation,
+        StageId::Qa,
+        StageId::Review,
+        StageId::PlanAndImplement,
+        StageId::ApplyFixes,
+    ] {
+        let contract = InvocationContract::Stage(
+            ralph_burning::contexts::workflow_composition::contracts::contract_for_stage(stage_id),
+        );
+        let processed = processed_contract_schema_value(&contract, BackendFamily::Codex);
+        if let Some((path, forbidden)) = find_strict_mode_violation(&processed, "") {
+            panic!(
+                "processed_contract_schema_value(Stage({stage_id:?}), Codex) contains '{forbidden}' at path '{path}' — gpt-5.5 will reject this schema. Schema was: {processed:#}"
+            );
         }
     }
 }

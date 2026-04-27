@@ -2565,25 +2565,47 @@ fn resolve_refs(
     expanding: &mut std::collections::HashSet<String>,
 ) {
     if let serde_json::Value::Object(map) = node {
-        // Check if this node is a `$ref` object: exactly one key `"$ref"` with a
-        // string value starting with `"#/definitions/"`.
-        if map.len() == 1 {
-            if let Some(serde_json::Value::String(ref_str)) = map.get("$ref") {
-                if let Some(name) = ref_str.strip_prefix("#/definitions/") {
-                    // Cycle guard: if this definition is already being expanded
-                    // up the call stack, leave the $ref unresolved to prevent
-                    // infinite recursion (spec: recursive refs left unresolved).
-                    if expanding.contains(name) {
-                        return;
-                    }
-                    if let Some(def) = definitions.get(name) {
-                        let mut replacement = def.clone();
-                        expanding.insert(name.to_owned());
-                        resolve_refs(&mut replacement, definitions, expanding);
-                        expanding.remove(name);
+        // Resolve `$ref` whether or not it stands alone. After
+        // `enforce_strict_mode_schema` inlines single-element `allOf`
+        // wrappers, a previously-isolated `$ref` may now have sibling
+        // metadata (description, default) hoisted up next to it. JSON
+        // Schema 2020-12 says siblings are evaluated alongside `$ref`;
+        // OpenAI's strict mode rejects unresolved `$ref` outright. Either
+        // way, the right transform is "inline the definition, keep
+        // parent-level siblings, drop the `$ref` key."
+        if let Some(serde_json::Value::String(ref_str)) = map.get("$ref").cloned() {
+            if let Some(name) = ref_str.strip_prefix("#/definitions/") {
+                // Cycle guard: if this definition is already being expanded
+                // up the call stack, leave the `$ref` unresolved to
+                // prevent infinite recursion (spec: recursive refs left
+                // unresolved).
+                if expanding.contains(name) {
+                    return;
+                }
+                if let Some(def) = definitions.get(name) {
+                    let mut replacement = def.clone();
+                    expanding.insert(name.to_owned());
+                    resolve_refs(&mut replacement, definitions, expanding);
+                    expanding.remove(name);
+
+                    if map.len() == 1 {
+                        // Pure `$ref`: replace the whole node.
                         *node = replacement;
                         return;
                     }
+
+                    // Mixed `$ref` + siblings: merge the definition's
+                    // fields into the parent. Parent fields (set on the
+                    // field site, e.g., `description`, `default`) win over
+                    // the type-level fallbacks coming from the
+                    // definition.
+                    map.remove("$ref");
+                    if let serde_json::Value::Object(replacement_map) = replacement {
+                        for (k, v) in replacement_map {
+                            map.entry(k).or_insert(v);
+                        }
+                    }
+                    // Fall through to recurse into the merged map below.
                 }
             }
         }
