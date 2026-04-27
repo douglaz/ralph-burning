@@ -1410,6 +1410,303 @@ async fn quick_dev_review_request_changes_restarts_from_apply_fixes() {
 }
 
 #[tokio::test]
+async fn quick_dev_review_request_changes_with_only_deferred_classifications_skips_apply_fixes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-deferred-only", FlowPreset::QuickDev);
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload(
+        StageId::Review,
+        json!({
+            "outcome": "request_changes",
+            "evidence": ["covered by existing planning"],
+            "findings_or_gaps": ["work belongs elsewhere"],
+            "follow_up_or_amendments": [],
+            "classified_findings": [
+                {
+                    "body": "Covered by the existing bead.",
+                    "classification": "covered_by_existing_bead",
+                    "covered_by_bead_id": "9ni.8.5"
+                },
+                {
+                    "body": "Track separately during triage.",
+                    "classification": "propose_new_bead",
+                    "proposed_bead_summary": "Add deferred review follow-up"
+                },
+                {
+                    "body": "Observation only.",
+                    "classification": "informational_only"
+                }
+            ]
+        }),
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        vec!["plan_and_implement", "review", "final_review"],
+        entered,
+        "apply_fixes must not run for review findings deferred to terminal reconciliation"
+    );
+
+    let skipped = stage_events(&events, JournalEventType::StageSkipped, "apply_fixes");
+    assert_eq!(skipped.len(), 1, "apply_fixes skip event must be recorded");
+    assert_eq!(
+        skipped[0].details["reason"],
+        "review only has deferred non-fix classifications"
+    );
+    assert!(
+        adapter_handle.contexts_for(StageId::ApplyFixes).is_empty(),
+        "apply_fixes must not be invoked for deferred-only review findings"
+    );
+}
+
+#[tokio::test]
+async fn quick_dev_review_request_changes_with_deferred_classification_and_legacy_follow_up_runs_apply_fixes(
+) {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-deferred-plus-legacy", FlowPreset::QuickDev);
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload(
+        StageId::Review,
+        json!({
+            "outcome": "request_changes",
+            "evidence": ["covered by existing planning"],
+            "findings_or_gaps": ["work belongs elsewhere"],
+            "follow_up_or_amendments": ["fix the current-bead regression"],
+            "classified_findings": [
+                {
+                    "body": "Covered by the existing bead.",
+                    "classification": "covered_by_existing_bead",
+                    "covered_by_bead_id": "9ni.8.5"
+                }
+            ]
+        }),
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let apply_fixes_contexts = adapter_handle.contexts_for(StageId::ApplyFixes);
+    assert_eq!(
+        apply_fixes_contexts.len(),
+        1,
+        "legacy fix-now follow-up must still trigger apply_fixes"
+    );
+    assert_eq!(
+        apply_fixes_contexts[0]["remediation"]["follow_up_or_amendments"][0],
+        "fix the current-bead regression"
+    );
+}
+
+#[tokio::test]
+async fn quick_dev_review_conditionally_approved_with_only_deferred_classifications_skips_apply_fixes(
+) {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(
+        base_dir,
+        "qd-cond-approved-deferred-only",
+        FlowPreset::QuickDev,
+    );
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload(
+        StageId::Review,
+        json!({
+            "outcome": "conditionally_approved",
+            "evidence": ["covered by existing planning"],
+            "findings_or_gaps": ["work belongs elsewhere"],
+            "follow_up_or_amendments": [],
+            "classified_findings": [
+                {
+                    "body": "Covered by the existing bead.",
+                    "classification": "covered_by_existing_bead",
+                    "covered_by_bead_id": "9ni.8.5"
+                },
+                {
+                    "body": "Track separately during triage.",
+                    "classification": "propose_new_bead",
+                    "proposed_bead_summary": "Add deferred review follow-up"
+                },
+                {
+                    "body": "Observation only.",
+                    "classification": "informational_only"
+                }
+            ]
+        }),
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        vec!["plan_and_implement", "review", "final_review"],
+        entered,
+        "apply_fixes must not run for conditionally approved findings deferred to terminal reconciliation"
+    );
+
+    let skipped = stage_events(&events, JournalEventType::StageSkipped, "apply_fixes");
+    assert_eq!(skipped.len(), 1, "apply_fixes skip event must be recorded");
+    assert_eq!(
+        skipped[0].details["reason"],
+        "review only has deferred non-fix classifications"
+    );
+    assert!(
+        adapter_handle.contexts_for(StageId::ApplyFixes).is_empty(),
+        "apply_fixes must not be invoked for deferred-only conditionally approved findings"
+    );
+}
+
+#[tokio::test]
+async fn quick_dev_review_approved_with_only_deferred_classifications_skips_apply_fixes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-approved-deferred-only", FlowPreset::QuickDev);
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload(
+        StageId::Review,
+        json!({
+            "outcome": "approved",
+            "evidence": ["covered by existing planning"],
+            "findings_or_gaps": [],
+            "follow_up_or_amendments": [],
+            "classified_findings": [
+                {
+                    "body": "Covered by the existing bead.",
+                    "classification": "covered_by_existing_bead",
+                    "covered_by_bead_id": "9ni.8.5"
+                },
+                {
+                    "body": "Track separately during triage.",
+                    "classification": "propose_new_bead",
+                    "proposed_bead_summary": "Add deferred review follow-up"
+                },
+                {
+                    "body": "Observation only.",
+                    "classification": "informational_only"
+                }
+            ]
+        }),
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        vec!["plan_and_implement", "review", "final_review"],
+        entered,
+        "apply_fixes must not run for approved findings deferred to terminal reconciliation"
+    );
+
+    let skipped = stage_events(&events, JournalEventType::StageSkipped, "apply_fixes");
+    assert_eq!(skipped.len(), 1, "apply_fixes skip event must be recorded");
+    assert_eq!(
+        skipped[0].details["reason"],
+        "review only has deferred non-fix classifications"
+    );
+    assert!(
+        adapter_handle.contexts_for(StageId::ApplyFixes).is_empty(),
+        "apply_fixes must not be invoked for deferred-only approved findings"
+    );
+}
+
+#[tokio::test]
 async fn quick_dev_review_rejected_fails_run() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

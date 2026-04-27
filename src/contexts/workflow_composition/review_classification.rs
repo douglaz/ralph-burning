@@ -42,10 +42,8 @@ impl ReviewFindingClass {
         }
     }
 
-    /// Current behavior treats every class as fix-now equivalent. Later beads
-    /// will route non-default classes differently.
     pub fn triggers_restart(self) -> bool {
-        true
+        self == Self::FixCurrentBead
     }
 }
 

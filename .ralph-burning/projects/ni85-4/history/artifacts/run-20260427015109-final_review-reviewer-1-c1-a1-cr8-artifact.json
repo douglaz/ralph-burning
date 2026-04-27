@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T11:55:39.555504653Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against 26edf3340c5c84297ede274973eeba3b7085ad30, ignoring .ralph-burning runtime state. Found three fix-current correctness/safety issues.\n\n## Amendments\n\n1. src/cli/run.rs:1002 closes the bead before sync_terminal_milestone_task_with_options has proven that the terminal attempt will be reconciled. That sync can still return Ok(false) for completed runs when lineage repair is disabled or blocked (src/cli/run.rs:1578-1591) or when no repairable lineage exists (src/cli/run.rs:1630-1635). In those cases the CLI can run br update --status=closed and then report no milestone sync, leaving a stale or unreconcilable project as a closed bead without a recorded success. Gate the close behind the same lineage validation path, while preserving close-before-success ordering once the attempt is known reconcileable.\n   Classification: fix_current_bead\n   Rationale: This can corrupt the bead graph by closing work that the milestone state intentionally refused to mark complete.\n2. src/contexts/workflow_composition/engine.rs:8210-8231 still backfills follow_up_or_amendments as legacy fix_current_bead items whenever the text is not an exact match for classified_findings. Because build_queued_amendments then queues only trigger-restart items at src/contexts/workflow_composition/engine.rs:8296-8299, a reviewer can classify a finding as covered_by_existing_bead or propose_new_bead but include a semantically identical, differently worded legacy follow-up, causing apply_fixes to run anyway. Make classified_findings authoritative when it is non-empty, or otherwise prevent the legacy fallback from reclassifying deferred findings as fix-current.\n   Classification: fix_current_bead\n   Rationale: This undermines the core routing change by allowing deferred classifications to flow through the immediate fix path.\n3. src/contexts/automation_runtime/success_reconciliation.rs:1327 posts the covered_by_existing_bead comment before checking whether the bead export is safe to mutate; the only health gate is sync_own_dirty_if_beads_healthy at src/contexts/automation_runtime/success_reconciliation.rs:1340-1342, after the mutation already happened. If .beads/issues.jsonl is conflicted or malformed, reconciliation can still call br comments add and only then refuse to flush. Add a pre-mutation beads-health guard before comment_bead, matching the existing close and planned-elsewhere comment safety pattern.\n   Classification: fix_current_bead\n   Rationale: Comment reconciliation is a bead mutation and should not touch an unsafe bead graph before the guard runs.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 8
+}

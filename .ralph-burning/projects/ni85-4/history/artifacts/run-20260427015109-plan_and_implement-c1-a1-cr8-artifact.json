@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr8-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr8",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T11:49:27.845934660Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the two pending terminal reconciliation issues. The CLI terminal sync path now closes and flushes a completed bead-backed task before recording/advancing milestone success, so a `br update --status=closed` or flush failure leaves the lineage task running instead of recording succeeded milestone state. Covered-by reconciliation now uses the shared strict `br show` missing-bead detector, so only bead/issue-not-found output is treated as a skippable missing target while unrelated `not found` failures propagate as reconciliation errors.\n\n## Steps\n\n0. [Completed] Inspected the CLI terminal sync ordering, covered-by missing-target detection, existing tests, and current dirty worktree while preserving unrelated live orchestration state.\n1. [Completed] Moved completed CLI bead closure ahead of milestone success synchronization and left post-sync reconciliation responsible only for classification reconciliation and failure warnings.\n2. [Completed] Restricted covered-by missing-target handling to the shared bead/issue-not-found detector instead of broad substring matching on arbitrary `not found` output.\n3. [Completed] Added/verified regressions that a failed bead close does not record milestone success and that non-bead `not found` errors propagate instead of being skipped.\n4. [Completed] Ran targeted tests, formatting, clippy, full test suite, Nix build, whitespace validation, and attempted bead linting.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub run_sync_milestone_does_not_record_success_when_bead_close_fails -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub classification_covered_by_existing_bead_non_bead_not_found_returns_error -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- Initial full `nix develop -c cargo test --locked --features test-stub` run hit one transient structured-log capture failure; the failing test passed immediately in isolation.\n- Second full `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 8
+}

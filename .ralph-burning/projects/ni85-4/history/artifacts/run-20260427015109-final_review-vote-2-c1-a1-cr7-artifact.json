@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr7-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T10:58:59.482657146Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll four amendments identify concrete robustness/consistency defects with meaningful impact on state integrity, diagnostics correctness, or reconciliation behavior; each should be accepted.\n\n## Votes\n\n- `fr-7-cd94098f`: Accept\n  The proposed ordering is a real state-consistency bug: success is recorded to milestone before bead closure/flush, so failures in closing or follow-up sync can advance milestone state while leaving the bead open. Closing/flush-before-sync aligns terminal behavior with daemon success ordering and avoids irreconcilable split-brain states.\n- `fr-7-aa3af9db`: Accept\n  Matching `not found` broadly on `br show` output is unsafe because unrelated failures (DB corruption/path errors) can be misclassified as missing bead. That path then suppresses required comments and silently drops reconciliation work. Restricting the matcher to explicit bead/issue-not-found cases improves correctness and observability.\n- `fr-7-b7ce495f`: Accept\n  Passing `project_id` into a `task_id` parameter breaks reconciliation context and makes diagnostics attributable to the wrong task. This is a correctness and operator-debuggability defect that can mislead follow-up actions and should be corrected.\n- `fr-7-1ae84605`: Accept\n  Using `amendment.sources.len().max(1)` for final-review findings inflates `source_occurrences` when multiple sources are attached to a single finding, causing threshold aggregation to overcount and potentially alter acceptance/rejection semantics. This is a robustness issue in duplicate/frequency-based reconciliation logic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 7
+}

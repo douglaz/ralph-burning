@@ -31,6 +31,7 @@ pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 25;
 pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 25;
+pub const DEFAULT_NEW_BEAD_PROPOSAL_THRESHOLD: u32 = 2;
 pub const DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS: u32 = 10;
 pub const DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED: u32 = 2;
 pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
@@ -201,6 +202,13 @@ impl EffectiveConfig {
                 None,
                 DEFAULT_MAX_COMPLETION_ROUNDS,
             ),
+            new_bead_proposal_threshold: resolve_scalar(
+                workspace_config.workflow.new_bead_proposal_threshold,
+                project_config.workflow.new_bead_proposal_threshold,
+                None,
+                DEFAULT_NEW_BEAD_PROPOSAL_THRESHOLD,
+            )
+            .max(1),
             prompt_change_action: resolve_scalar(
                 workspace_config.workflow.prompt_change_action,
                 project_config.workflow.prompt_change_action,
@@ -875,6 +883,14 @@ impl EffectiveConfig {
                 source_for_option(
                     self.workspace_config.workflow.max_completion_rounds,
                     self.project_config.workflow.max_completion_rounds,
+                    None::<u32>,
+                ),
+            ),
+            ["workflow", "new_bead_proposal_threshold"] => (
+                ConfigValue::Integer(self.run_policy.new_bead_proposal_threshold as u64),
+                source_for_option(
+                    self.workspace_config.workflow.new_bead_proposal_threshold,
+                    self.project_config.workflow.new_bead_proposal_threshold,
                     None::<u32>,
                 ),
             ),
@@ -1728,6 +1744,7 @@ fn known_config_keys() -> Vec<String> {
         "workflow.max_qa_iterations".to_owned(),
         "workflow.max_review_iterations".to_owned(),
         "workflow.max_completion_rounds".to_owned(),
+        "workflow.new_bead_proposal_threshold".to_owned(),
         "workflow.prompt_change_action".to_owned(),
         "workflow.iterative_minimal.max_consecutive_implementer_rounds".to_owned(),
         "workflow.iterative_minimal.stable_rounds_required".to_owned(),
@@ -1848,6 +1865,12 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["workflow", "max_completion_rounds"] => apply_optional_u64(
             document,
             &["workflow", "max_completion_rounds"],
+            key,
+            raw_value,
+        )?,
+        ["workflow", "new_bead_proposal_threshold"] => apply_optional_positive_u64(
+            document,
+            &["workflow", "new_bead_proposal_threshold"],
             key,
             raw_value,
         )?,

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T09:57:43.446702126Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound one correctness gap: CLI terminal run/resume synchronization bypasses the new reconciliation behavior. I also ran `nix develop -c cargo test --locked --features test-stub --lib`, `nix develop -c cargo fmt --check`, and `nix develop -c cargo clippy --locked --features test-stub -- -D warnings`; all passed.\n\n## Amendments\n\n1. The direct CLI terminal-sync path still bypasses the new terminal classification reconciliation. Failed runs call only `reconcile_failure_sync` and return at `src/cli/run.rs:1421`/`src/cli/run.rs:1442`, while completed runs directly update milestone/controller state at `src/cli/run.rs:1467` and `src/cli/run.rs:1503` without calling `reconcile_terminal_review_classifications` or performing the required `br update ... closed`. Because `run` and `resume` call this path before returning to the operator (`src/cli/run.rs:3746`, `src/cli/run.rs:4003`), operator-driven bead-backed runs will skip covered-by-existing comments and proposed-beads records, and success will not close the bead through the new reconciliation path.\n   Classification: fix_current_bead\n   Rationale: The bead requires reconciliation after terminal success or failure before control returns to the operator; this only covers daemon reconciliation and leaves the CLI terminal path inconsistent.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 6
+}

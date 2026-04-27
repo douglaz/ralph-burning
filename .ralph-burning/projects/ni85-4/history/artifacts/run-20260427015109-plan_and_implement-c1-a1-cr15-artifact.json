@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-plan_and_implement-c1-a1-cr15-artifact",
+  "payload_id": "run-20260427015109-plan_and_implement-c1-a1-cr15",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T18:48:58.333082715Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending proposal reconciliation amendments in `src/contexts/automation_runtime/success_reconciliation.rs`. Final-review canonical amendments now carry `occurrence_count = sources.len().max(1)`, so duplicate reviewer findings merged into one canonical amendment can satisfy `workflow.new_bead_proposal_threshold`. Proposal NDJSON idempotency now gates only on existing `amendment_id`, removing normalized-summary suppression so distinct later terminal runs/current beads with new amendment ids append their own handoff records even when the summary text matches a previous record. Focused regressions cover both source-count thresholding and same-summary/new-amendment append behavior.\n\n## Steps\n\n0. [Completed] Inspected the current dirty worktree and affected terminal reconciliation code/tests while preserving live orchestration state.\n1. [Completed] Restored/verified source-counted final-review terminal findings so merged reviewer sources contribute to proposal thresholding.\n2. [Completed] Removed/verified removal of normalized-summary idempotency from existing proposed-bead record handling while preserving amendment-id replay protection.\n3. [Completed] Updated/verified focused regressions for final-review source counting and same-summary new-amendment append behavior.\n4. [Completed] Ran focused tests, formatting, clippy, full test suite, Nix build, whitespace validation, and attempted bead linting.\n5. [Skipped] Attempted bead backlog linting with `br lint`.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --locked --features test-stub classification_propose_new_bead_counts_final_review_sources -- --nocapture` passed.\n- `nix develop -c cargo test --locked --features test-stub classification_propose_new_bead_existing_summary_new_amendment_appends -- --nocapture` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo clippy --locked -- -D warnings` passed.\n- `nix develop -c cargo test --locked --features test-stub` passed.\n- `nix build` passed.\n- `git diff --check` passed.\n- `br lint` failed to start: `br: command not found`.\n\n## Outstanding Risks\n\n- `br lint` could not be run because `br` is not installed on PATH in this environment.\n- The worktree still contains live `.ralph-burning/` orchestration-state modifications, which were excluded from review scope and not intentionally edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 15
+}

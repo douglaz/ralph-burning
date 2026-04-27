@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T09:59:03.917124589Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 6/25\n\n## Accepted\n\n- `fr-6-97d91beb`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-97d91beb`\n\n**Classification:** fix_current_bead\n\nThe direct CLI terminal-sync path still bypasses the new terminal classification reconciliation. Failed runs call only `reconcile_failure_sync` and return at `src/cli/run.rs:1421`/`src/cli/run.rs:1442`, while completed runs directly update milestone/controller state at `src/cli/run.rs:1467` and `src/cli/run.rs:1503` without calling `reconcile_terminal_review_classifications` or performing the required `br update ... closed`. Because `run` and `resume` call this path before returning to the operator (`src/cli/run.rs:3746`, `src/cli/run.rs:4003`), operator-driven bead-backed runs will skip covered-by-existing comments and proposed-beads records, and success will not close the bead through the new reconciliation path.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr10-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T13:40:36.466761399Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed the branch against the requested base and found one concrete bug: CLI terminal reconciliation passes `project_id` in place of the intended task id when reconciling review classifications at terminal state. No additional definitive correctness defects were identified.\n\n## Amendments\n\n1. In `src/cli/run.rs:1112-1119`, `reconcile_cli_terminal_bead_state` calls `reconcile_terminal_review_classifications` with `task_id` incorrectly passed as `project_id` (`&project_id, &project_id`). The second argument should be the run/task id (`&task_id`/task-source), so reconciliation context, warnings, and metadata for terminal classification handling are misattributed in CLI paths. This affects correctness of diagnostics and idempotency markers tied to the task identity.\n   Classification: fix_current_bead\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 10
+}

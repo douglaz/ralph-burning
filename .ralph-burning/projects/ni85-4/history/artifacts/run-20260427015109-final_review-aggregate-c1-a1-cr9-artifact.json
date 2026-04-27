@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr9-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T12:55:46.972754345Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 9/25\n\n## Accepted\n\n- `fr-9-0e5d39d3`\n- `fr-9-73b0f6b1`\n\n## Rejected\n\nNone.\n\n## Disputed\n\n- `fr-9-4ac78d1f`\n\n## Final Accepted Amendments\n\n### `fr-9-0e5d39d3`\n\n**Classification:** fix_current_bead\n\n`src/contexts/automation_runtime/success_reconciliation.rs:1051` converts each `FinalReviewCanonicalAmendment` into exactly one terminal finding and drops its `sources`, then `src/contexts/automation_runtime/success_reconciliation.rs:1403` uses that vector length for the proposal threshold. Final review deduplicates identical reviewer proposals while preserving the individual reviewer occurrences in `sources` (`src/contexts/workflow_composition/final_review.rs:681`). With the default threshold of 2, two reviewers proposing the same `proposed_bead_summary` collapse to one canonical amendment, `occurrence_count` becomes 1, and no `proposed-beads.ndjson` record is written even though the summary appeared in two findings.\n\n### `fr-9-73b0f6b1`\n\n**Classification:** fix_current_bead\n\nDeferred-only review handling misses `ConditionallyApproved`. The remediation-trigger branch only handles `RequestChanges` with restart-triggering follow-ups (`src/contexts/workflow_composition/engine.rs:5286`), the deferred-only no-remediation branch is also `RequestChanges`-only (`src/contexts/workflow_composition/engine.rs:5473`), and `skip_next_apply_fixes_reason` only skips deferred-only `RequestChanges` (`src/contexts/workflow_composition/engine.rs:8278`). A review stage that returns `ConditionallyApproved` with only `covered_by_existing_bead`, `propose_new_bead`, or `informational_only` findings falls through to normal next-stage advancement (`src/contexts/workflow_composition/engine.rs:5649`), so QuickDev still enters `apply_fixes` and routes non-fix feedback through the implementer path.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 9
+}

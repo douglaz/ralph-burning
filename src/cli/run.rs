@@ -26,8 +26,12 @@ use rustix::process::{
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
 use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary, DependencyKind, ReadyBead};
-use crate::adapters::br_process::{BrAdapter, BrCommand, BrError, ProcessRunner};
+use crate::adapters::br_process::{
+    BrAdapter, BrCommand, BrError, BrMutationAdapter, OsProcessRunner, ProcessRunner,
+    SyncIfDirtyHealthError,
+};
 use crate::adapters::bv_process::{BvAdapter, BvCommand, BvProcessRunner, NextBeadResponse};
 use crate::adapters::fs::{
     FileSystem, FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
@@ -59,7 +63,7 @@ use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus, Tas
 use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::milestone_record::service::CompletionMilestoneDisposition;
 use crate::contexts::project_run_record::model::{
-    JournalEvent, JournalEventType, ProjectRecord, RunSnapshot, RunStatus,
+    JournalEvent, JournalEventType, ProjectRecord, RunSnapshot, RunStatus, TaskSource,
 };
 use crate::contexts::project_run_record::queries::{
     terminal_event_for_attempt, RunStatusJsonView, RunStatusView,
@@ -933,6 +937,7 @@ async fn continue_selecting_milestone_bead_if_needed<R: ProcessRunner, V: BvProc
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 async fn sync_terminal_milestone_task_and_continue_selection_with_options<
     R: ProcessRunner,
     V: BvProcessRunner,
@@ -967,6 +972,316 @@ async fn sync_terminal_milestone_task_and_continue_selection_with_options<
     Ok(synced)
 }
 
+fn cli_terminal_reconciliation_adapter_id(
+    project_id: &str,
+    task_source: Option<&TaskSource>,
+) -> String {
+    match task_source {
+        Some(source) => format!(
+            "cli-terminal-sync:{}:{}:{}",
+            project_id, source.milestone_id, source.bead_id
+        ),
+        None => format!("cli-terminal-sync:{project_id}"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation<
+    V: BvProcessRunner,
+>(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    allow_missing_lineage_repair: bool,
+    br_mutation: &BrMutationAdapter<OsProcessRunner>,
+    br_read: &BrAdapter<OsProcessRunner>,
+    bv: &BvAdapter<V>,
+    now: chrono::DateTime<Utc>,
+) -> AppResult<bool> {
+    let Some(plan) = prepare_terminal_milestone_task_sync(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        allow_missing_lineage_repair,
+    )?
+    else {
+        return Ok(false);
+    };
+
+    close_completed_cli_terminal_bead_before_milestone_success_sync(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        &plan.task_id,
+        br_mutation,
+        br_read,
+    )
+    .await?;
+
+    let task_id = plan.task_id.clone();
+    let synced = complete_terminal_milestone_task_sync(base_dir, project_id, plan)?;
+    if !synced {
+        return Ok(false);
+    }
+
+    reconcile_cli_terminal_bead_state(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        &task_id,
+        br_mutation,
+        br_read,
+    )
+    .await?;
+
+    continue_selecting_milestone_bead_if_needed(
+        base_dir,
+        project_record,
+        final_snapshot,
+        br_read,
+        bv,
+        now,
+    )
+    .await?;
+
+    Ok(true)
+}
+
+async fn close_completed_cli_terminal_bead_before_milestone_success_sync(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    task_id: &str,
+    br_mutation: &BrMutationAdapter<OsProcessRunner>,
+    br_read: &BrAdapter<OsProcessRunner>,
+) -> AppResult<()> {
+    let Some(task_source) = project_record.task_source.as_ref() else {
+        return Ok(());
+    };
+    if final_snapshot.status != RunStatus::Completed {
+        return Ok(());
+    }
+
+    let _ = latest_terminal_run_identity(base_dir, project_id, final_snapshot)?;
+    let milestone_id = MilestoneId::new(&task_source.milestone_id)?;
+    close_cli_terminal_bead(
+        base_dir,
+        &task_source.bead_id,
+        task_id,
+        br_mutation,
+        br_read,
+    )
+    .await
+    .map_err(|error| terminal_reconciliation_app_error(&milestone_id, error))
+}
+
+async fn reconcile_cli_terminal_bead_state(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    task_id: &str,
+    br_mutation: &BrMutationAdapter<OsProcessRunner>,
+    br_read: &BrAdapter<OsProcessRunner>,
+) -> AppResult<()> {
+    let Some(task_source) = project_record.task_source.as_ref() else {
+        return Ok(());
+    };
+    if !matches!(
+        final_snapshot.status,
+        RunStatus::Completed | RunStatus::Failed
+    ) {
+        return Ok(());
+    }
+
+    let (run_id, started_at) = latest_terminal_run_identity(base_dir, project_id, final_snapshot)?;
+    let milestone_id = MilestoneId::new(&task_source.milestone_id)?;
+    if final_snapshot.status == RunStatus::Failed {
+        tracing::warn!(
+            project_id = project_id.as_str(),
+            task_id = task_id,
+            bead_id = task_source.bead_id.as_str(),
+            run_id = run_id,
+            started_at = started_at.to_rfc3339(),
+            "failed bead-backed CLI run left in_progress after terminal failure reconciliation"
+        );
+    }
+
+    use crate::contexts::automation_runtime::success_reconciliation::{
+        reconcile_terminal_review_classifications, ReconciliationError,
+    };
+    reconcile_terminal_review_classifications(
+        br_mutation,
+        br_read,
+        base_dir,
+        &task_source.bead_id,
+        task_id,
+        project_id.as_str(),
+        &run_id,
+    )
+    .await
+    .map_err(|error: ReconciliationError| terminal_reconciliation_app_error(&milestone_id, error))
+    .map(|_| ())
+}
+
+fn latest_terminal_run_identity(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    final_snapshot: &RunSnapshot,
+) -> AppResult<(String, chrono::DateTime<Utc>)> {
+    let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
+    let terminal_status = final_snapshot.status;
+    let terminal_event = journal_events
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(
+                (terminal_status, &event.event_type),
+                (RunStatus::Completed, &JournalEventType::RunCompleted)
+                    | (RunStatus::Failed, &JournalEventType::RunFailed)
+            )
+        })
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: format!("projects/{}/journal.ndjson", project_id),
+            details: format!(
+                "terminal milestone reconciliation missing durable {} event",
+                match terminal_status {
+                    RunStatus::Completed => "run_completed",
+                    RunStatus::Failed => "run_failed",
+                    RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => {
+                        "terminal"
+                    }
+                }
+            ),
+        })?;
+    let run_id = terminal_event
+        .details
+        .get("run_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: format!("projects/{}/journal.ndjson", project_id),
+            details: "terminal run event is missing string run_id details".to_owned(),
+        })?;
+    let started_at = journal_events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.event_type == JournalEventType::RunResumed
+                && journal_run_id(event) == Some(run_id)
+        })
+        .or_else(|| {
+            journal_events.iter().rev().find(|event| {
+                event.event_type == JournalEventType::RunStarted
+                    && journal_run_id(event) == Some(run_id)
+            })
+        })
+        .map(|event| event.timestamp)
+        .unwrap_or(terminal_event.timestamp);
+    Ok((run_id.to_owned(), started_at))
+}
+
+async fn close_cli_terminal_bead(
+    base_dir: &std::path::Path,
+    bead_id: &str,
+    task_id: &str,
+    br_mutation: &BrMutationAdapter<OsProcessRunner>,
+    br_read: &BrAdapter<OsProcessRunner>,
+) -> Result<(), crate::contexts::automation_runtime::success_reconciliation::ReconciliationError> {
+    use crate::contexts::automation_runtime::success_reconciliation::ReconciliationError;
+
+    let already_closed = read_cli_terminal_bead_closed(br_read, bead_id, task_id).await;
+
+    if !already_closed {
+        if let Some(details) = beads_health_failure_details(&check_beads_health(base_dir)) {
+            return Err(ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!(
+                    "refusing to mutate beads because bead state is unsafe: {details}"
+                ),
+            });
+        }
+        if let Err(error) = br_mutation.update_bead_status(bead_id, "closed").await {
+            if read_cli_terminal_bead_closed(br_read, bead_id, task_id).await {
+                br_mutation
+                    .restore_pending_status_update(bead_id, "closed")
+                    .await
+                    .map_err(|restore_error| ReconciliationError::BrCloseFailed {
+                        bead_id: bead_id.to_owned(),
+                        task_id: task_id.to_owned(),
+                        details: format!(
+                            "{error}; additionally failed to restore pending closed-status mutation after observing the bead closed: {restore_error}"
+                        ),
+                    })?;
+            } else {
+                return Err(ReconciliationError::BrCloseFailed {
+                    bead_id: bead_id.to_owned(),
+                    task_id: task_id.to_owned(),
+                    details: error.to_string(),
+                });
+            }
+        }
+    }
+
+    match br_mutation.sync_own_dirty_if_beads_healthy(base_dir).await {
+        Ok(_) => Ok(()),
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            Err(ReconciliationError::BrSyncFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details,
+            })
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => Err(ReconciliationError::BrSyncFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: error.to_string(),
+        }),
+    }
+}
+
+async fn read_cli_terminal_bead_closed<R: ProcessRunner>(
+    br_read: &BrAdapter<R>,
+    bead_id: &str,
+    task_id: &str,
+) -> bool {
+    match br_read
+        .exec_json::<BrShowResponse>(&BrCommand::show(bead_id))
+        .await
+    {
+        Ok(BrShowResponse::Single(detail)) => detail.status == BeadStatus::Closed,
+        Ok(BrShowResponse::Many(details)) => details
+            .iter()
+            .any(|detail| detail.id == bead_id && detail.status == BeadStatus::Closed),
+        Err(error) => {
+            tracing::warn!(
+                bead_id = bead_id,
+                task_id = task_id,
+                error = %error,
+                "could not read bead status for CLI terminal reconciliation; proceeding with status update"
+            );
+            false
+        }
+    }
+}
+
+fn terminal_reconciliation_app_error(
+    milestone_id: &MilestoneId,
+    error: crate::contexts::automation_runtime::success_reconciliation::ReconciliationError,
+) -> AppError {
+    AppError::MilestoneOperationFailed {
+        milestone_id: milestone_id.to_string(),
+        action: "terminal-review-classification-reconciliation".to_owned(),
+        details: error.to_string(),
+    }
+}
+
+#[allow(dead_code)]
 async fn sync_terminal_milestone_task_and_continue_selection<
     R: ProcessRunner,
     V: BvProcessRunner,
@@ -1202,6 +1517,20 @@ enum MissingLineageRepairGuard {
     AmbiguousActiveAttempts,
 }
 
+struct TerminalMilestoneTaskSyncPlan {
+    task_source: TaskSource,
+    milestone_id: MilestoneId,
+    task_id: String,
+    run_id: String,
+    completion_started_at: chrono::DateTime<Utc>,
+    finished_at: chrono::DateTime<Utc>,
+    status: RunStatus,
+    outcome_detail: Option<String>,
+    failure_error_summary: Option<String>,
+    exact_attempt_already_terminal: bool,
+    reconcile_controller: bool,
+}
+
 fn sync_terminal_milestone_task_with_options(
     base_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
@@ -1209,6 +1538,26 @@ fn sync_terminal_milestone_task_with_options(
     final_snapshot: &RunSnapshot,
     allow_missing_lineage_repair: bool,
 ) -> AppResult<bool> {
+    let Some(plan) = prepare_terminal_milestone_task_sync(
+        base_dir,
+        project_id,
+        project_record,
+        final_snapshot,
+        allow_missing_lineage_repair,
+    )?
+    else {
+        return Ok(false);
+    };
+    complete_terminal_milestone_task_sync(base_dir, project_id, plan)
+}
+
+fn prepare_terminal_milestone_task_sync(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    project_record: &ProjectRecord,
+    final_snapshot: &RunSnapshot,
+    allow_missing_lineage_repair: bool,
+) -> AppResult<Option<TerminalMilestoneTaskSyncPlan>> {
     let mut final_snapshot = final_snapshot.clone();
     let _ = repair_missing_interrupted_handoff_run_failed_event_and_reload_snapshot(
         base_dir,
@@ -1216,7 +1565,7 @@ fn sync_terminal_milestone_task_with_options(
         &mut final_snapshot,
     )?;
     let Some(task_source) = project_record.task_source.as_ref() else {
-        return Ok(false);
+        return Ok(None);
     };
 
     let milestone_id = MilestoneId::new(&task_source.milestone_id)?;
@@ -1230,7 +1579,7 @@ fn sync_terminal_milestone_task_with_options(
             "workflow execution paused; the bead-linked project remains claimed for resume",
             chrono::Utc::now(),
         )?;
-        return Ok(false);
+        return Ok(None);
     }
 
     let outcome_detail = match final_snapshot.status {
@@ -1239,7 +1588,7 @@ fn sync_terminal_milestone_task_with_options(
             let detail = final_snapshot.status_summary.trim();
             (!detail.is_empty()).then(|| detail.to_owned())
         }
-        RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(false),
+        RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => return Ok(None),
     };
     let journal_events = FsJournalStore.read_journal(base_dir, project_id)?;
     let matching_lineage_run = milestone_service::find_runs_for_bead(
@@ -1294,7 +1643,7 @@ fn sync_terminal_milestone_task_with_options(
             });
             if !has_exact_lineage {
                 if !allow_missing_lineage_repair {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 if !same_named_terminal_attempt_exists || final_snapshot.status == RunStatus::Failed
                 {
@@ -1305,7 +1654,7 @@ fn sync_terminal_milestone_task_with_options(
                         attempt_started_at,
                     ) {
                         MissingLineageRepairGuard::Allow => {}
-                        MissingLineageRepairGuard::BlockedByActiveAttempt => return Ok(false),
+                        MissingLineageRepairGuard::BlockedByActiveAttempt => return Ok(None),
                         MissingLineageRepairGuard::AmbiguousActiveAttempts => {
                             return Err(AppError::CorruptRecord {
                                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
@@ -1349,7 +1698,7 @@ fn sync_terminal_milestone_task_with_options(
                 entry.project_id == project_id.as_str() && !entry.outcome.is_terminal()
             });
             let Some(entry) = repairable_entries.next() else {
-                return Ok(false);
+                return Ok(None);
             };
             if repairable_entries.next().is_some() {
                 return Err(AppError::CorruptRecord {
@@ -1412,91 +1761,176 @@ fn sync_terminal_milestone_task_with_options(
         RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
     };
 
-    if final_snapshot.status == RunStatus::Failed {
-        let failure_task_id = authoritative_failed_sync_task_id(base_dir, project_id, run_id)?;
-        let error_summary = failed_run_event
-            .and_then(journal_event_message)
-            .or(outcome_detail.as_deref())
-            .unwrap_or(final_snapshot.status_summary.as_str());
+    let failure_error_summary = if final_snapshot.status == RunStatus::Failed {
+        Some(
+            failed_run_event
+                .and_then(journal_event_message)
+                .or(outcome_detail.as_deref())
+                .unwrap_or(final_snapshot.status_summary.as_str())
+                .to_owned(),
+        )
+    } else {
+        None
+    };
+    let exact_attempt_already_terminal = final_snapshot.status == RunStatus::Completed
+        && (same_named_terminal_attempt_exists
+            || matching_lineage_run.iter().any(|entry| {
+                lineage_entry_matches_attempt(
+                    entry,
+                    project_id.as_str(),
+                    run_id,
+                    completion_started_at,
+                ) && entry.outcome.is_terminal()
+            }));
+    let reconcile_controller = if final_snapshot.status == RunStatus::Completed {
+        if exact_attempt_already_terminal {
+            match milestone_controller::load_controller(
+                &FsMilestoneControllerStore,
+                base_dir,
+                &milestone_id,
+            )? {
+                Some(controller) => controller_requires_terminal_task_sync(
+                    &controller,
+                    &task_source.bead_id,
+                    project_id.as_str(),
+                ),
+                None => true,
+            }
+        } else {
+            true
+        }
+    } else {
+        false
+    };
+    let task_id = terminal_sync_task_id(
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        project_id,
+        run_id,
+        &matching_lineage_run,
+    )?;
+
+    Ok(Some(TerminalMilestoneTaskSyncPlan {
+        task_source: task_source.clone(),
+        milestone_id,
+        task_id,
+        run_id: run_id.to_owned(),
+        completion_started_at,
+        finished_at,
+        status: final_snapshot.status,
+        outcome_detail,
+        failure_error_summary,
+        exact_attempt_already_terminal,
+        reconcile_controller,
+    }))
+}
+
+fn terminal_sync_task_id(
+    base_dir: &std::path::Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &crate::shared::domain::ProjectId,
+    run_id: &str,
+    matching_lineage_run: &[crate::contexts::milestone_record::model::TaskRunEntry],
+) -> AppResult<String> {
+    if let Some(task_id) = matching_lineage_run
+        .iter()
+        .rev()
+        .find(|entry| {
+            entry.project_id == project_id.as_str()
+                && entry.run_id.as_deref() == Some(run_id)
+                && entry
+                    .task_id
+                    .as_deref()
+                    .is_some_and(|task_id| !task_id.is_empty())
+        })
+        .and_then(|entry| entry.task_id.clone())
+    {
+        return Ok(task_id);
+    }
+
+    if let Some(task_id) = authoritative_sync_task_id(base_dir, project_id, run_id)? {
+        return Ok(task_id);
+    }
+
+    if let Some(controller) =
+        milestone_controller::load_controller(&FsMilestoneControllerStore, base_dir, milestone_id)?
+    {
+        if controller.active_bead_id.as_deref() == Some(bead_id) {
+            if let Some(task_id) = controller
+                .active_task_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|task_id| !task_id.is_empty())
+            {
+                return Ok(task_id.to_owned());
+            }
+        }
+    }
+
+    Ok(project_id.to_string())
+}
+
+fn complete_terminal_milestone_task_sync(
+    base_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    plan: TerminalMilestoneTaskSyncPlan,
+) -> AppResult<bool> {
+    if plan.status == RunStatus::Failed {
         reconcile_failure_sync(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
             &FsMilestoneControllerStore,
             base_dir,
-            &task_source.bead_id,
-            failure_task_id.as_deref().unwrap_or(""),
+            &plan.task_source.bead_id,
+            &plan.task_id,
             project_id.as_str(),
-            milestone_id.as_str(),
-            run_id,
-            task_source.plan_hash.as_deref(),
-            completion_started_at,
-            finished_at,
-            error_summary,
+            plan.milestone_id.as_str(),
+            &plan.run_id,
+            plan.task_source.plan_hash.as_deref(),
+            plan.completion_started_at,
+            plan.finished_at,
+            plan.failure_error_summary
+                .as_deref()
+                .unwrap_or("workflow failed"),
         )
         .map_err(|error| AppError::MilestoneOperationFailed {
-            milestone_id: milestone_id.to_string(),
+            milestone_id: plan.milestone_id.to_string(),
             action: "sync".to_owned(),
             details: error.to_string(),
         })?;
         return Ok(true);
     }
 
-    let exact_attempt_already_terminal = same_named_terminal_attempt_exists
-        || matching_lineage_run.iter().any(|entry| {
-            lineage_entry_matches_attempt(entry, project_id.as_str(), run_id, completion_started_at)
-                && entry.outcome.is_terminal()
-        });
-    let reconcile_controller = if exact_attempt_already_terminal {
-        match milestone_controller::load_controller(
+    if plan.reconcile_controller {
+        milestone_controller::sync_controller_task_reconciling(
             &FsMilestoneControllerStore,
             base_dir,
-            &milestone_id,
-        )? {
-            Some(controller) => controller_requires_terminal_task_sync(
-                &controller,
-                &task_source.bead_id,
-                project_id.as_str(),
-            ),
-            None => true,
-        }
-    } else {
-        true
-    };
-
-    if reconcile_controller {
-        match final_snapshot.status {
-            RunStatus::Completed => {
-                milestone_controller::sync_controller_task_reconciling(
-                    &FsMilestoneControllerStore,
-                    base_dir,
-                    &milestone_id,
-                    &task_source.bead_id,
-                    project_id.as_str(),
-                    "workflow execution completed; reconciling milestone state",
-                    finished_at,
-                )?;
-            }
-            RunStatus::Failed => unreachable!(),
-            RunStatus::NotStarted | RunStatus::Running | RunStatus::Paused => unreachable!(),
-        }
+            &plan.milestone_id,
+            &plan.task_source.bead_id,
+            project_id.as_str(),
+            "workflow execution completed; reconciling milestone state",
+            plan.finished_at,
+        )?;
     }
 
-    if exact_attempt_already_terminal {
+    if plan.exact_attempt_already_terminal {
         milestone_service::repair_task_run_with_disposition(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
             base_dir,
-            &milestone_id,
-            &task_source.bead_id,
+            &plan.milestone_id,
+            &plan.task_source.bead_id,
             project_id.as_str(),
-            run_id,
-            task_source.plan_hash.as_deref(),
-            completion_started_at,
+            &plan.run_id,
+            plan.task_source.plan_hash.as_deref(),
+            plan.completion_started_at,
             TaskRunOutcome::Succeeded,
-            outcome_detail,
-            finished_at,
+            plan.outcome_detail,
+            plan.finished_at,
             CompletionMilestoneDisposition::ReconcileFromLineage,
         )?;
     } else {
@@ -1505,22 +1939,25 @@ fn sync_terminal_milestone_task_with_options(
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
             base_dir,
-            &milestone_id,
-            &task_source.bead_id,
+            &plan.milestone_id,
+            &plan.task_source.bead_id,
             project_id.as_str(),
-            run_id,
-            task_source.plan_hash.as_deref(),
+            &plan.run_id,
+            plan.task_source.plan_hash.as_deref(),
             TaskRunOutcome::Succeeded,
-            outcome_detail.as_deref(),
-            completion_started_at,
-            finished_at,
+            plan.outcome_detail.as_deref(),
+            plan.completion_started_at,
+            plan.finished_at,
             CompletionMilestoneDisposition::ReconcileFromLineage,
         )?;
     }
 
-    if final_snapshot.status == RunStatus::Completed && reconcile_controller {
-        let snapshot =
-            milestone_service::load_snapshot(&FsMilestoneSnapshotStore, base_dir, &milestone_id)?;
+    if plan.reconcile_controller {
+        let snapshot = milestone_service::load_snapshot(
+            &FsMilestoneSnapshotStore,
+            base_dir,
+            &plan.milestone_id,
+        )?;
         let (next_state, reason) = if snapshot.status == MilestoneStatus::Completed {
             (
                 MilestoneControllerState::Completed,
@@ -1535,9 +1972,9 @@ fn sync_terminal_milestone_task_with_options(
         milestone_controller::sync_controller_state(
             &FsMilestoneControllerStore,
             base_dir,
-            &milestone_id,
+            &plan.milestone_id,
             milestone_controller::ControllerTransitionRequest::new(next_state, reason),
-            finished_at,
+            plan.finished_at,
         )?;
     }
 
@@ -1635,7 +2072,7 @@ fn journal_event_message(event: &JournalEvent) -> Option<&str> {
         .filter(|message| !message.is_empty())
 }
 
-fn authoritative_failed_sync_task_id(
+fn authoritative_sync_task_id(
     base_dir: &std::path::Path,
     project_id: &ProjectId,
     run_id: &str,
@@ -3741,19 +4178,29 @@ pub(crate) async fn execute_start(
     .await;
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    let br_mutation = BrMutationAdapter::with_adapter_id(
+        BrAdapter::<OsProcessRunner>::new().with_working_dir(current_dir.clone()),
+        cli_terminal_reconciliation_adapter_id(
+            project_id.as_str(),
+            project_record.task_source.as_ref(),
+        ),
+    );
     let br = BrAdapter::new().with_working_dir(current_dir.clone());
     let bv = BvAdapter::new().with_working_dir(current_dir.clone());
-    let milestone_sync_result = sync_terminal_milestone_task_and_continue_selection(
-        &current_dir,
-        &project_id,
-        &project_record,
-        &final_snapshot,
-        &br,
-        &bv,
-        chrono::Utc::now(),
-    )
-    .await
-    .map_err(|error| decorate_sync_error(error, false));
+    let milestone_sync_result =
+        sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation(
+            &current_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            true,
+            &br_mutation,
+            &br,
+            &bv,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|error| decorate_sync_error(error, false));
 
     // Test-only injection seam: delete the writer lock file before close()
     // to exercise close-failure handling at the CLI level.
@@ -3998,20 +4445,29 @@ pub(crate) async fn execute_resume(
             &project_record,
             &final_snapshot,
         )?;
+    let br_mutation = BrMutationAdapter::with_adapter_id(
+        BrAdapter::<OsProcessRunner>::new().with_working_dir(current_dir.clone()),
+        cli_terminal_reconciliation_adapter_id(
+            project_id.as_str(),
+            project_record.task_source.as_ref(),
+        ),
+    );
     let br = BrAdapter::new().with_working_dir(current_dir.clone());
     let bv = BvAdapter::new().with_working_dir(current_dir.clone());
-    let milestone_sync_result = sync_terminal_milestone_task_and_continue_selection_with_options(
-        &current_dir,
-        &project_id,
-        &project_record,
-        &final_snapshot,
-        allow_missing_lineage_repair,
-        &br,
-        &bv,
-        chrono::Utc::now(),
-    )
-    .await
-    .map_err(|error| decorate_sync_error(error, true));
+    let milestone_sync_result =
+        sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation(
+            &current_dir,
+            &project_id,
+            &project_record,
+            &final_snapshot,
+            allow_missing_lineage_repair,
+            &br_mutation,
+            &br,
+            &bv,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|error| decorate_sync_error(error, true));
 
     // Remove the matching PID record before releasing the writer lease so an
     // immediately succeeding run cannot rewrite `run.pid` in the narrow window
@@ -4444,13 +4900,22 @@ pub(crate) async fn execute_sync_milestone(emit_output: bool) -> AppResult<()> {
     let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
     let final_snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
 
+    let br_mutation = BrMutationAdapter::with_adapter_id(
+        BrAdapter::<OsProcessRunner>::new().with_working_dir(current_dir.clone()),
+        cli_terminal_reconciliation_adapter_id(
+            project_id.as_str(),
+            project_record.task_source.as_ref(),
+        ),
+    );
     let br = BrAdapter::new().with_working_dir(current_dir.clone());
     let bv = BvAdapter::new().with_working_dir(current_dir.clone());
-    let synced = sync_terminal_milestone_task_and_continue_selection(
+    let synced = sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation(
         &current_dir,
         &project_id,
         &project_record,
         &final_snapshot,
+        true,
+        &br_mutation,
         &br,
         &bv,
         chrono::Utc::now(),
@@ -4480,8 +4945,9 @@ mod tests {
         resume_attempt_has_exact_lineage, run_with_termination_signal_waiter,
         select_next_milestone_bead, select_next_milestone_bead_from_recommendation,
         sync_terminal_milestone_task, sync_terminal_milestone_task_and_continue_selection,
-        sync_terminal_milestone_task_with_options, MilestoneControllerExecutionOrigin,
-        ProjectMilestoneControllerRuntime, RunSignalCleanupContext, RunSignalCleanupOrigin,
+        sync_terminal_milestone_task_with_options, terminal_sync_task_id,
+        MilestoneControllerExecutionOrigin, ProjectMilestoneControllerRuntime,
+        RunSignalCleanupContext, RunSignalCleanupOrigin,
     };
     use chrono::{TimeZone, Utc};
     use std::collections::BTreeMap;
@@ -4510,7 +4976,7 @@ mod tests {
         self as milestone_controller, MilestoneControllerResumePort,
     };
     use crate::contexts::milestone_record::model::{
-        MilestoneEventType, MilestoneStatus, TaskRunOutcome,
+        MilestoneEventType, MilestoneId, MilestoneStatus, TaskRunEntry, TaskRunOutcome,
     };
     use crate::contexts::milestone_record::service::{
         create_milestone, load_plan_bundle, load_snapshot, persist_plan, read_journal,
@@ -6484,6 +6950,37 @@ mod tests {
         // bv/br should never be called since the plan couldn't even be loaded.
         assert_eq!(bv.calls().len(), 0);
         assert_eq!(br.calls().len(), 0);
+    }
+
+    #[test]
+    fn terminal_sync_task_id_prefers_lineage_task_id_over_project_id() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let task_id = terminal_sync_task_id(
+            base_dir,
+            &milestone_id,
+            "ms-alpha.bead-2",
+            &project_id,
+            "run-1",
+            &[TaskRunEntry {
+                milestone_id: "ms-alpha".to_owned(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                project_id: "bead-run".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+                task_id: Some("task-daemon".to_owned()),
+            }],
+        )
+        .expect("resolve task id");
+
+        assert_eq!(task_id, "task-daemon");
     }
 
     #[test]

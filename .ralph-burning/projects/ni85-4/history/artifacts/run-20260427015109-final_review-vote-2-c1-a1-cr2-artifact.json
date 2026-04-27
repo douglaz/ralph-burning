@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T04:41:58.719448176Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll seven amendments identify concrete defects aligned with current code paths; I accept all of them.\n\n## Votes\n\n- `fr-2-1417c860`: Accept\n  `ReviewFindingClass::triggers_restart()` currently returns `true` for every variant and `partition_final_review_amendments_by_route` unconditionally pushes every accepted amendment into `restart_queue`. This guarantees non-fix classes are treated as fix-now restart work and are not routed separately.\n- `fr-2-fbb1acf7`: Accept\n  `verify_planned_elsewhere_after_success` only handles legacy planned-elsewhere verification and `reconstruct_missing_pe_mappings` explicitly skips non-`FixCurrentBead` classes, so covered-by amendments are not reconstructed into target comments. The legacy comment text also lacks an amendment_id/run marker, so idempotent target posting is not achieved.\n- `fr-2-6472393d`: Accept\n  `reconcile_proposed_beads_after_success` directly calls `handle_propose_new_bead`, and that handler creates/mutates beads plus dependency links. There is no NDJSON proposal handoff, no threshold gating pipeline in this path, and no proposal summary grouping implemented there.\n- `fr-2-cf0e6f80`: Accept\n  `reconcile_failure_sync` is scoped to failure/journal lineage accounting and does not inspect recorded final-review classifications or covered/proposed side effects. A terminal `RunFailed` can therefore leave non-fix final-review outcomes unreconciled.\n- `fr-2-b3bcff0a`: Accept\n  `WorkflowSettings` has no `new_bead_proposal_threshold` field, `known_config_keys()` omits `workflow.new_bead_proposal_threshold`, and `apply_to_document` has no setter branch. As a result, this setting is not settable/gettable through config and cannot drive proposal threshold behavior.\n- `fr-2-f08079ce`: Accept\n  On replay, `reconstruct_missing_pe_mappings` drops `CoveredByExistingBead` unless legacy planned-elsewhere, and planned-elsewhere comment creation uses fixed text without amendment/run identifiers. This prevents idempotent, covered-by-specific target-bead comment reconciliation at terminal replay.\n- `fr-2-1df65d88`: Accept\n  The success path filters only `AmendmentClassification::ProposeNewBead` and then executes creation directly via `handle_propose_new_bead`, which mutates Br state immediately. That is follow-up action behavior, not proposal handoff via `proposed-beads.ndjson`.\n- `fr-2-d0a81694`: Accept\n  The proposal processing loop is per-amendment and independent; there is no grouping/normalization/counting of `proposed_bead_summary`, no N-of threshold check, and no read/write of an NDJSON proposal ledger keyed by `amendment_id`. This leaves threshold semantics and rerun idempotency unimplemented.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

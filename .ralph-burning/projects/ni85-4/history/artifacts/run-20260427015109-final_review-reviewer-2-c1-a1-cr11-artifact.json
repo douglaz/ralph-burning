@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr11-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T14:48:36.747064058Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound one correctness-risk issue: CLI terminal reconciliation currently records project id as task_id in terminal reconciliation calls, reducing accuracy of reconciliation diagnostics and task-level tracing. This should be replaced with a real task identifier (or task-run identifier derived from terminal run data) where available.\n\n## Amendments\n\n1. The CLI terminal path still passes `project_id` as the `task_id` argument when invoking `reconcile_terminal_review_classifications` (and the downstream failure/success error path uses the same context), so all reconciliation diagnostics/sync error context is attached to the project instead of the concrete task execution. In `sync` logs this causes incorrect traceability and can make post-failure/operator forensics ambiguous when multiple tasks share a project/ bead context.\n   Classification: fix_current_bead\n   Rationale: In `src/cli/run.rs` this function currently has no task-scoped id to thread through, and the code uses `project_id` as a fallback in both parameters at call site.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 11
+}

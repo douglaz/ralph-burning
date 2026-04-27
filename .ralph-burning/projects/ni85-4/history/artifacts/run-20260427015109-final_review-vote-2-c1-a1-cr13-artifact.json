@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr13-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T17:02:31.010565526Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nThis amendment is technically correct and should be accepted. It identifies a real aggregation bug where proposal thresholding is driven by per-source counts instead of per-finding counts, which can produce false positives under the current contract.\n\n## Votes\n\n- `fr-13-b98b7c57`: Accept\n  `occurrence_count` must reflect number of findings for a proposed_bead_summary, not number of sources within one finding. Using `sources.len().max(1)` inflates counts for multi-source amendments and can trigger proposal output at threshold 2 with only one amendment, violating the spec that requires N-or-more findings.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 13
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr6-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T09:51:41.240519420Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed all branch-scoped changes against the requested full-state diff and no correctness/safety issues were found. The reconciliation and classification routing changes align with the contract: terminal findings are reconciled per path, failures and thresholds are idempotent, and non-restart classes are correctly deferred without auto-created follow-ups.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 6
+}

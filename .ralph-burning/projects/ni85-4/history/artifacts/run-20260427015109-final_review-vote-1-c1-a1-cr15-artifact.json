@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T18:58:58.072876013Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the proposed amendment because the current routing can send an approved review with only non-restart classified findings into ApplyFixes despite having nothing current-bead-scoped to remediate.\n\n## Votes\n\n- `fr-15-0c185672`: Accept\n  The code confirms the defect: validation_follow_ups() includes all classified findings, while build_queued_amendments()/build_recorded_follow_ups() later filter to classifications where triggers_restart() is true. skip_next_apply_fixes_reason() only handles Approved when both findings and follow-ups are empty, and its deferred-only branch excludes Approved. Therefore an Approved review containing only informational, covered-by-existing-bead, or propose-new-bead findings will not be skipped and can enter ApplyFixes with no actionable current-bead fix. Extending the deferred/no-restart skip to Approved outcomes is correct and aligns the routing with the classification contract.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 15
+}

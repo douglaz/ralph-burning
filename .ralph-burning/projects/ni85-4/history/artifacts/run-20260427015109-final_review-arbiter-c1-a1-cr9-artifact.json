@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-arbiter-c1-a1-cr9-artifact",
+  "payload_id": "run-20260427015109-final_review-arbiter-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T12:55:46.942578546Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nRejected the disputed amendment because the CLI flow intentionally uses `project_id` as its task-scoped controller identity, while daemon flows use daemon task ids separately.\n\n## Rulings\n\n- `fr-9-4ac78d1f`: Reject\n  The evidence favors the rejecting reviewer. In the CLI milestone path, the task identifier is intentionally the project id: controller setup and sync calls pass `project_id.as_str()` as the controller task id, and `ProjectMilestoneControllerRuntime::task_status` resolves that task id back into a `ProjectId`. `TaskSource` carries milestone and bead ids but no separate task id. The daemon path separately passes the real daemon `task.task_id`, showing the two contexts are deliberately distinct. Also, the cited reconciliation argument is used for error/tracing context, while Br pending mutation identity comes from the adapter id, which the CLI already builds from project/milestone/bead context. This is therefore not a demonstrated mislabeling defect.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 9
+}

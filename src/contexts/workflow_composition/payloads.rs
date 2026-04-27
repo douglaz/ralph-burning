@@ -122,20 +122,35 @@ pub struct ClassifiedFinding {
 impl From<ClassifiedFindingWire> for ClassifiedFinding {
     fn from(raw: ClassifiedFindingWire) -> Self {
         let mut classification = raw.classification.unwrap_or_default();
-        let covered_by_bead_id = raw
-            .covered_by_bead_id
-            .or_else(|| raw.mapped_to_bead_id.clone());
+        let covered_by_bead_id = normalize_required_classification_field(
+            raw.covered_by_bead_id.as_deref(),
+            "covered_by_bead_id",
+        )
+        .or_else(|| {
+            normalize_required_classification_field(
+                raw.mapped_to_bead_id.as_deref(),
+                "mapped_to_bead_id",
+            )
+        });
+        let mapped_to_bead_id = normalize_required_classification_field(
+            raw.mapped_to_bead_id.as_deref(),
+            "mapped_to_bead_id",
+        );
+        let proposed_bead_summary = normalize_required_classification_field(
+            raw.proposed_bead_summary.as_deref(),
+            "proposed_bead_summary",
+        );
 
         match classification {
             ReviewFindingClass::CoveredByExistingBead if covered_by_bead_id.is_none() => {
                 tracing::warn!(
-                    "covered_by_existing_bead review finding missing covered_by_bead_id; falling back to fix_current_bead"
+                    "covered_by_existing_bead review finding missing nonblank covered_by_bead_id; falling back to fix_current_bead"
                 );
                 classification = ReviewFindingClass::FixCurrentBead;
             }
-            ReviewFindingClass::ProposeNewBead if raw.proposed_bead_summary.is_none() => {
+            ReviewFindingClass::ProposeNewBead if proposed_bead_summary.is_none() => {
                 tracing::warn!(
-                    "propose_new_bead review finding missing proposed_bead_summary; falling back to fix_current_bead"
+                    "propose_new_bead review finding missing nonblank proposed_bead_summary; falling back to fix_current_bead"
                 );
                 classification = ReviewFindingClass::FixCurrentBead;
             }
@@ -146,9 +161,25 @@ impl From<ClassifiedFindingWire> for ClassifiedFinding {
             body: raw.body,
             classification,
             covered_by_bead_id,
-            mapped_to_bead_id: raw.mapped_to_bead_id,
-            proposed_bead_summary: raw.proposed_bead_summary,
+            mapped_to_bead_id,
+            proposed_bead_summary,
         }
+    }
+}
+
+fn normalize_required_classification_field(
+    value: Option<&str>,
+    field_name: &str,
+) -> Option<String> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        tracing::warn!(
+            field = field_name,
+            "review finding classification field is blank after trimming"
+        );
+        None
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 
@@ -163,8 +194,8 @@ pub struct ValidationPayload {
     pub findings_or_gaps: Vec<String>,
     pub follow_up_or_amendments: Vec<String>,
     /// Classified findings for milestone-aware review stages. When present,
-    /// classification metadata is preserved for downstream routing while all
-    /// findings remain fix-now equivalent in the current engine.
+    /// only fix-current findings are queued for immediate remediation; other
+    /// classifications are preserved for terminal reconciliation.
     ///
     /// When absent (non-milestone mode or older LLM output), all items in
     /// `follow_up_or_amendments` are treated as fix-now for backward compat.

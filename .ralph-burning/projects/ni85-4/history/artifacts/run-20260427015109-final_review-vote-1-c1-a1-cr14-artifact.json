@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-1-c1-a1-cr14-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-1-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T18:08:52.118062925Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted both amendments. Each identifies a real proposed-bead reconciliation defect that can drop valid reviewer evidence or handoff records.\n\n## Votes\n\n- `fr-14-bdf15f64`: Accept\n  Canonicalizing duplicate final-review proposals is correct for voting identity, but reconciliation then ignores the preserved sources and counts only one TerminalReviewFinding. That means exact agreement from two reviewers can fail a threshold that less exact duplicate summaries would meet, so valid independent evidence is lost.\n- `fr-14-984575b1`: Accept\n  Skipping by normalized summary is broader than idempotency by amendment_id. Summaries are lossy and can recur across distinct runs, beads, or amendments, so this can silently drop source_run_id/current_bead_id/count provenance for a new threshold-met proposal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 14
+}

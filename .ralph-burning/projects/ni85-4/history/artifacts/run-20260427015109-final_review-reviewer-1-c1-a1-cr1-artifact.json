@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T03:51:42.287406212Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo in-scope branch changes found to review. HEAD is at the specified fork point, git diff against 26edf3340c5c84297ede274973eeba3b7085ad30 is empty, and the only worktree entries are ignored live orchestration state under .ralph-burning/projects/ni85-4/.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

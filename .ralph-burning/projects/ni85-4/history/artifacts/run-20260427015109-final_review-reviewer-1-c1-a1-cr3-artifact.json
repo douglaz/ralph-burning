@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T06:23:23.144915688Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound three correctness issues in terminal classification reconciliation: incomplete finding coverage, incorrect proposal threshold counting, and non-fatal comment persistence failures.\n\n## Amendments\n\n1. src/contexts/automation_runtime/success_reconciliation.rs:1070 and :1084 restrict terminal reconciliation to the max completion_round `StageId::FinalReview` aggregate. This drops recorded non-fix findings from normal `review` stages, which the engine now explicitly defers without remediation at src/contexts/workflow_composition/engine.rs:5473, and it also drops non-fix final-review findings from earlier completion rounds once a later round completes. The reconciler needs to walk all committed review/final_review findings for the run, with per-round latest aggregate selection where relevant, instead of only the latest final-review round.\n   Classification: fix_current_bead\n   Rationale: Otherwise accepted `covered_by_existing_bead` and `propose_new_bead` findings can be silently lost at terminal state.\n2. src/contexts/automation_runtime/success_reconciliation.rs:1289 counts `amendments.len()` for the proposal threshold, but final-review aggregation canonicalizes duplicate reviewer findings into one `FinalReviewCanonicalAmendment` with multiple `sources`. With threshold=2, two reviewers can raise the same proposed_bead_summary and still produce a single canonical amendment, so no NDJSON record is written even though the same summary appeared in two findings. Count the underlying finding/source occurrences for each summary, not just canonical amendment rows.\n   Classification: fix_current_bead\n   Rationale: This breaks the required threshold gating semantics for common duplicate-reviewer agreement cases.\n3. src/contexts/automation_runtime/success_reconciliation.rs:1226 and :1242 swallow `br comments add` and `br sync --flush-only` failures with only warnings. The only specified skip path is a missing target bead; other mutation or flush failures leave the target bead without the required idempotent comment while terminal reconciliation still reports success and will not reliably retry. Return a reconciliation error for comment/sync failures after the target bead has been found.\n   Classification: fix_current_bead\n   Rationale: A transient br failure can permanently lose the covered-by-existing-bead handoff comment.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

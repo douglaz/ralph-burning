@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr3-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T06:25:17.594321743Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAll four amendments target concrete reconciliation correctness and robustness regressions in terminal final-review handling, with clear failure modes and practical fixes; I accept all proposed changes.\n\n## Votes\n\n- `fr-3-bce5a1b1`: Accept\n  Limiting terminal reconciliation to only the latest FinalReview aggregate can silently drop deferred non-fix findings from standard review stages and earlier-round findings, so state can be incomplete and post-run actions (like coverage tracking/comments) can miss required items. Processing all committed review/final_review findings with per-round latest selection is the correct model.\n- `fr-3-6e395bc0`: Accept\n  Using canonical amendment row count for threshold checks undercounts multi-source duplicates because duplicate finding content is merged into one canonical amendment. Counting underlying source/finding occurrences preserves the intended quorum semantics and avoids false negatives at threshold boundaries.\n- `fr-3-dc280e72`: Accept\n  Suppressing comment/sync failures after a target bead is found creates silent partial success: reconciliation can return success without durable idempotent comment state. Returning an error for these mutation/flush failures is necessary for reliability and retryability.\n- `fr-3-0587662a`: Accept\n  Substring matching on comment text can incorrectly deduplicate by matching unrelated content containing the amendment id token, causing missed linking comments and hidden reconciliation steps. This is a concrete false-positive risk and should be replaced with a structured exact-match check.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 3
+}

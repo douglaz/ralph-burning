@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-arbiter-c1-a1-cr7-artifact",
+  "payload_id": "run-20260427015109-final_review-arbiter-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T11:04:14.775826693Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth disputed amendments are rejected: reviewer-source counting is an explicit final-review threshold semantic, and the CLI reconciliation path intentionally uses project id as its task identity.\n\n## Rulings\n\n- `fr-7-1ae84605`: Reject\n  The behavior is intentional. `FinalReviewCanonicalAmendment.sources` represents the independent reviewer occurrences that were collapsed into one canonical amendment, and `TerminalReviewFinding::from_final_review` preserves that occurrence count. The dedicated test `classification_propose_new_bead_counts_final_review_sources` expects one final-review amendment with two reviewer sources to satisfy the default proposal threshold and write a record with `count == 2`, so treating sources as multiple occurrences is established semantics rather than an overcount bug.\n- `fr-7-b7ce495f`: Reject\n  The CLI terminal path does not have a separate daemon task id in `TaskSource`; it stores milestone and bead metadata only. Existing CLI controller logic consistently uses the project id as the active task identity: `prepare_milestone_controller_for_execution` claims with `project_id.as_str()`, `sync_terminal_milestone_task_with_options` reconciles controller state with `project_id.as_str()`, and `controller_requires_terminal_task_sync` compares `active_task_id` to that project id. Passing `project_id` into the shared reconciliation `task_id` context is therefore consistent with the CLI identity model, not evidence of misattributed diagnostics.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 7
+}

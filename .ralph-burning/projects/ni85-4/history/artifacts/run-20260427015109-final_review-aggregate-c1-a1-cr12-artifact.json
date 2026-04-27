@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427015109-final_review-aggregate-c1-a1-cr12-artifact",
+  "payload_id": "run-20260427015109-final_review-aggregate-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T16:05:32.592004746Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 12/25\n\n## Accepted\n\n- `fr-12-5ad51964`\n- `fr-12-44266bfb`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-12-5ad51964`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/automation_runtime/success_reconciliation.rs:1301 only skips covered_by_existing_bead when the raw target string exactly equals the active bead_id, but the code then resolves the target with br show and posts the comment to detail.id at src/contexts/automation_runtime/success_reconciliation.rs:1346 without re-checking that the resolved bead is not the active bead. Because this repo supports short/dotted bead aliases elsewhere, a reviewer can provide an alias for the current bead that does not string-match bead_id, and reconciliation will still mutate the current bead, violating the explicit \"Do NOT modify the current bead\" requirement. Add a post-resolution guard against detail.id matching the active bead, ideally using the same canonical/alias matching semantics used by milestone bead refs, before checking comments or calling comment_bead.\n\n### `fr-12-44266bfb`\n\n**Classification:** fix_current_bead\n\nIn `src/contexts/automation_runtime/success_reconciliation.rs:1446-1453`, `reconcile_proposed_bead_records` treats a summary bucket as already reconciled if it finds a single existing `amendment_id` match (`min()` of the group). That only suppresses duplicates when that exact representative ID was written before, so the same `proposed_bead_summary` can be written repeatedly across retries/runs when IDs differ (e.g., new payload run IDs). This causes duplicate entries in `proposed-beads.ndjson` even though proposal idempotency is intended at the handoff level.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 12
+}

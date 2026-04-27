@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr10-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T13:42:39.854629783Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound two reconciliation edge-case issues: covered-by idempotent replays can still sync/fail, and proposal reconciliation touches proposed-beads.ndjson before knowing a write is needed.\n\n## Amendments\n\n1. In src/contexts/automation_runtime/success_reconciliation.rs:1313-1342, a covered_by_existing_bead finding that already has its amendment_id marker is supposed to be skipped, but the code increments existing_markers_seen and then calls sync_own_dirty_if_beads_healthy when existing_markers_seen > 0. A pure idempotent replay can therefore fail on unrelated pending br mutation state even though it posted no comment. Existing markers alone should not force a sync; only flush after posting a comment or when this adapter has its own recovered pending mutation.\n   Classification: fix_current_bead\n   Rationale: Violates the required comment idempotency path and can block terminal reconciliation replays.\n2. In src/contexts/automation_runtime/success_reconciliation.rs:1386-1391, reconcile_proposed_bead_records reads proposed-beads.ndjson before it filters propose_new_bead groups and applies the threshold at 1393-1412. That means fix_current_bead/informational_only runs, or below-threshold proposals, can fail on an unrelated proposed-beads.ndjson I/O error even though those paths should be no-op/no-write. Build the proposal groups first and return before reading the file unless at least one group meets threshold.\n   Classification: fix_current_bead\n   Rationale: Preserves the required no-op and below-threshold behavior under existing file I/O problems.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 10
+}

@@ -1055,11 +1055,13 @@ fn write_show_bead_script_with_default_list(
     bead_id: &str,
     show_payload_json: &str,
 ) -> std::path::PathBuf {
+    let call_log = base_dir.join("br-calls.log");
     write_editor_script(
         base_dir,
         "br",
         &format!(
             r#"#!/bin/sh
+printf '%s\n' "$*" >> '{call_log}'
 if [ "$1" = "update" ]; then
 echo "Updated"
 exit 0
@@ -1090,6 +1092,7 @@ exit 1
             bead_id = bead_id,
             show_payload_json = show_payload_json,
             list_payload = default_br_list_response(),
+            call_log = call_log.display(),
         ),
     )
 }
@@ -15693,6 +15696,7 @@ fn run_sync_milestone_repairs_completed_bead_backed_project() {
 
     let sync = Command::new(binary())
         .args(["run", "sync-milestone"])
+        .env("PATH", &path)
         .current_dir(temp_dir.path())
         .output()
         .expect("run sync-milestone");
@@ -15705,6 +15709,459 @@ fn run_sync_milestone_repairs_completed_bead_backed_project() {
     let repaired_task_runs = fs::read_to_string(&task_runs_path).expect("read repaired task-runs");
     assert!(repaired_task_runs.contains("\"outcome\":\"succeeded\""));
     assert!(repaired_task_runs.contains("\"finished_at\":\"2026-04-01T10:15:00Z\""));
+
+    let br_calls = fs::read_to_string(temp_dir.path().join("br-calls.log")).expect("read br calls");
+    assert!(
+        br_calls.contains("update ms-alpha.bead-2 --status=closed"),
+        "direct CLI terminal sync must close the completed bead through br update; calls:\n{br_calls}"
+    );
+    assert!(
+        br_calls.contains("sync --flush-only"),
+        "direct CLI terminal sync must flush the bead close; calls:\n{br_calls}"
+    );
+}
+
+#[test]
+fn run_sync_milestone_does_not_record_success_when_bead_close_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-close-fails",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let ms_root = milestone_root(temp_dir.path(), "ms-alpha");
+    let _ = fs::remove_file(ms_root.join("controller.json"));
+    let _ = fs::remove_file(ms_root.join("controller-journal.ndjson"));
+    let _ = fs::remove_file(ms_root.join("controller.lock"));
+
+    let project_root = project_root(temp_dir.path(), "bead-sync-close-fails");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-close-fails","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_completed","details":{{"run_id":"run-20260401101100","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-sync-close-fails","run_id":"run-20260401101100","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write running task-runs");
+
+    let call_log = temp_dir.path().join("br-calls.log");
+    let _ = fs::remove_file(&call_log);
+    write_editor_script(
+        temp_dir.path(),
+        "br",
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> '{call_log}'
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+{show_payload}
+EOF
+exit 0
+fi
+if [ "$1" = "update" ]; then
+echo "close failed" >&2
+exit 1
+fi
+if [ "$1" = "sync" ]; then
+echo "sync should not run before close succeeds" >&2
+exit 1
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+            call_log = call_log.display(),
+            show_payload = default_ms_alpha_bead_2_show_response(),
+        ),
+    );
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        !sync.status.success(),
+        "sync should fail when bead close fails"
+    );
+
+    let task_runs = fs::read_to_string(&task_runs_path).expect("read task-runs");
+    assert!(task_runs.contains("\"outcome\":\"running\""));
+    assert!(!task_runs.contains("\"outcome\":\"succeeded\""));
+    assert!(!task_runs.contains("\"finished_at\""));
+
+    let br_calls = fs::read_to_string(call_log).expect("read br calls");
+    assert!(
+        br_calls.contains("update ms-alpha.bead-2 --status=closed"),
+        "sync should attempt to close the bead first; calls:\n{br_calls}"
+    );
+    assert!(
+        !br_calls.contains("sync --flush-only"),
+        "milestone success must not be recorded after close fails; calls:\n{br_calls}"
+    );
+}
+
+#[test]
+fn run_sync_milestone_flushes_close_when_update_reports_failure_but_bead_is_closed() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-close-false-fail",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let ms_root = milestone_root(temp_dir.path(), "ms-alpha");
+    let _ = fs::remove_file(ms_root.join("controller.json"));
+    let _ = fs::remove_file(ms_root.join("controller-journal.ndjson"));
+    let _ = fs::remove_file(ms_root.join("controller.lock"));
+
+    let project_root = project_root(temp_dir.path(), "bead-sync-close-false-fail");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-close-false-fail","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_completed","details":{{"run_id":"run-20260401101100","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-sync-close-false-fail","run_id":"run-20260401101100","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write running task-runs");
+
+    let call_log = temp_dir.path().join("br-calls.log");
+    let show_count = temp_dir.path().join("br-show-count");
+    let open_payload = default_ms_alpha_bead_2_show_response();
+    let closed_payload = open_payload.replace("\"status\": \"open\"", "\"status\": \"closed\"");
+    write_editor_script(
+        temp_dir.path(),
+        "br",
+        &format!(
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> '{call_log}'
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+count=0
+if [ -f '{show_count}' ]; then count=$(cat '{show_count}'); fi
+count=$((count + 1))
+printf '%s' "$count" > '{show_count}'
+if [ "$count" -eq 1 ]; then
+cat <<'EOF'
+{open_payload}
+EOF
+else
+cat <<'EOF'
+{closed_payload}
+EOF
+fi
+exit 0
+fi
+if [ "$1" = "update" ]; then
+echo "update reported failure after closing" >&2
+exit 1
+fi
+if [ "$1" = "sync" ] && [ "$2" = "--flush-only" ]; then
+echo "synced"
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+            call_log = call_log.display(),
+            show_count = show_count.display(),
+            open_payload = open_payload,
+            closed_payload = closed_payload,
+        ),
+    );
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        sync.status.success(),
+        "sync should recover false-failed close and flush: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let repaired_task_runs = fs::read_to_string(&task_runs_path).expect("read task-runs");
+    assert!(repaired_task_runs.contains("\"outcome\":\"succeeded\""));
+
+    let br_calls = fs::read_to_string(call_log).expect("read br calls");
+    assert!(br_calls.contains("update ms-alpha.bead-2 --status=closed"));
+    assert!(
+        br_calls.contains("sync --flush-only"),
+        "false-failed close must restore a pending mutation so sync flushes; calls:\n{br_calls}"
+    );
+}
+
+#[test]
+fn run_sync_milestone_does_not_close_when_terminal_lineage_is_blocked() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-blocked-lineage",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let ms_root = milestone_root(temp_dir.path(), "ms-alpha");
+    let _ = fs::remove_file(ms_root.join("controller.json"));
+    let _ = fs::remove_file(ms_root.join("controller-journal.ndjson"));
+    let _ = fs::remove_file(ms_root.join("controller.lock"));
+
+    let project_root = project_root(temp_dir.path(), "bead-sync-blocked-lineage");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:00:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-blocked-lineage","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:01:00Z","event_type":"run_started","details":{{"run_id":"run-20260401100100","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:05:00Z","event_type":"run_completed","details":{{"run_id":"run-20260401100100","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"newer-active-project","run_id":"run-newer","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:03:00Z"}}"#
+        ),
+    )
+    .expect("write blocked task-runs");
+
+    let call_log = temp_dir.path().join("br-calls.log");
+    let _ = fs::remove_file(&call_log);
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        sync.status.success(),
+        "sync should report no terminal milestone sync, not fail: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&sync.stdout).contains("No terminal milestone sync needed"),
+        "stdout: {}",
+        String::from_utf8_lossy(&sync.stdout)
+    );
+
+    let task_runs = fs::read_to_string(&task_runs_path).expect("read task-runs");
+    assert!(task_runs.contains("\"outcome\":\"running\""));
+    assert!(!task_runs.contains("\"outcome\":\"succeeded\""));
+
+    let br_calls = fs::read_to_string(call_log).unwrap_or_default();
+    assert!(
+        !br_calls.contains("update ms-alpha.bead-2 --status=closed"),
+        "blocked lineage must not close the bead before sync is known reconcileable; calls:\n{br_calls}"
+    );
+}
+
+#[test]
+fn run_sync_milestone_reconciles_failed_terminal_review_classifications() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_show_bead_script_with_default_list(
+        temp_dir.path(),
+        "ms-alpha.bead-2",
+        default_ms_alpha_bead_2_show_response(),
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-failed-review",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let ms_root = milestone_root(temp_dir.path(), "ms-alpha");
+    let _ = fs::remove_file(ms_root.join("controller.json"));
+    let _ = fs::remove_file(ms_root.join("controller-journal.ndjson"));
+    let _ = fs::remove_file(ms_root.join("controller.lock"));
+
+    let project_root = project_root(temp_dir.path(), "bead-sync-failed-review");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after review"}"#,
+    )
+    .expect("write failed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-failed-review","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_failed","details":{{"run_id":"run-20260401101100","stage_id":"review","failure_class":"stage_failure","message":"failed after review","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let payloads_dir = project_root.join("history/payloads");
+    fs::create_dir_all(&payloads_dir).expect("create payloads dir");
+    fs::write(
+        payloads_dir.join("run-20260401101100-review-c1-a1-cr1-payload.json"),
+        r#"{"payload_id":"run-20260401101100-review-c1-a1-cr1-payload","stage_id":"review","cycle":1,"attempt":1,"created_at":"2026-04-01T10:14:00Z","payload":{"family":"Validation","data":{"outcome":"request_changes","evidence":["review evidence"],"findings_or_gaps":["deferred follow-up"],"follow_up_or_amendments":[],"classified_findings":[{"body":"Track the retry policy separately.","classification":"propose_new_bead","proposed_bead_summary":"Track retry policy follow-up"},{"body":"Track the retry policy in a separate triage item.","classification":"propose_new_bead","proposed_bead_summary":" track retry policy follow-up "}]}},"record_kind":"stage_primary","completion_round":1}"#,
+    )
+    .expect("write review payload");
+
+    let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-sync-failed-review","run_id":"run-20260401101100","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write running task-runs");
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        sync.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let repaired_task_runs = fs::read_to_string(&task_runs_path).expect("read repaired task-runs");
+    assert!(repaired_task_runs.contains("\"outcome\":\"failed\""));
+    assert!(repaired_task_runs.contains("\"finished_at\":\"2026-04-01T10:15:00Z\""));
+
+    let proposed =
+        fs::read_to_string(project_root.join("proposed-beads.ndjson")).expect("read proposals");
+    assert!(proposed.contains("\"summary\":\"Track retry policy follow-up\""));
+    assert!(proposed.contains("\"count\":2"));
+
+    let br_calls = fs::read_to_string(temp_dir.path().join("br-calls.log")).expect("read br calls");
+    assert!(
+        !br_calls.contains("update ms-alpha.bead-2 --status=closed"),
+        "failed direct CLI terminal sync must not close the bead; calls:\n{br_calls}"
+    );
 }
 
 #[test]
@@ -15785,6 +16242,7 @@ fn run_sync_milestone_repairs_stale_terminal_outcome_with_original_timestamp() {
 
     let sync = Command::new(binary())
         .args(["run", "sync-milestone"])
+        .env("PATH", &path)
         .current_dir(temp_dir.path())
         .output()
         .expect("run sync-milestone");
@@ -15869,6 +16327,7 @@ fn run_sync_milestone_reconstructs_missing_lineage_for_terminal_project() {
 
     let sync = Command::new(binary())
         .args(["run", "sync-milestone"])
+        .env("PATH", &path)
         .current_dir(temp_dir.path())
         .output()
         .expect("run sync-milestone");
@@ -15954,6 +16413,7 @@ fn run_sync_milestone_errors_when_missing_lineage_is_ambiguous() {
 
     let sync = Command::new(binary())
         .args(["run", "sync-milestone"])
+        .env("PATH", &path)
         .current_dir(temp_dir.path())
         .output()
         .expect("run sync-milestone");
@@ -16030,6 +16490,7 @@ fn run_sync_milestone_fails_when_completed_project_lacks_run_completed_event() {
 
     let sync = Command::new(binary())
         .args(["run", "sync-milestone"])
+        .env("PATH", &path)
         .current_dir(temp_dir.path())
         .output()
         .expect("run sync-milestone");
@@ -16104,6 +16565,7 @@ fn run_sync_milestone_fails_when_failed_project_lacks_run_failed_event() {
 
     let sync = Command::new(binary())
         .args(["run", "sync-milestone"])
+        .env("PATH", &path)
         .current_dir(temp_dir.path())
         .output()
         .expect("run sync-milestone");

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-arbiter-c1-a1-cr10-artifact",
+  "payload_id": "run-20260427015109-final_review-arbiter-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T13:48:25.725181777Z",
+  "content": "# Final Review Arbiter\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nRejected the disputed amendment because the duplicated `project_id` argument is consistent with the CLI identity model and the alleged idempotency-marker impact is unsupported by the current implementation.\n\n## Rulings\n\n- `fr-10-41a341a5`: Reject\n  The code does not support the claimed correctness/idempotency defect. `reconcile_terminal_review_classifications` uses `project_id` to locate project artifacts and `proposed-beads.ndjson`, while `task_id` is used for errors/tracing around bead mutations. In the CLI milestone path, the controller is explicitly claimed with `project_id.as_str()` as the active task identity, and `TaskSource` contains milestone/bead metadata but no separate daemon task id. The daemon path is the one that has a real daemon `task.task_id`, and it passes that separately. Idempotency markers for terminal classification are based on amendment id/run id/bead id, not task id, so the marker-correctness claim is not demonstrated.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 10
+}

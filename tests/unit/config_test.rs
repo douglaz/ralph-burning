@@ -298,6 +298,26 @@ fn config_set_updates_iterative_minimal_nested_values() {
 }
 
 #[test]
+fn config_set_updates_new_bead_proposal_threshold() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let entry = EffectiveConfig::set(temp_dir.path(), "workflow.new_bead_proposal_threshold", "3")
+        .expect("set proposal threshold");
+    assert_eq!("workflow.new_bead_proposal_threshold", entry.key);
+    assert_eq!("3", entry.value.display_value());
+
+    let reloaded = EffectiveConfig::load(temp_dir.path()).expect("reload effective config");
+    assert_eq!(
+        ConfigValue::Integer(3),
+        reloaded
+            .get("workflow.new_bead_proposal_threshold")
+            .expect("reloaded proposal threshold")
+            .value
+    );
+}
+
+#[test]
 fn config_set_rejects_zero_iterative_minimal_values() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());

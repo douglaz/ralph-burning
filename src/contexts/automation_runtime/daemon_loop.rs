@@ -2524,7 +2524,7 @@ where
             );
         }
 
-        reconcile_failure(
+        let outcome = reconcile_failure(
             &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
             &FsTaskRunLineageStore,
@@ -2541,13 +2541,53 @@ where
             error_summary,
         )
         .await
-        .map(Some)
         .map_err(|error| match error {
             FailureReconciliationError::MilestoneUpdateFailed { .. } => (
                 "reconciliation_milestone_update_failed".to_owned(),
                 error.to_string(),
             ),
-        })
+        })?;
+
+        tracing::warn!(
+            project_id = project_id.as_str(),
+            bead_id = task_source.bead_id.as_str(),
+            task_id = task.task_id.as_str(),
+            run_id = run_id.as_str(),
+            "failed bead-backed task left in_progress after terminal failure reconciliation"
+        );
+
+        use crate::adapters::br_process::{BrAdapter, BrMutationAdapter, OsProcessRunner};
+        use crate::contexts::automation_runtime::success_reconciliation::{
+            reconcile_terminal_review_classifications, ReconciliationError,
+        };
+        let br_mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf()),
+            reconcile_success_adapter_id(project_id.as_str(), &task_source.bead_id, &task.task_id),
+        );
+        let br_read =
+            BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf());
+        reconcile_terminal_review_classifications(
+            &br_mutation,
+            &br_read,
+            project_dir,
+            &task_source.bead_id,
+            &task.task_id,
+            project_id.as_str(),
+            &run_id,
+        )
+        .await
+        .map_err(|error| match error {
+            ReconciliationError::MilestoneUpdateFailed { .. } => (
+                "reconciliation_milestone_update_failed".to_owned(),
+                error.to_string(),
+            ),
+            ReconciliationError::BrCloseFailed { .. }
+            | ReconciliationError::BrSyncFailed { .. } => {
+                ("reconciliation_br_failed".to_owned(), error.to_string())
+            }
+        })?;
+
+        Ok(Some(outcome))
     }
 
     fn failure_reconciliation_metadata_failure(

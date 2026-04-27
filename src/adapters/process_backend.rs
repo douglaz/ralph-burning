@@ -3140,6 +3140,42 @@ mod tests {
     }
 
     #[test]
+    fn enforce_strict_mode_collapses_one_of_single_enum_variants() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "classification": {
+                    "oneOf": [
+                        { "type": "string", "enum": ["fix_current_bead"] },
+                        { "type": "string", "enum": ["covered_by_existing_bead"] },
+                        { "type": "string", "enum": ["propose_new_bead"] },
+                        { "type": "string", "enum": ["informational_only"] }
+                    ]
+                }
+            },
+            "required": ["classification"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let classification = &schema["properties"]["classification"];
+        assert!(
+            classification.get("oneOf").is_none(),
+            "single-enum oneOf should be collapsed for strict mode"
+        );
+        assert_eq!(classification["type"], "string");
+        assert_eq!(
+            classification["enum"],
+            json!([
+                "fix_current_bead",
+                "covered_by_existing_bead",
+                "propose_new_bead",
+                "informational_only"
+            ])
+        );
+    }
+
+    #[test]
     fn enforce_strict_mode_final_review_proposal_round_trip() {
         // Simulates the schemars output for FinalReviewProposalPayload
         let mut schema = json!({

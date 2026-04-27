@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr16-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-1-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T19:59:05.463452582Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against 26edf3340c5c84297ede274973eeba3b7085ad30, excluding .ralph-burning runtime state. No correctness, safety, or robustness findings. Final verification passed: nix build, cargo fmt --check, cargo clippy --locked -- -D warnings, and cargo test --locked --features test-stub.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 16
+}

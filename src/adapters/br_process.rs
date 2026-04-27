@@ -860,6 +860,38 @@ impl<R: ProcessRunner> BrMutationAdapter<R> {
         self.has_unsync_mutations.load(Ordering::Acquire)
     }
 
+    /// Returns `true` when this adapter has a recovered pending comment
+    /// mutation. Without a working directory, operation-specific durable state
+    /// is unavailable, so this falls back to the in-memory dirty flag.
+    pub fn has_own_pending_comment_mutation(&self) -> bool {
+        let Some(record_path) = self.pending_mutation_record_path() else {
+            return self.has_pending_mutations();
+        };
+
+        match std::fs::read_to_string(&record_path) {
+            Ok(contents) => match serde_json::from_str::<PendingMutationRecord>(&contents) {
+                Ok(record) => record.operation == "comment_bead",
+                Err(error) => {
+                    tracing::warn!(
+                        record_path = %record_path.display(),
+                        %error,
+                        "failed to parse own br pending mutation record; not treating it as a recovered comment mutation"
+                    );
+                    false
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                tracing::warn!(
+                    record_path = %record_path.display(),
+                    %error,
+                    "failed to inspect own br pending mutation record; not treating it as a recovered comment mutation"
+                );
+                false
+            }
+        }
+    }
+
     pub fn adapter_id(&self) -> &str {
         &self.adapter_id
     }

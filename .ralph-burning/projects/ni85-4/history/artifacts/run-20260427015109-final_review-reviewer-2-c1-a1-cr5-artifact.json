@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T08:04:50.805853750Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nFound 1 correctness issue: proposal threshold can be satisfied by multiple final-review sources on one finding, which can over-trigger `proposed-beads.ndjson` writes.\n\n## Amendments\n\n1. Bug in threshold calculation for `propose_new_bead` reconciliation: `TerminalReviewFinding::from_final_review` sets `source_occurrences` from `amendment.sources.len().max(1)` at `src/contexts/automation_runtime/success_reconciliation.rs:1052-1056`, and `reconcile_proposed_bead_records` sums `source_occurrences` across findings at `src/contexts/automation_runtime/success_reconciliation.rs:1406-1411`. This means a single accepted amendment with multiple reviewer sources is counted as multiple findings, so with default threshold 2 a single finding can produce a proposal record. That conflicts with the contract wording `N or more findings` (same summary appearance), which implies counting finding rows, not source cardinality.\n   Classification: fix_current_bead\n   Rationale: Use the number of distinct findings in `findings` grouping (e.g., `findings.len()`) for thresholding, not summed source counts.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}

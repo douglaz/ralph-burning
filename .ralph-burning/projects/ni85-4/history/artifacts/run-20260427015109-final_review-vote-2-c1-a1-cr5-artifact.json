@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-vote-2-c1-a1-cr5-artifact",
+  "payload_id": "run-20260427015109-final_review-vote-2-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T08:11:02.222860552Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted. Each amendment addresses a concrete logic defect that can lead to dropped findings, incorrect stage transitions, or incorrect proposal-threshold accounting, affecting correctness and robustness.\n\n## Votes\n\n- `fr-5-11b7e87a`: Accept\n  Whitespace-only `covered_by_bead_id`/`proposed_bead_summary` values are semantically equivalent to missing fields and can currently pass classification checks, then be silently dropped in later trimming. Normalizing or validating with `trim()` is a real correctness fix and prevents invisible loss of actionable review data.\n- `fr-5-d1eb97ee`: Accept\n  The non-fix `RequestChanges` path can incorrectly route execution into `apply_fixes` due to unconditional cursor advancement, which violates intended flow when there are no restart-triggering follow-ups. Treating this as pass-through unless fix-triggering findings exist avoids unnecessary/incorrect stage transitions and side effects.\n- `fr-5-c9eb564e`: Accept\n  Using `source_occurrences` as `sources.len()` causes a single finding with multiple sources to be overcounted against the proposal threshold, which contradicts the documented per-summary per-finding interpretation. Counting each finding once aligns threshold logic with the contract semantics and prevents false-positive proposal records.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 5
+}

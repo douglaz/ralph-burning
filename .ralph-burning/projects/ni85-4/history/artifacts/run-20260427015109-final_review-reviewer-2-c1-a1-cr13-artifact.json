@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr13-artifact",
+  "payload_id": "run-20260427015109-final_review-reviewer-2-c1-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T16:49:44.242680514Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\n1 actionable issue found; threshold gating for propose_new_bead overcounts final-review sources, potentially creating premature NDJSON proposals.\n\n## Amendments\n\n1. In `src/contexts/automation_runtime/success_reconciliation.rs:1064-1073` and `1459-1468`, `TerminalReviewFinding::from_final_review` converts a single final-review amendment into `occurrence_count = amendment.sources.len().max(1)`, and thresholding in `reconcile_proposed_bead_records` sums `occurrence_count` across findings. This makes one amendment with two sources count as 2 and cross the default threshold 2, causing a `proposed-beads.ndjson` record even though only one finding exists. The contract says to propose only when the same `proposed_bead_summary` appears in N or more findings (not sources), so this over-triggers at run time.\n   Classification: fix_current_bead\n   Rationale: Align counting to number of findings, not source cardinality, to preserve threshold semantics and reduce false-positive bead proposals.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 13
+}
