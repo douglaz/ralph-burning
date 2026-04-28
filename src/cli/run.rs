@@ -13032,6 +13032,24 @@ fn summarize_event(event: &JournalEvent) -> Option<String> {
             event.details.get("total_iterations")?.as_u64()?,
         )),
         JournalEventType::AmendmentQueued => summarize_amendment_queued_event(event),
+        JournalEventType::ForceCompleteAmendmentsDeferred => Some(format!(
+            "force-completed at round {}: {} amendments deferred to journal (see force_complete_amendments_deferred event)",
+            event.details.get("round")?.as_u64()?,
+            event.details.get("amendment_count")?.as_u64()?,
+        )),
+        JournalEventType::RunCompleted
+            if event
+                .details
+                .get("force_completed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false) =>
+        {
+            Some(format!(
+                "force-completed at round {}: {} amendments deferred to journal (see force_complete_amendments_deferred event)",
+                event.details.get("force_completed_at_round")?.as_u64()?,
+                event.details.get("deferred_amendment_count")?.as_u64()?,
+            ))
+        }
         _ => None,
     }
 }

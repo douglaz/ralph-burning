@@ -5399,6 +5399,13 @@ fn conditionally_approved_payload(follow_ups: &[&str]) -> Value {
     })
 }
 
+fn final_review_proposal_payload(amendments: Vec<Value>) -> Value {
+    json!({
+        "summary": "final review proposals",
+        "amendments": amendments,
+    })
+}
+
 fn prompt_review_payload(ready: bool) -> Value {
     json!({
         "problem_framing": "Prompt review outcome",
@@ -7583,6 +7590,183 @@ async fn final_review_request_changes_triggers_completion_round_advancement() {
         .collect();
     assert_eq!(round_events.len(), 1);
     assert_eq!(round_events[0].details["source_stage"], "final_review");
+}
+
+#[tokio::test]
+async fn final_review_max_completion_rounds_force_complete_defers_amendments_to_journal() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    EffectiveConfig::set(base_dir, "workflow.max_completion_rounds", "1").unwrap();
+    let pid = create_standard_project(base_dir, "fr-force-defers");
+
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::FinalReview,
+            final_review_proposal_payload(vec![json!({
+                "body": "tighten final wording",
+                "classification": "fix_current_bead",
+            })]),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "run should force-complete instead of dropping final-review amendments: {result:?}"
+    );
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 1);
+    assert_eq!(
+        snapshot.status_summary,
+        "force-completed at round 1: 1 amendments deferred to journal (see force_complete_amendments_deferred event)"
+    );
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let deferred_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::ForceCompleteAmendmentsDeferred)
+        .collect();
+    assert_eq!(deferred_events.len(), 1);
+    assert_eq!(deferred_events[0].details["round"], 1);
+    assert_eq!(deferred_events[0].details["amendment_count"], 1);
+    assert_eq!(
+        deferred_events[0].details["amendments"][0]["summary"],
+        "tighten final wording"
+    );
+    assert_eq!(
+        deferred_events[0].details["amendments"][0]["classification"],
+        "fix_current_bead"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != JournalEventType::CompletionRoundAdvanced),
+        "force-complete should suppress the next completion round"
+    );
+    let run_completed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunCompleted)
+        .expect("run_completed event");
+    assert_eq!(run_completed.details["force_completed"], true);
+    assert_eq!(run_completed.details["deferred_amendment_count"], 1);
+}
+
+#[tokio::test]
+async fn final_review_max_completion_rounds_with_empty_amendments_emits_no_deferred_event() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    EffectiveConfig::set(base_dir, "workflow.max_completion_rounds", "1").unwrap();
+    let pid = create_standard_project(base_dir, "fr-force-empty");
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload(StageId::FinalReview, final_review_proposal_payload(vec![])),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete normally: {result:?}");
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != JournalEventType::ForceCompleteAmendmentsDeferred),
+        "empty final-review amendments must not emit a deferred-amendments event"
+    );
+}
+
+#[tokio::test]
+async fn final_review_force_complete_journals_mixed_deferred_classifications() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    EffectiveConfig::set(base_dir, "workflow.max_completion_rounds", "1").unwrap();
+    let pid = create_standard_project(base_dir, "fr-force-mixed");
+
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::FinalReview,
+            final_review_proposal_payload(vec![
+                json!({
+                    "body": "fix the active bead",
+                    "classification": "fix_current_bead",
+                }),
+                json!({
+                    "body": "capture follow-up work",
+                    "classification": "propose_new_bead",
+                    "proposed_bead_summary": "Add follow-up bead",
+                    "proposed_title": "Add follow-up bead",
+                    "proposed_scope": "Track the follow-up outside the active bead.",
+                    "severity": "medium",
+                }),
+            ]),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should force-complete: {result:?}");
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let deferred = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::ForceCompleteAmendmentsDeferred)
+        .expect("deferred event");
+    assert_eq!(deferred.details["amendment_count"], 2);
+    let classifications: Vec<_> = deferred.details["amendments"]
+        .as_array()
+        .expect("amendments array")
+        .iter()
+        .map(|amendment| amendment["classification"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(classifications.contains(&"fix_current_bead".to_owned()));
+    assert!(classifications.contains(&"propose_new_bead".to_owned()));
 }
 
 #[tokio::test]

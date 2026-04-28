@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428130527-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260428130527-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-28T15:07:47.957296366Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented force-complete amendment preservation. The engine now persists the final-review aggregate on round-budget force-completion, emits force_complete_amendments_deferred when accepted amendments are deferred, records force-complete metadata on run_completed, updates status/tail summaries, and routes force-completed propose_new_bead amendments through the bead follow-up creation path while leaving other classifications journaled.\n\n## Steps\n\n1. [Completed] Inspect workflow force-complete, final-review aggregate, journal, status/tail, and success-reconciliation paths.\n2. [Completed] Add force_complete_amendments_deferred journal event and run_completed force-complete metadata helpers.\n3. [Completed] Change the max_completion_rounds force-complete path to persist the aggregate, journal deferred amendments, complete the run, and preserve operator-visible status text.\n4. [Completed] Surface force-complete deferred amendment summaries in run status and run tail --logs.\n5. [Completed] Add reconciliation handling so force-completed propose_new_bead amendments create follow-up beads through BrMutationAdapter, while mixed non-proposal classifications remain journal-only.\n6. [Completed] Add regression coverage for non-empty, empty, mixed classification, CLI surfacing, and br follow-up creation scenarios.\n\n## Validation Evidence\n\n- nix develop --command cargo test --features test-stub --locked passed.\n- nix develop --command cargo clippy --locked -- -D warnings passed.\n- nix develop --command cargo fmt --check passed.\n- nix build passed.\n- Targeted regression tests for force-complete journal emission, empty amendments, mixed classifications, CLI status/tail surfacing, and propose_new_bead follow-up creation passed.\n\n## Outstanding Risks\n\n- br lint could not be run because br is not installed in PATH or the nix dev shell.\n- The working tree already contained unrelated .beads, prompt, and .ralph-burning state changes when this stage began; they were not part of this implementation scope.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

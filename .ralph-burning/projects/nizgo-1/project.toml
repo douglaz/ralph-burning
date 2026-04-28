@@ -1,0 +1,7 @@
+id = "nizgo-1"
+name = "zgo force-complete drops"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "5903f2e5418e58b6bd0cab7da8fdd7be255e2cc713f3ce880941b211adceb54e"
+created_at = "2026-04-28T13:05:20.564789058Z"
+status_summary = "created"

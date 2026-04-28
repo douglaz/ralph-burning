@@ -67,7 +67,9 @@ use super::completion;
 use super::contracts::{self, ValidatedBundle};
 use super::drift::{self, PromptChangeResumeDecision};
 use super::final_review;
-use super::panel_contracts::{CompletionVerdict, RecordKind, RecordProducer};
+use super::panel_contracts::{
+    CompletionVerdict, FinalReviewAggregatePayload, RecordKind, RecordProducer,
+};
 use super::prompt_review;
 use super::retry_policy::RetryPolicy;
 use super::review_classification;
@@ -3650,45 +3652,193 @@ where
                     stage_index += 1;
                     continue;
                 }
-                Ok(FinalReviewPanelOutcome::Restart(next_cursor, commit_data)) => {
+                Ok(FinalReviewPanelOutcome::Restart(next_cursor, mut commit_data)) => {
                     let max_rounds = std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
                         .ok()
                         .and_then(|value| value.parse::<u32>().ok())
                         .unwrap_or(effective_config.run_policy().max_completion_rounds);
                     snapshot.max_completion_rounds = Some(max_rounds);
                     if next_cursor.completion_round > max_rounds {
+                        let force_complete = deferred_final_review_amendments(
+                            cursor.completion_round,
+                            &commit_data.accepted_amendments,
+                        );
+                        mark_final_review_aggregate_force_completed(
+                            &mut commit_data,
+                            Some(&force_complete),
+                        );
                         let _ = log_write.append_runtime_log(
                             base_dir,
                             project_id,
                             &RuntimeLogEntry {
                                 timestamp: Utc::now(),
-                                level: LogLevel::Error,
+                                level: LogLevel::Warn,
                                 source: "engine".to_owned(),
-                                message: format!(
-                                    "max completion rounds exceeded: {}/{}",
-                                    next_cursor.completion_round, max_rounds
-                                ),
+                                message: force_complete.status_message(),
                             },
                         );
-                        return fail_run_result(
-                            &AppError::StageCommitFailed {
-                                stage_id,
-                                details: format!(
-                                    "max completion rounds exceeded: {}/{}",
-                                    next_cursor.completion_round, max_rounds
-                                ),
-                            },
+
+                        if let Err(error) = persist_final_review_aggregate_records(
+                            artifact_write,
+                            base_dir,
+                            project_id,
+                            &cursor,
                             stage_id,
+                            &commit_data,
+                        ) {
+                            return fail_run_result(
+                                &error,
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+
+                        if !force_complete.is_empty() {
+                            *seq += 1;
+                            let deferred_event = journal::force_complete_amendments_deferred_event(
+                                *seq,
+                                Utc::now(),
+                                run_id,
+                                force_complete.round,
+                                Value::Array(force_complete.amendments.clone()),
+                            );
+                            let deferred_line = journal::serialize_event(&deferred_event)?;
+                            if let Err(error) =
+                                journal_store.append_event(base_dir, project_id, &deferred_line)
+                            {
+                                *seq -= 1;
+                                cleanup_final_review_aggregate_records(
+                                    artifact_write,
+                                    base_dir,
+                                    project_id,
+                                    &commit_data,
+                                );
+                                return fail_run_result(
+                                    &AppError::StageCommitFailed {
+                                        stage_id,
+                                        details: format!(
+                                            "failed to persist force_complete_amendments_deferred event: {}",
+                                            error
+                                        ),
+                                    },
+                                    stage_id,
+                                    run_id,
+                                    seq,
+                                    snapshot,
+                                    journal_store,
+                                    run_snapshot_write,
+                                    base_dir,
+                                    project_id,
+                                    origin,
+                                )
+                                .await;
+                            }
+                        }
+
+                        *seq += 1;
+                        let stage_completed = journal::stage_completed_event(
+                            *seq,
+                            Utc::now(),
+                            run_id,
+                            stage_id,
+                            cursor.cycle,
+                            cursor.attempt,
+                            &commit_data.payload_id,
+                            &commit_data.artifact_id,
+                        );
+                        let stage_completed_line = journal::serialize_event(&stage_completed)?;
+                        if let Err(error) =
+                            journal_store.append_event(base_dir, project_id, &stage_completed_line)
+                        {
+                            *seq -= 1;
+                            cleanup_final_review_aggregate_records(
+                                artifact_write,
+                                base_dir,
+                                project_id,
+                                &commit_data,
+                            );
+                            return fail_run_result(
+                                &AppError::StageCommitFailed {
+                                    stage_id,
+                                    details: format!(
+                                        "journal append failed during final-review force-complete commit: {error}"
+                                    ),
+                                },
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+
+                        let (pe_amendments, _) = partition_final_review_amendments_by_route(
+                            &commit_data.accepted_amendments,
+                        );
+                        record_planned_elsewhere_amendments(
+                            log_write,
+                            base_dir,
+                            project_id,
+                            &pe_amendments,
+                            run_id,
+                            cursor.completion_round,
+                        );
+
+                        snapshot.completion_rounds =
+                            snapshot.completion_rounds.max(cursor.completion_round);
+                        complete_run_with_force_complete_details(
+                            snapshot,
+                            run_snapshot_write,
+                            journal_store,
+                            amendment_queue_port,
+                            base_dir,
+                            project_id,
+                            run_id,
+                            seq,
+                            Some(&force_complete),
+                        )?;
+                        if let Err(error) = persist_rollback_point(
+                            rollback_store,
+                            journal_store,
+                            log_write,
+                            checkpoint_port,
+                            base_dir,
+                            execution_cwd.unwrap_or(base_dir),
+                            project_id,
                             run_id,
                             seq,
                             snapshot,
-                            journal_store,
-                            run_snapshot_write,
-                            base_dir,
-                            project_id,
-                            origin,
-                        )
-                        .await;
+                            stage_id,
+                            cursor.cycle,
+                        ) {
+                            return checkpoint_failure_result(
+                                error,
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+                        return Ok(RunOutcome::Completed);
                     }
 
                     let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
@@ -7924,6 +8074,31 @@ fn complete_run(
     run_id: &RunId,
     seq: &mut u64,
 ) -> AppResult<()> {
+    complete_run_with_force_complete_details(
+        snapshot,
+        run_snapshot_write,
+        journal_store,
+        amendment_queue_port,
+        base_dir,
+        project_id,
+        run_id,
+        seq,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_run_with_force_complete_details(
+    snapshot: &mut RunSnapshot,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    force_complete: Option<&ForceCompleteDeferredAmendments>,
+) -> AppResult<()> {
     // Completion guard: block completion if pending amendments remain.
     // On CompletionBlocked, persist a resumable (Failed, active_run=None) snapshot
     // so that `run resume` can pick the run back up.
@@ -7950,18 +8125,32 @@ fn complete_run(
     snapshot.active_run = None;
     snapshot.interrupted_run = None;
     snapshot.completion_rounds = snapshot.completion_rounds.max(1);
-    snapshot.status_summary = "completed".to_owned();
+    snapshot.status_summary = force_complete
+        .map(ForceCompleteDeferredAmendments::status_message)
+        .unwrap_or_else(|| "completed".to_owned());
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
     let _ = FileSystem::remove_pid_file(base_dir, project_id);
 
     *seq += 1;
-    let run_completed = journal::run_completed_event(
-        *seq,
-        Utc::now(),
-        run_id,
-        snapshot.completion_rounds,
-        snapshot.max_completion_rounds.unwrap_or(0),
-    );
+    let run_completed = if let Some(force_complete) = force_complete {
+        journal::force_completed_run_completed_event(
+            *seq,
+            Utc::now(),
+            run_id,
+            snapshot.completion_rounds,
+            snapshot.max_completion_rounds.unwrap_or(0),
+            force_complete.round,
+            force_complete.count(),
+        )
+    } else {
+        journal::run_completed_event(
+            *seq,
+            Utc::now(),
+            run_id,
+            snapshot.completion_rounds,
+            snapshot.max_completion_rounds.unwrap_or(0),
+        )
+    };
     let append_result = journal::serialize_event(&run_completed).and_then(|run_completed_line| {
         journal_store.append_event(base_dir, project_id, &run_completed_line)
     });
@@ -9113,6 +9302,80 @@ struct FinalReviewQueuedAmendment {
         Vec<crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource>,
     /// Legacy covered-by bead ID retained for downstream inspectability.
     mapped_to_bead_id: Option<String>,
+}
+
+struct ForceCompleteDeferredAmendments {
+    round: u32,
+    amendments: Vec<serde_json::Value>,
+}
+
+impl ForceCompleteDeferredAmendments {
+    fn count(&self) -> u32 {
+        self.amendments.len() as u32
+    }
+
+    fn is_empty(&self) -> bool {
+        self.amendments.is_empty()
+    }
+
+    fn status_message(&self) -> String {
+        if self.is_empty() {
+            // No amendments to defer — don't point operators at a journal
+            // event that won't be written for the empty case.
+            format!(
+                "force-completed at round {}: no amendments deferred",
+                self.round
+            )
+        } else {
+            format!(
+                "force-completed at round {}: {} amendments deferred to journal (see force_complete_amendments_deferred event)",
+                self.round,
+                self.count()
+            )
+        }
+    }
+}
+
+fn deferred_final_review_amendments(
+    round: u32,
+    amendments: &[FinalReviewQueuedAmendment],
+) -> ForceCompleteDeferredAmendments {
+    let amendments = amendments
+        .iter()
+        .map(|amendment| {
+            json!({
+                "id": amendment.queued.amendment_id,
+                "summary": amendment
+                    .queued
+                    .proposed_bead_summary
+                    .as_deref()
+                    .unwrap_or(amendment.queued.body.as_str()),
+                "classification": amendment.queued.classification.as_str(),
+            })
+        })
+        .collect::<Vec<_>>();
+    ForceCompleteDeferredAmendments { round, amendments }
+}
+
+fn mark_final_review_aggregate_force_completed(
+    commit_data: &mut FinalReviewCommitData,
+    force_complete: Option<&ForceCompleteDeferredAmendments>,
+) {
+    if let Some(object) = commit_data.aggregate_payload.as_object_mut() {
+        object.insert("restart_required".to_owned(), Value::Bool(false));
+        object.insert("force_completed".to_owned(), Value::Bool(true));
+        if let Some(force_complete) = force_complete {
+            object.insert(
+                "summary".to_owned(),
+                Value::String(force_complete.status_message()),
+            );
+        }
+    }
+    if let Ok(payload) =
+        serde_json::from_value::<FinalReviewAggregatePayload>(commit_data.aggregate_payload.clone())
+    {
+        commit_data.aggregate_artifact = super::renderers::render_final_review_aggregate(&payload);
+    }
 }
 
 fn partition_final_review_amendments_by_route(
@@ -14096,6 +14359,53 @@ mod tests {
                 .expect("read pid file")
                 .is_some(),
             "pid file should remain for the newer live attempt"
+        );
+    }
+
+    #[test]
+    fn force_complete_status_message_does_not_dangle_when_amendments_empty() {
+        // codex-review #192 P2 finding: when force-complete fires with no
+        // pending amendments we skip writing
+        // `force_complete_amendments_deferred`, but the status text used to
+        // claim "see force_complete_amendments_deferred event" anyway, so
+        // operators (and tooling parsing run status) followed a pointer to
+        // an event that doesn't exist. The empty case must use a message
+        // that doesn't reference the journal event.
+        let empty = super::ForceCompleteDeferredAmendments {
+            round: 25,
+            amendments: vec![],
+        };
+        let msg = empty.status_message();
+        assert!(
+            !msg.contains("force_complete_amendments_deferred"),
+            "empty force-complete status must not name the journal event: {msg}"
+        );
+        assert!(
+            msg.contains("no amendments deferred"),
+            "empty force-complete status must say 'no amendments deferred': {msg}"
+        );
+    }
+
+    #[test]
+    fn force_complete_status_message_points_at_journal_event_when_amendments_present() {
+        // The non-empty case MUST keep pointing at the journal event so
+        // operators can recover the deferred amendments.
+        let with_amendments = super::ForceCompleteDeferredAmendments {
+            round: 25,
+            amendments: vec![serde_json::json!({
+                "id": "fr-25-deadbeef",
+                "summary": "missed validation in error path",
+                "classification": "fix_current_bead",
+            })],
+        };
+        let msg = with_amendments.status_message();
+        assert!(
+            msg.contains("force_complete_amendments_deferred"),
+            "non-empty force-complete status must reference the journal event: {msg}"
+        );
+        assert!(
+            msg.contains("1 amendments"),
+            "non-empty force-complete status must include the count: {msg}"
         );
     }
 }

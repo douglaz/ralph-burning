@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260428130527-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260428130527-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T16:08:08.388493280Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-08e7c38e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-08e7c38e`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/automation_runtime/success_reconciliation.rs:2305 passes the distinct reviewer-source count into handle_propose_new_bead for force-completed propose_new_bead deferrals. handle_propose_new_bead then enforces the parsimonious proposal threshold, default 2 at src/contexts/workspace_governance/config.rs:34, and returns Pending below threshold at src/contexts/milestone_record/service.rs:5195. A force-completed accepted proposal from a single available reviewer will therefore not create the required follow-up bead even though the contract says propose_new_bead deferrals should become beads when the br adapter is present. Add a force-complete-specific path that guarantees creation for accepted propose_new_bead deferrals while preserving existing duplicate/existing-bead checks.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

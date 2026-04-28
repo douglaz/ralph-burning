@@ -419,6 +419,7 @@ pub enum JournalEventType {
     ImplementerIterationCompleted,
     ImplementerLoopExited,
     AmendmentQueued,
+    ForceCompleteAmendmentsDeferred,
     DurableWarning,
 }
 
