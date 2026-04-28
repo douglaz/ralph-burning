@@ -48,12 +48,40 @@ pub struct ReadinessAssessment {
 ///
 /// Requires structured change summaries, intended or completed steps,
 /// validation evidence or plans, and outstanding-risk fields.
+///
+/// The shared schema deliberately does NOT require `validation_evidence` to be
+/// non-empty: that constraint applies only to the codex transport (added at
+/// schema-emit time in `process_backend::processed_contract_schema_value`) so
+/// that Claude execution stages — whose semantic validators and renderers
+/// already tolerate empty validation evidence — are not affected. The codex
+/// constraint exists only to defeat issue #188, where codex's
+/// `--output-schema` flag treats the first matching JSON message (an interim
+/// status emitted before tool calls return) as the terminal output for the
+/// turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionPayload {
     pub change_summary: String,
     pub steps: Vec<ExecutionStep>,
     pub validation_evidence: Vec<String>,
     pub outstanding_risks: Vec<String>,
+}
+
+impl ExecutionPayload {
+    /// Returns `true` when this payload looks like the canonical "interim"
+    /// status message codex emits *before* its tool calls return on
+    /// gpt-5.5-high (GitHub issue #188): empty `validation_evidence` AND
+    /// every step still in `Intended`. A real terminal payload may have a
+    /// mix of `Completed`/`Skipped` and one deferred `Intended` step plus
+    /// real evidence — those are accepted, since the implementer contract
+    /// permits that shape.
+    pub fn looks_like_codex_interim_message(&self) -> bool {
+        self.validation_evidence.is_empty()
+            && !self.steps.is_empty()
+            && self
+                .steps
+                .iter()
+                .all(|step| matches!(step.status, StepStatus::Intended))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -239,4 +267,92 @@ pub enum StagePayload {
     Planning(PlanningPayload),
     Execution(ExecutionPayload),
     Validation(ValidationPayload),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(order: u32, status: StepStatus) -> ExecutionStep {
+        ExecutionStep {
+            order,
+            description: "test step".to_owned(),
+            status,
+        }
+    }
+
+    #[test]
+    fn looks_like_codex_interim_message_matches_canonical_issue_188_shape() {
+        // The exact shape codex emits as the *interim* status before tool
+        // calls return: every step intended, validation_evidence empty.
+        let payload = ExecutionPayload {
+            change_summary: "Starting required reading and repository \
+                inspection before editing the documentation file."
+                .to_owned(),
+            steps: vec![step(1, StepStatus::Intended)],
+            validation_evidence: vec![],
+            outstanding_risks: vec![],
+        };
+        assert!(payload.looks_like_codex_interim_message());
+    }
+
+    #[test]
+    fn looks_like_codex_interim_message_rejects_terminal_payload() {
+        // Real terminal: completed/skipped steps with non-empty evidence.
+        let payload = ExecutionPayload {
+            change_summary: "did the thing".to_owned(),
+            steps: vec![step(1, StepStatus::Completed), step(2, StepStatus::Skipped)],
+            validation_evidence: vec!["cargo test passed".to_owned()],
+            outstanding_risks: vec![],
+        };
+        assert!(!payload.looks_like_codex_interim_message());
+    }
+
+    #[test]
+    fn looks_like_codex_interim_message_rejects_terminal_with_one_deferred_step() {
+        // Codex-review #188 P1 finding: the contract permits a
+        // mixed-status terminal payload — completed steps + one intended
+        // follow-up — so long as evidence is present. We MUST NOT misfire
+        // the interim detector on this shape.
+        let payload = ExecutionPayload {
+            change_summary: "did the main work; one item deferred".to_owned(),
+            steps: vec![
+                step(1, StepStatus::Completed),
+                step(2, StepStatus::Intended),
+            ],
+            validation_evidence: vec!["cargo test passed".to_owned()],
+            outstanding_risks: vec![],
+        };
+        assert!(
+            !payload.looks_like_codex_interim_message(),
+            "terminal payload with a deferred step + real evidence must not \
+             be treated as the codex interim shape"
+        );
+    }
+
+    #[test]
+    fn looks_like_codex_interim_message_rejects_payload_with_evidence_even_if_all_intended() {
+        // If the model produced any evidence, this isn't the
+        // tools-haven't-returned-yet interim shape.
+        let payload = ExecutionPayload {
+            change_summary: "explored before deferring".to_owned(),
+            steps: vec![step(1, StepStatus::Intended)],
+            validation_evidence: vec!["read existing file; nothing to change".to_owned()],
+            outstanding_risks: vec![],
+        };
+        assert!(!payload.looks_like_codex_interim_message());
+    }
+
+    #[test]
+    fn looks_like_codex_interim_message_rejects_empty_steps_array() {
+        // Defensive: a payload with no steps at all is not the interim
+        // shape (codex's interim always names at least one intended step).
+        let payload = ExecutionPayload {
+            change_summary: "no work needed".to_owned(),
+            steps: vec![],
+            validation_evidence: vec![],
+            outstanding_risks: vec![],
+        };
+        assert!(!payload.looks_like_codex_interim_message());
+    }
 }

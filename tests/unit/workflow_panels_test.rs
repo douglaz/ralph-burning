@@ -943,3 +943,61 @@ fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
         }
     }
 }
+
+#[test]
+fn codex_execution_schema_requires_min_one_validation_evidence_entry() {
+    // Regression for issue #188: codex's `--output-schema` flag treats the
+    // first JSON message that matches the schema as the terminal output
+    // for the turn. Codex on gpt-5.5-high emits an interim status
+    // message before tool calls return, with empty `validation_evidence`
+    // and every step in `Intended`. With a permissive schema, codex
+    // accepts that interim and ends the turn before doing real work.
+    //
+    // The fix is codex-specific: when emitting the schema for a codex
+    // invocation, ralph-burning injects `minItems: 1` on
+    // `validation_evidence`. This regression test asserts:
+    //   1. The constraint IS present for codex execution stages.
+    //   2. The constraint is NOT present for Claude execution stages
+    //      (Claude's semantic validators tolerate empty evidence).
+    use ralph_burning::adapters::process_backend::processed_contract_schema_value;
+    use ralph_burning::contexts::agent_execution::model::InvocationContract;
+    use ralph_burning::shared::domain::BackendFamily;
+
+    for stage_id in [
+        StageId::Implementation,
+        StageId::PlanAndImplement,
+        StageId::ApplyFixes,
+    ] {
+        let contract = InvocationContract::Stage(
+            ralph_burning::contexts::workflow_composition::contracts::contract_for_stage(stage_id),
+        );
+
+        let codex_schema = processed_contract_schema_value(&contract, BackendFamily::Codex);
+        let codex_min = codex_schema
+            .pointer("/properties/validation_evidence/minItems")
+            .and_then(|v| v.as_u64());
+        assert_eq!(
+            codex_min,
+            Some(1),
+            "Codex schema for {stage_id:?} must inject minItems=1 on \
+             validation_evidence (issue #188 workaround). Got: {codex_schema:#}"
+        );
+
+        let claude_schema = processed_contract_schema_value(&contract, BackendFamily::Claude);
+        // Claude wraps the payload in `{ data: ... }`, so look one level deeper.
+        let claude_min = claude_schema
+            .pointer("/properties/data/properties/validation_evidence/minItems")
+            .and_then(|v| v.as_u64())
+            .or_else(|| {
+                claude_schema
+                    .pointer("/properties/validation_evidence/minItems")
+                    .and_then(|v| v.as_u64())
+            });
+        assert_eq!(
+            claude_min, None,
+            "Claude schema for {stage_id:?} must NOT carry the codex-only \
+             minItems=1 workaround — Claude tolerates empty validation_evidence. \
+             Got: {claude_schema:#}"
+        );
+    }
+}
