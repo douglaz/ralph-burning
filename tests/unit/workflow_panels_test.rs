@@ -945,6 +945,136 @@ fn final_review_proposal_payload_schema_has_no_strict_mode_violations() {
 }
 
 #[test]
+fn codex_execution_schema_requires_min_one_completed_or_skipped_step() {
+    // Issue #188 (third comment after PR #193): the runtime detector and
+    // contract tightening were both correct, but codex never reaches them.
+    // Codex's `--output-schema` matcher accepts an all-Intended payload
+    // because the schema only enumerates the status values without
+    // requiring any to be completed/skipped. Codex ends the turn → exit
+    // code 101 → ralph classifies as transport_failure → retries → fail.
+    //
+    // The fix is at the schema layer: inject `contains` + `minContains: 1`
+    // matching at least one step with status ∈ {completed, skipped}.
+    // Codex's matcher then refuses any all-Intended payload upfront, so
+    // codex must actually progress before its JSON conforms.
+    use ralph_burning::adapters::process_backend::processed_contract_schema_value;
+    use ralph_burning::contexts::agent_execution::model::InvocationContract;
+    use ralph_burning::shared::domain::BackendFamily;
+
+    for stage_id in [
+        StageId::Implementation,
+        StageId::PlanAndImplement,
+        StageId::ApplyFixes,
+    ] {
+        let contract = InvocationContract::Stage(
+            ralph_burning::contexts::workflow_composition::contracts::contract_for_stage(stage_id),
+        );
+
+        let codex_schema = processed_contract_schema_value(&contract, BackendFamily::Codex);
+        let steps = codex_schema
+            .pointer("/properties/steps")
+            .unwrap_or_else(|| panic!("steps property present in codex schema for {stage_id:?}"));
+        let contains = steps
+            .get("contains")
+            .unwrap_or_else(|| panic!("steps.contains present in codex schema for {stage_id:?}"));
+        let allowed_statuses = contains
+            .pointer("/properties/status/enum")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| {
+                panic!(
+                    "steps.contains.properties.status.enum present in codex schema for {stage_id:?}"
+                )
+            });
+        let allowed: Vec<&str> = allowed_statuses.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            allowed.contains(&"completed") && allowed.contains(&"skipped"),
+            "steps.contains.properties.status.enum must include completed AND skipped \
+             for {stage_id:?}; got {allowed:?}"
+        );
+        assert_eq!(
+            steps.get("minContains").and_then(|v| v.as_u64()),
+            Some(1),
+            "steps.minContains must be 1 for {stage_id:?} — required to defeat \
+             issue #188 codex matcher early-termination. Got: {steps:#}"
+        );
+
+        // codex-review #194 P1: the injected `contains` subschema must
+        // carry the strict-mode object invariants too. OpenAI rejects any
+        // object subschema in a strict-mode payload that doesn't have
+        // `additionalProperties: false` and `required` listing every
+        // property.
+        assert_eq!(
+            contains.get("additionalProperties"),
+            Some(&serde_json::json!(false)),
+            "steps.contains must carry additionalProperties:false for \
+             {stage_id:?} (strict-mode requirement). Got: {contains:#}"
+        );
+        let contains_required = contains
+            .get("required")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| {
+                panic!(
+                    "steps.contains.required must be present for {stage_id:?}; got: {contains:#}"
+                )
+            });
+        let required_names: Vec<&str> = contains_required
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            required_names.contains(&"status"),
+            "steps.contains.required must include 'status' for {stage_id:?}; got: {required_names:?}"
+        );
+
+        // codex-review #194 P1 (second round): the contains subschema
+        // must include all properties that `steps.items` defines too,
+        // otherwise `additionalProperties: false` makes it unsatisfiable
+        // for real step objects (which carry `order`, `description`,
+        // `status` together). The contains constraint only narrows the
+        // status enum — it must accept the same field shape as items.
+        let items = codex_schema
+            .pointer("/properties/steps/items")
+            .unwrap_or_else(|| panic!("steps.items must be present for {stage_id:?}"));
+        let items_props = items
+            .pointer("/properties")
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| panic!("steps.items.properties must be present for {stage_id:?}"));
+        let contains_props = contains
+            .pointer("/properties")
+            .and_then(|v| v.as_object())
+            .unwrap_or_else(|| {
+                panic!("steps.contains.properties must be present for {stage_id:?}")
+            });
+        for items_field in items_props.keys() {
+            assert!(
+                contains_props.contains_key(items_field),
+                "steps.contains.properties must include '{items_field}' for \
+                 {stage_id:?} (matches items.properties so the contains \
+                 subschema is satisfiable under additionalProperties:false). \
+                 Got contains: {contains:#}"
+            );
+            assert!(
+                required_names.contains(&items_field.as_str()),
+                "steps.contains.required must include '{items_field}' for \
+                 {stage_id:?} (mirrors items.required for strict-mode \
+                 compatibility). Got: {required_names:?}"
+            );
+        }
+
+        // Claude schema must NOT carry the codex-only constraint.
+        let claude_schema = processed_contract_schema_value(&contract, BackendFamily::Claude);
+        let claude_steps_contains = claude_schema
+            .pointer("/properties/data/properties/steps/contains")
+            .or_else(|| claude_schema.pointer("/properties/steps/contains"));
+        assert!(
+            claude_steps_contains.is_none(),
+            "Claude schema for {stage_id:?} must NOT carry the codex-only \
+             contains constraint. Got: {claude_schema:#}"
+        );
+    }
+}
+
+#[test]
 fn codex_execution_schema_requires_min_one_validation_evidence_entry() {
     // Regression for issue #188: codex's `--output-schema` flag treats the
     // first JSON message that matches the schema as the terminal output
