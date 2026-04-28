@@ -1,0 +1,7 @@
+id = "ni9po-1"
+name = "9po README"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "5c01f177e36ba8b1cb626df5397f2ba748e2b62686798a55f6d6d929f329442a"
+created_at = "2026-04-28T07:51:15.044197112Z"
+status_summary = "created"

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260428075120-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260428075120-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T10:06:39.493703798Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-5f5d7f4a`\n- `fr-1-34ab910b`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-5f5d7f4a`\n\n**Classification:** fix_current_bead\n\n.beads/issues.jsonl:93 changes `ralph-burning-9ni.8.6` from open to closed in a branch whose active README task is `ralph-burning-9po` (`.beads/issues.jsonl:104`). Because `.beads/issues.jsonl` is the authoritative backlog export, merging this would incorrectly mark an unrelated controller policy task complete. Revert the 9ni.8.6 status mutation, or replace it with the correct 9po bead update at the normal close step.\n\n### `fr-1-34ab910b`\n\n**Classification:** fix_current_bead\n\nprompt-9po.md:1 adds a second root-level copy of the current task prompt even though AGENTS.md:10 says active task knowledge belongs in `.beads/issues.jsonl` and AGENTS.md:11 says not to recreate mirror plan docs unless explicitly requested. This creates a stale parallel source of truth for the README task. Remove `prompt-9po.md` unless maintainers explicitly want a prompt archive for this task.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

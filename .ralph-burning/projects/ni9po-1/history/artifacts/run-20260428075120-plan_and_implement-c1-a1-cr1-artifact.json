@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428075120-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260428075120-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-28T09:50:33.249916801Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCreated a repo-root README.md that introduces ralph-burning, explains its purpose, quick-start workflow, concepts, flow presets, backend support, bead integration, configuration, development gates, and contribution/license pointers. The quick start now uses the shipped iterative_minimal flow explicitly and the configuration section names the actual stable-rounds key, workflow.iterative_minimal.stable_rounds_required.\n\n## Steps\n\n0. [Completed] Inspected AGENTS.md, current git state, and the existing source/documentation surface to scope the README work without touching .ralph-burning orchestration state.\n1. [Completed] Read the run/project CLI, flow definitions, stage contract taxonomy, backend/configuration code, and classification/bead-routing sources to keep the README accurate.\n2. [Completed] Authored README.md with the requested ordered content: tagline, rationale, quick start, concept cheat sheet, flows table, backend support, bead workflow, configuration, development, and license/contributing pointers.\n3. [Completed] Verified quick-start commands and full project validation gates on the final tree.\n\n## Validation Evidence\n\n- nix run github:douglaz/ralph-burning -- --help exited 0 and displayed the ralph-burning CLI command list.\n- nix develop -c cargo build --locked exited 0; nix develop -c cargo build --features test-stub --locked exited 0 for deterministic stub smoke verification.\n- Stub quick-start smoke in a temp workspace exited successfully for init, backend check --backend stub, project bootstrap --idea \"Fix the failing parser tests\" --flow iterative_minimal, run start, run status, and run tail --last 5; run resume reached the expected already-completed guard after the successful run.\n- nix develop -c cargo test --features test-stub --locked passed: lib tests, integration tests, unit tests, and doc tests completed with no failures.\n- nix develop -c cargo clippy --locked -- -D warnings exited 0.\n- nix develop -c cargo fmt --check exited 0.\n- nix build exited 0, satisfying the repository's authoritative gate.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428075120-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260428075120-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T11:06:27.485649822Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the documentation amendment because the README currently points operators at non-authoritative state paths while the code resolves and mutates the live workspace path when present.\n\n## Votes\n\n- `fr-2-2a2f5ab3`: Accept\n  The claim is technically sound. `initialize_workspace` returns and prints `FileSystem::live_workspace_root_path`, `workspace_root_path` prefers the live root when its `workspace.toml` exists, `workspace_config_path` is derived from that resolved root, and `config set` writes through that path. `config edit` also opens the live workspace config directly. The README's blanket `.ralph-burning/...` wording can therefore direct manual edits to the audit mirror instead of the authoritative live workspace, so clarifying live state versus audit mirror and steering edits through the CLI improves safety and maintainability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}
