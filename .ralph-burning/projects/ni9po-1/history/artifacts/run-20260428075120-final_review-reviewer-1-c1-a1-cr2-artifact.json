@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428075120-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260428075120-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T11:05:41.187043245Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against the requested base, read README.md/CLAUDE.md and relevant CLI/config sources, and verified the quick-start smoke plus `cargo fmt --check`, `cargo test --features test-stub --locked`, `cargo clippy --locked -- -D warnings`, and `nix build`. Found one README correctness issue around authoritative workspace/config paths.\n\n## Amendments\n\n1. README.md:44 and README.md:86 present `.ralph-burning/...` as the location for project state and configuration, but the CLI resolves the authoritative live workspace to `FileSystem::live_workspace_root_path()` and prefers it whenever `workspace.toml` exists (`src/adapters/fs.rs:1121`, `src/adapters/fs.rs:1125`). `config set` writes to that resolved path (`src/contexts/workspace_governance/config.rs:610`), which is typically `.git/ralph-burning-live/workspace.toml`, not the `.ralph-burning` audit mirror. This can send operators to edit a stale/non-authoritative file. Update the README to distinguish the live workspace path reported by `init` from the `.ralph-burning` audit mirror, and steer manual edits through `ralph-burning config ...` / `config edit`.\n   Classification: fix_current_bead\n   Rationale: A README created as the project entry point should not direct users to a configuration file path that the CLI may ignore after initialization.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}
