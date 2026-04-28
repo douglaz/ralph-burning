@@ -2237,6 +2237,13 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    fn test_shell() -> String {
+        std::env::var("BASH")
+            .or_else(|_| std::env::var("SHELL"))
+            .unwrap_or_else(|_| "/bin/sh".to_owned())
+    }
+
     fn write_pending_mutation_record(
         base_dir: &std::path::Path,
         adapter_id: &str,
@@ -2849,7 +2856,10 @@ mod tests {
         let fake_br = tmp.path().join("custom-br");
         std::fs::write(
             &fake_br,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--import-only\" ]; then\n  echo imported-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
+            format!(
+                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--import-only\" ]; then\n  echo imported-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
+                test_shell()
+            ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
         permissions.set_mode(0o755);
@@ -2878,7 +2888,10 @@ mod tests {
         let fake_br = tmp.path().join("custom-br");
         std::fs::write(
             &fake_br,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--flush-only\" ]; then\n  echo synced-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
+            format!(
+                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--flush-only\" ]; then\n  echo synced-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
+                test_shell()
+            ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
         permissions.set_mode(0o755);

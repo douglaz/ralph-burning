@@ -19,7 +19,7 @@ use chrono::{DateTime, Utc};
 use tracing::Instrument;
 
 use crate::adapters::br_health::{beads_health_failure_details, check_beads_health};
-use crate::adapters::br_models::BeadStatus;
+use crate::adapters::br_models::{BeadDetail, BeadStatus, BeadSummary};
 use crate::adapters::br_process::{
     BrAdapter, BrCommand, BrError, BrMutationAdapter, ProcessRunner, SyncIfDirtyHealthError,
 };
@@ -33,10 +33,12 @@ use crate::contexts::milestone_record::bead_refs::br_show_output_indicates_missi
 use crate::contexts::milestone_record::bundle::canonicalize_bead_reference;
 use crate::contexts::milestone_record::controller as milestone_controller;
 use crate::contexts::milestone_record::model::{
-    MilestoneId, MilestoneStatus, PlannedElsewhereMapping, TaskRunOutcome,
+    MilestoneEventType, MilestoneId, MilestoneJournalEvent, MilestoneStatus,
+    PlannedElsewhereMapping, TaskRunOutcome,
 };
+use crate::contexts::milestone_record::queries::bead_ownership_text_similarity;
 use crate::contexts::milestone_record::service::{
-    self as milestone_service, CompletionMilestoneDisposition,
+    self as milestone_service, CompletionMilestoneDisposition, MilestoneJournalPort,
 };
 use crate::contexts::project_run_record::service::ArtifactStorePort;
 use crate::contexts::project_run_record::task_prompt_contract::milestone_prefix_of;
@@ -44,7 +46,11 @@ use crate::contexts::workflow_composition::panel_contracts::{
     AmendmentClassification, FinalReviewAggregatePayload, FinalReviewCanonicalAmendment, RecordKind,
 };
 use crate::contexts::workflow_composition::payloads::{ClassifiedFinding, StagePayload};
-use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
+use crate::contexts::workflow_composition::review_classification::Severity;
+use crate::contexts::workspace_governance::config::{
+    CliBackendOverrides, EffectiveConfig, DEFAULT_EXISTING_BEAD_MATCH_THRESHOLD_SCORE,
+    DEFAULT_NEW_BEAD_PROPOSAL_THRESHOLD, DEFAULT_PARSIMONIOUS_BEAD_CREATION_ENABLED,
+};
 use crate::shared::domain::{ProjectId, StageId};
 /// Outcome of the success reconciliation process.
 #[derive(Debug, Clone)]
@@ -305,12 +311,13 @@ pub async fn reconcile_success<R: ProcessRunner, V: BvProcessRunner>(
         )
         .await;
 
-        let proposed_bead_summary = reconcile_terminal_review_classifications(
+        let proposed_bead_summary = reconcile_terminal_review_classifications_for_milestone(
             br_mutation,
             br_read,
             base_dir,
             bead_id,
             task_id,
+            milestone_id_str,
             project_id,
             run_id,
         )
@@ -1052,38 +1059,72 @@ async fn verify_planned_elsewhere_after_success<R: ProcessRunner>(
 #[derive(Debug, Clone)]
 struct TerminalReviewFinding {
     amendment_id: String,
+    source_identities: Vec<String>,
     normalized_body: String,
     mapped_to_bead_id: Option<String>,
     covered_by_bead_id: Option<String>,
     classification: AmendmentClassification,
+    rationale: Option<String>,
+    proposed_title: Option<String>,
+    proposed_scope: Option<String>,
     proposed_bead_summary: Option<String>,
-    occurrence_count: usize,
+    severity: Option<Severity>,
 }
 
 impl TerminalReviewFinding {
     fn from_final_review(amendment: &FinalReviewCanonicalAmendment) -> Self {
+        let source_identities = if amendment.sources.is_empty() {
+            vec!["final_review:unknown_source".to_owned()]
+        } else {
+            amendment
+                .sources
+                .iter()
+                .map(|source| {
+                    format!(
+                        "final_review:{}:{}:{}",
+                        source.reviewer_id, source.backend_family, source.model_id
+                    )
+                })
+                .collect()
+        };
         Self {
             amendment_id: amendment.amendment_id.clone(),
+            source_identities,
             normalized_body: amendment.normalized_body.clone(),
             mapped_to_bead_id: amendment.mapped_to_bead_id.clone(),
             covered_by_bead_id: amendment.covered_by_bead_id.clone(),
             classification: amendment.classification,
+            rationale: amendment.rationale.clone(),
+            proposed_title: amendment.proposed_title.clone(),
+            proposed_scope: amendment.proposed_scope.clone(),
             proposed_bead_summary: amendment.proposed_bead_summary.clone(),
-            occurrence_count: amendment.sources.len().max(1),
+            severity: amendment.severity,
         }
     }
 
     fn from_review_payload(payload_id: &str, index: usize, finding: &ClassifiedFinding) -> Self {
         Self {
             amendment_id: format!("review:{payload_id}:{index}"),
+            source_identities: vec![format!("review_payload:{payload_id}")],
             normalized_body: finding.body.clone(),
             mapped_to_bead_id: finding.mapped_to_bead_id.clone(),
             covered_by_bead_id: finding.covered_by_bead_id.clone(),
             classification: finding.classification,
+            rationale: None,
+            proposed_title: None,
+            proposed_scope: None,
             proposed_bead_summary: finding.proposed_bead_summary.clone(),
-            occurrence_count: 1,
+            severity: None,
         }
     }
+}
+
+fn distinct_proposal_source_count(findings: &[&TerminalReviewFinding]) -> usize {
+    findings
+        .iter()
+        .flat_map(|finding| finding.source_identities.iter().map(String::as_str))
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 #[derive(Debug, Default)]
@@ -1186,19 +1227,48 @@ struct ProposedBeadRecord {
     source_run_id: String,
     current_bead_id: String,
     summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposed_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposed_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    severity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rationale: Option<String>,
     count: usize,
     timestamp: DateTime<Utc>,
 }
 
-fn proposal_threshold(base_dir: &Path, project_id: &str) -> usize {
+#[derive(Debug, Clone, Copy)]
+struct TerminalParsimoniousBeadCreationPolicy {
+    enabled: bool,
+    existing_bead_match_threshold_score: f64,
+    proposal_threshold: usize,
+}
+
+fn terminal_parsimonious_bead_creation_policy(
+    base_dir: &Path,
+    project_id: &str,
+) -> TerminalParsimoniousBeadCreationPolicy {
     let project_id = ProjectId::new(project_id).ok();
     EffectiveConfig::load_for_project(
         base_dir,
         project_id.as_ref(),
         CliBackendOverrides::default(),
     )
-    .map(|config| config.run_policy().new_bead_proposal_threshold.max(1) as usize)
-    .unwrap_or(2)
+    .map(|config| {
+        let policy = config.run_policy().parsimonious_bead_creation.clone();
+        TerminalParsimoniousBeadCreationPolicy {
+            enabled: policy.enabled,
+            existing_bead_match_threshold_score: policy.existing_bead_match_threshold_score,
+            proposal_threshold: policy.proposal_threshold.max(1) as usize,
+        }
+    })
+    .unwrap_or(TerminalParsimoniousBeadCreationPolicy {
+        enabled: DEFAULT_PARSIMONIOUS_BEAD_CREATION_ENABLED,
+        existing_bead_match_threshold_score: DEFAULT_EXISTING_BEAD_MATCH_THRESHOLD_SCORE,
+        proposal_threshold: DEFAULT_NEW_BEAD_PROPOSAL_THRESHOLD.max(1) as usize,
+    })
 }
 
 fn proposal_record_path(base_dir: &Path, project_id: &str) -> Option<std::path::PathBuf> {
@@ -1236,19 +1306,102 @@ fn existing_proposal_records(path: &Path) -> Result<ExistingProposalRecords, std
     Ok(records)
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum TerminalBrListSummariesResponse {
+    Envelope { issues: Vec<BeadSummary> },
+    Many(Vec<BeadSummary>),
+}
+
+impl TerminalBrListSummariesResponse {
+    fn into_issues(self) -> Vec<BeadSummary> {
+        match self {
+            Self::Envelope { issues } => issues,
+            Self::Many(issues) => issues,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TerminalProposeNewBeadInput {
+    active_bead_id: String,
+    finding_summary: String,
+    proposed_title: String,
+    proposed_scope: String,
+    severity: String,
+    rationale: Option<String>,
+    run_id: String,
+}
+
+impl TerminalProposeNewBeadInput {
+    fn from_group(bead_id: &str, run_id: &str, findings: &[&TerminalReviewFinding]) -> Self {
+        let proposed_scope = display_proposal_scope(findings);
+        Self {
+            active_bead_id: bead_id.to_owned(),
+            finding_summary: proposed_scope.clone(),
+            proposed_title: display_proposal_summary(findings),
+            proposed_scope,
+            severity: display_proposal_severity(findings),
+            rationale: display_proposal_rationale(findings),
+            run_id: run_id.to_owned(),
+        }
+    }
+}
+
+fn nonblank_text(value: Option<&String>) -> Option<&str> {
+    value
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn proposal_title_for_finding(finding: &TerminalReviewFinding) -> Option<&str> {
+    nonblank_text(finding.proposed_title.as_ref())
+        .or_else(|| nonblank_text(finding.proposed_bead_summary.as_ref()))
+}
+
 fn normalized_proposal_summary(finding: &TerminalReviewFinding) -> Option<String> {
-    let summary = finding.proposed_bead_summary.as_ref()?.trim();
-    (!summary.is_empty()).then(|| summary.to_ascii_lowercase())
+    proposal_title_for_finding(finding).map(str::to_ascii_lowercase)
 }
 
 fn display_proposal_summary(findings: &[&TerminalReviewFinding]) -> String {
     findings
         .iter()
-        .filter_map(|finding| finding.proposed_bead_summary.as_deref())
-        .map(str::trim)
-        .find(|summary| !summary.is_empty())
+        .find_map(|finding| proposal_title_for_finding(finding))
         .unwrap_or_default()
         .to_owned()
+}
+
+fn display_proposal_scope(findings: &[&TerminalReviewFinding]) -> String {
+    let proposed_scopes = findings
+        .iter()
+        .filter_map(|finding| nonblank_text(finding.proposed_scope.as_ref()))
+        .collect::<Vec<_>>();
+    if !proposed_scopes.is_empty() {
+        return proposed_scopes.join("\n");
+    }
+
+    findings
+        .iter()
+        .map(|finding| finding.normalized_body.trim())
+        .filter(|summary| !summary.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn display_proposal_severity(findings: &[&TerminalReviewFinding]) -> String {
+    findings
+        .iter()
+        .find_map(|finding| finding.severity.map(|severity| severity.as_str()))
+        .unwrap_or("unknown")
+        .to_owned()
+}
+
+fn display_proposal_rationale(findings: &[&TerminalReviewFinding]) -> Option<String> {
+    findings
+        .iter()
+        .find_map(|finding| nonblank_text(finding.rationale.as_ref()))
+        .map(str::to_owned)
 }
 
 fn comment_summary_line(summary: &str) -> String {
@@ -1262,6 +1415,425 @@ fn amendment_marker_line(amendment_id: &str) -> String {
 fn has_exact_amendment_marker(comment_text: &str, amendment_id: &str) -> bool {
     let marker = amendment_marker_line(amendment_id);
     comment_text.lines().any(|line| line.trim() == marker)
+}
+
+async fn list_all_bead_summaries<Q: ProcessRunner>(
+    br_read: &BrAdapter<Q>,
+) -> Result<Vec<BeadSummary>, BrError> {
+    Ok(br_read
+        .exec_json::<TerminalBrListSummariesResponse>(&BrCommand::list_all())
+        .await?
+        .into_issues())
+}
+
+fn proposed_work_match_score(detail: &BeadDetail, input: &TerminalProposeNewBeadInput) -> f64 {
+    let proposed_text = format!("{} {}", input.proposed_title, input.proposed_scope);
+    let candidate_text = format!(
+        "{} {}",
+        detail.title,
+        detail.description.as_deref().unwrap_or_default()
+    );
+    bead_ownership_text_similarity(&proposed_text, &candidate_text)
+}
+
+async fn load_active_bead_match<Q: ProcessRunner>(
+    br_read: &BrAdapter<Q>,
+    summaries: &[BeadSummary],
+    input: &TerminalProposeNewBeadInput,
+    threshold_score: f64,
+) -> Result<Option<(BeadDetail, f64)>, BrError> {
+    let Some(summary) = summaries
+        .iter()
+        .find(|summary| summary.id == input.active_bead_id)
+    else {
+        return Ok(None);
+    };
+
+    let detail = br_read
+        .exec_json::<BeadDetail>(&BrCommand::show(summary.id.clone()))
+        .await?;
+    let score = proposed_work_match_score(&detail, input);
+    Ok((score >= threshold_score).then_some((detail, score)))
+}
+
+async fn find_existing_open_bead_match<Q: ProcessRunner>(
+    br_read: &BrAdapter<Q>,
+    summaries: &[BeadSummary],
+    input: &TerminalProposeNewBeadInput,
+    threshold_score: f64,
+) -> Result<Option<(BeadDetail, f64)>, BrError> {
+    let mut best: Option<(BeadDetail, f64)> = None;
+
+    for summary in summaries.iter().filter(|summary| {
+        summary.id != input.active_bead_id
+            && matches!(summary.status, BeadStatus::Open | BeadStatus::InProgress)
+    }) {
+        let detail = br_read
+            .exec_json::<BeadDetail>(&BrCommand::show(summary.id.clone()))
+            .await?;
+        let score = proposed_work_match_score(&detail, input);
+        if score >= threshold_score
+            && best
+                .as_ref()
+                .map(|(_, best_score)| score > *best_score)
+                .unwrap_or(true)
+        {
+            best = Some((detail, score));
+        }
+    }
+
+    Ok(best)
+}
+
+async fn comment_propose_new_bead_covered_by_existing<M: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<M>,
+    base_dir: &Path,
+    bead_id: &str,
+    task_id: &str,
+    input: &TerminalProposeNewBeadInput,
+    target: &BeadDetail,
+    match_score: f64,
+) -> Result<(), ReconciliationError> {
+    let finding_line = format!("Finding: {}", comment_summary_line(&input.finding_summary));
+    let proposed_scope_line = format!(
+        "Proposed scope: {}",
+        comment_summary_line(&input.proposed_scope)
+    );
+    if target.comments.iter().any(|comment| {
+        comment
+            .text
+            .contains("classification=covered_by_existing_bead")
+            && comment
+                .text
+                .contains(&format!("active_bead_id={}", input.active_bead_id))
+            && comment.text.contains(&format!("run_id={}", input.run_id))
+            && comment.text.lines().any(|line| line.trim() == finding_line)
+            && comment
+                .text
+                .lines()
+                .any(|line| line.trim() == proposed_scope_line)
+    }) {
+        return Ok(());
+    }
+
+    ensure_beads_mutation_health(base_dir, bead_id, task_id)?;
+    let comment = format!(
+        "Review finding from bead {}\nclassification=covered_by_existing_bead\nactive_bead_id={}\nrun_id={}\nmatch_score={:.3}\nFinding: {}\nProposed scope: {}",
+        input.active_bead_id,
+        input.active_bead_id,
+        input.run_id,
+        match_score,
+        comment_summary_line(&input.finding_summary),
+        comment_summary_line(&input.proposed_scope)
+    );
+    br_mutation
+        .comment_bead(&target.id, &comment)
+        .await
+        .map_err(|error| {
+            ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!(
+                    "failed to post propose_new_bead covered_by_existing_bead comment for target '{}': {error}",
+                    target.id
+                ),
+            }
+        })?;
+    match br_mutation.sync_own_dirty_if_beads_healthy(base_dir).await {
+        Ok(crate::adapters::br_process::SyncIfDirtyOutcome::Clean)
+        | Ok(crate::adapters::br_process::SyncIfDirtyOutcome::Flushed { .. }) => Ok(()),
+        Err(SyncIfDirtyHealthError::UnsafeBeadsState { details }) => {
+            Err(ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!("failed to flush propose_new_bead covered_by_existing_bead comment because bead state became unsafe before br sync --flush-only: {details}"),
+            })
+        }
+        Err(SyncIfDirtyHealthError::Br(error)) => {
+            Err(ReconciliationError::MilestoneUpdateFailed {
+                bead_id: bead_id.to_owned(),
+                task_id: task_id.to_owned(),
+                details: format!(
+                    "failed to flush propose_new_bead covered_by_existing_bead comment after posting comment: {error}"
+                ),
+            })
+        }
+    }
+}
+
+fn pending_event_metadata_matches(
+    event_metadata: &serde_json::Map<String, serde_json::Value>,
+    expected_metadata: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    [
+        "sub_type",
+        "active_bead_id",
+        "run_id",
+        "proposed_title",
+        "proposed_scope",
+        "current_count",
+        "threshold_count",
+        "amendment_ids",
+    ]
+    .into_iter()
+    .all(|key| event_metadata.get(key) == expected_metadata.get(key))
+}
+
+fn propose_new_bead_pending_event_exists(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    metadata: &serde_json::Map<String, serde_json::Value>,
+    details: &str,
+) -> Result<bool, ReconciliationError> {
+    let milestone_error = |details: String| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: metadata
+            .get("active_bead_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("<unknown>")
+            .to_owned(),
+        task_id: milestone_id.to_string(),
+        details,
+    };
+    let journal = FsMilestoneJournalStore
+        .read_journal(base_dir, milestone_id)
+        .map_err(|error| {
+            milestone_error(format!(
+                "failed to read journal before deduping propose_new_bead_pending event: {error}"
+            ))
+        })?;
+    Ok(journal.iter().any(|event| {
+        event.details.as_deref() == Some(details)
+            && event.metadata.as_ref().is_some_and(|event_metadata| {
+                pending_event_metadata_matches(event_metadata, metadata)
+            })
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_propose_new_bead_pending_event(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    run_id: &str,
+    findings: &[&TerminalReviewFinding],
+    current_count: usize,
+    threshold: usize,
+    now: DateTime<Utc>,
+) -> Result<(), ReconciliationError> {
+    let milestone_error = |details: String| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: bead_id.to_owned(),
+        task_id: milestone_id.to_string(),
+        details,
+    };
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "sub_type".to_owned(),
+        serde_json::Value::String("propose_new_bead_pending".to_owned()),
+    );
+    metadata.insert(
+        "active_bead_id".to_owned(),
+        serde_json::Value::String(bead_id.to_owned()),
+    );
+    metadata.insert(
+        "proposed_title".to_owned(),
+        serde_json::Value::String(display_proposal_summary(findings)),
+    );
+    metadata.insert(
+        "proposed_scope".to_owned(),
+        serde_json::Value::String(display_proposal_scope(findings)),
+    );
+    metadata.insert(
+        "severity".to_owned(),
+        serde_json::Value::String(display_proposal_severity(findings)),
+    );
+    metadata.insert(
+        "current_count".to_owned(),
+        serde_json::Value::Number(serde_json::Number::from(current_count as u64)),
+    );
+    metadata.insert(
+        "threshold_count".to_owned(),
+        serde_json::Value::Number(serde_json::Number::from(threshold as u64)),
+    );
+    metadata.insert(
+        "existing_bead_lookup_ran".to_owned(),
+        serde_json::Value::Bool(false),
+    );
+    metadata.insert(
+        "run_id".to_owned(),
+        serde_json::Value::String(run_id.to_owned()),
+    );
+    metadata.insert(
+        "amendment_ids".to_owned(),
+        serde_json::Value::Array(
+            findings
+                .iter()
+                .map(|finding| serde_json::Value::String(finding.amendment_id.clone()))
+                .collect(),
+        ),
+    );
+    let details = display_proposal_summary(findings);
+    if propose_new_bead_pending_event_exists(base_dir, milestone_id, &metadata, &details)? {
+        return Ok(());
+    }
+
+    let mut event = MilestoneJournalEvent::new(MilestoneEventType::ProgressUpdated, now)
+        .with_bead(bead_id.to_owned())
+        .with_details(details);
+    event.metadata = Some(metadata);
+    let line = event.to_ndjson_line().map_err(|error| {
+        milestone_error(format!(
+            "failed to serialize propose_new_bead_pending event: {error}"
+        ))
+    })?;
+    FsMilestoneJournalStore
+        .append_event(base_dir, milestone_id, &line)
+        .map_err(|error| {
+            milestone_error(format!(
+                "failed to append propose_new_bead_pending event: {error}"
+            ))
+        })
+}
+
+fn created_event_metadata_matches(
+    event_metadata: &serde_json::Map<String, serde_json::Value>,
+    expected_metadata: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    [
+        "sub_type",
+        "active_bead_id",
+        "run_id",
+        "proposed_title",
+        "proposed_scope",
+        "severity",
+        "current_count",
+        "threshold_count",
+        "existing_bead_lookup_ran",
+        "amendment_ids",
+    ]
+    .into_iter()
+    .all(|key| event_metadata.get(key) == expected_metadata.get(key))
+}
+
+fn propose_new_bead_created_event_exists(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    metadata: &serde_json::Map<String, serde_json::Value>,
+    details: &str,
+) -> Result<bool, ReconciliationError> {
+    let milestone_error = |details: String| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: metadata
+            .get("active_bead_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("<unknown>")
+            .to_owned(),
+        task_id: milestone_id.to_string(),
+        details,
+    };
+    let journal = FsMilestoneJournalStore
+        .read_journal(base_dir, milestone_id)
+        .map_err(|error| {
+            milestone_error(format!(
+                "failed to read journal before deduping propose_new_bead_created event: {error}"
+            ))
+        })?;
+    Ok(journal.iter().any(|event| {
+        event.details.as_deref() == Some(details)
+            && event.metadata.as_ref().is_some_and(|event_metadata| {
+                created_event_metadata_matches(event_metadata, metadata)
+            })
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_propose_new_bead_created_event(
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    input: &TerminalProposeNewBeadInput,
+    amendment_ids: &[String],
+    current_count: usize,
+    threshold: usize,
+    existing_bead_lookup_ran: bool,
+    now: DateTime<Utc>,
+) -> Result<(), ReconciliationError> {
+    let milestone_error = |details: String| ReconciliationError::MilestoneUpdateFailed {
+        bead_id: input.active_bead_id.clone(),
+        task_id: milestone_id.to_string(),
+        details,
+    };
+    let mut metadata = serde_json::Map::new();
+    metadata.insert(
+        "sub_type".to_owned(),
+        serde_json::Value::String("propose_new_bead_created".to_owned()),
+    );
+    metadata.insert(
+        "active_bead_id".to_owned(),
+        serde_json::Value::String(input.active_bead_id.clone()),
+    );
+    metadata.insert(
+        "proposed_title".to_owned(),
+        serde_json::Value::String(input.proposed_title.clone()),
+    );
+    metadata.insert(
+        "proposed_scope".to_owned(),
+        serde_json::Value::String(input.proposed_scope.clone()),
+    );
+    metadata.insert(
+        "severity".to_owned(),
+        serde_json::Value::String(input.severity.clone()),
+    );
+    if let Some(rationale) = &input.rationale {
+        metadata.insert(
+            "rationale".to_owned(),
+            serde_json::Value::String(rationale.clone()),
+        );
+    }
+    metadata.insert(
+        "current_count".to_owned(),
+        serde_json::Value::Number(serde_json::Number::from(current_count as u64)),
+    );
+    metadata.insert(
+        "threshold_count".to_owned(),
+        serde_json::Value::Number(serde_json::Number::from(threshold as u64)),
+    );
+    metadata.insert(
+        "existing_bead_lookup_ran".to_owned(),
+        serde_json::Value::Bool(existing_bead_lookup_ran),
+    );
+    metadata.insert(
+        "run_id".to_owned(),
+        serde_json::Value::String(input.run_id.clone()),
+    );
+    metadata.insert(
+        "amendment_ids".to_owned(),
+        serde_json::Value::Array(
+            amendment_ids
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    );
+    let details = input.finding_summary.clone();
+    if propose_new_bead_created_event_exists(base_dir, milestone_id, &metadata, &details)? {
+        return Ok(());
+    }
+
+    let mut event = MilestoneJournalEvent::new(MilestoneEventType::ProposedBeadCreated, now)
+        .with_bead(input.active_bead_id.clone())
+        .with_details(details);
+    event.metadata = Some(metadata);
+    let line = event.to_ndjson_line().map_err(|error| {
+        milestone_error(format!(
+            "failed to serialize propose_new_bead_created event: {error}"
+        ))
+    })?;
+    FsMilestoneJournalStore
+        .append_event(base_dir, milestone_id, &line)
+        .map_err(|error| {
+            milestone_error(format!(
+                "failed to append propose_new_bead_created event: {error}"
+            ))
+        })
 }
 
 fn is_missing_bead_error(error: &BrError) -> bool {
@@ -1422,10 +1994,14 @@ async fn reconcile_covered_by_existing_beads<M: ProcessRunner, Q: ProcessRunner>
     Ok(())
 }
 
-fn reconcile_proposed_bead_records(
+#[allow(clippy::too_many_arguments)]
+async fn reconcile_proposed_bead_records<M: ProcessRunner, Q: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<M>,
+    br_read: &BrAdapter<Q>,
     base_dir: &Path,
     bead_id: &str,
     task_id: &str,
+    milestone_id: &MilestoneId,
     project_id: &str,
     run_id: &str,
     findings: &[TerminalReviewFinding],
@@ -1440,7 +2016,8 @@ fn reconcile_proposed_bead_records(
         return Ok(ProposedBeadReconciliationSummary::default());
     };
 
-    let threshold = proposal_threshold(base_dir, project_id);
+    let policy = terminal_parsimonious_bead_creation_policy(base_dir, project_id);
+    let threshold = policy.proposal_threshold;
     let mut groups: HashMap<String, Vec<&TerminalReviewFinding>> = HashMap::new();
     let mut amendments_processed = 0usize;
     for finding in findings {
@@ -1452,17 +2029,124 @@ fn reconcile_proposed_bead_records(
         }
     }
 
-    let threshold_met_groups: Vec<_> = groups
-        .iter()
-        .filter(|(_, findings)| {
-            findings
-                .iter()
-                .map(|finding| finding.occurrence_count)
-                .sum::<usize>()
-                >= threshold
-        })
-        .collect();
+    let mut threshold_met_groups = Vec::new();
+    for (summary_key, findings) in &groups {
+        let source_count = distinct_proposal_source_count(findings);
+        if source_count >= threshold {
+            threshold_met_groups.push((summary_key, findings));
+        } else {
+            record_propose_new_bead_pending_event(
+                base_dir,
+                milestone_id,
+                bead_id,
+                run_id,
+                findings,
+                source_count,
+                threshold,
+                now,
+            )?;
+            tracing::info!(
+                bead_id = bead_id,
+                run_id = run_id,
+                proposed_bead_summary = summary_key.as_str(),
+                current_count = source_count,
+                threshold = threshold,
+                "terminal propose-new-bead amendment pending threshold"
+            );
+        }
+    }
     if threshold_met_groups.is_empty() {
+        return Ok(ProposedBeadReconciliationSummary {
+            amendments_processed,
+            records_written: 0,
+        });
+    }
+
+    let threshold_met_groups: Vec<_> = threshold_met_groups
+        .iter()
+        .map(|(summary, findings)| (*summary, *findings))
+        .collect();
+
+    let mut threshold_met_record_groups = Vec::new();
+    let mut all_beads = None;
+    for (summary_key, findings) in threshold_met_groups {
+        let input = TerminalProposeNewBeadInput::from_group(bead_id, run_id, findings);
+        let mut existing_bead_lookup_ran = false;
+        if policy.enabled {
+            let summaries = match &all_beads {
+                Some(summaries) => summaries,
+                None => {
+                    all_beads = Some(list_all_bead_summaries(br_read).await.map_err(|error| {
+                        milestone_error(format!(
+                            "failed to query existing beads before terminal propose_new_bead record routing: {error}"
+                        ))
+                    })?);
+                    all_beads.as_ref().expect("summaries just initialized")
+                }
+            };
+            existing_bead_lookup_ran = true;
+
+            if let Some((matched, score)) = load_active_bead_match(
+                br_read,
+                summaries,
+                &input,
+                policy.existing_bead_match_threshold_score,
+            )
+            .await
+            .map_err(|error| {
+                milestone_error(format!(
+                    "failed to inspect active bead ownership before terminal propose_new_bead record routing: {error}"
+                ))
+            })? {
+                tracing::info!(
+                    bead_id = bead_id,
+                    run_id = run_id,
+                    proposed_bead_summary = summary_key.as_str(),
+                    active_bead_id = matched.id.as_str(),
+                    match_score = score,
+                    "terminal propose-new-bead amendment is owned by the active bead; skipping proposed-bead record"
+                );
+                continue;
+            }
+
+            if let Some((matched, score)) = find_existing_open_bead_match(
+                br_read,
+                summaries,
+                &input,
+                policy.existing_bead_match_threshold_score,
+            )
+            .await
+            .map_err(|error| {
+                milestone_error(format!(
+                    "failed to lookup existing bead ownership before terminal propose_new_bead record routing: {error}"
+                ))
+            })? {
+                comment_propose_new_bead_covered_by_existing(
+                    br_mutation,
+                    base_dir,
+                    bead_id,
+                    task_id,
+                    &input,
+                    &matched,
+                    score,
+                )
+                .await?;
+                tracing::info!(
+                    bead_id = bead_id,
+                    run_id = run_id,
+                    proposed_bead_summary = summary_key.as_str(),
+                    covered_by_bead_id = matched.id.as_str(),
+                    match_score = score,
+                    "terminal propose-new-bead amendment covered by existing bead; skipping proposed-bead record"
+                );
+                continue;
+            }
+        }
+
+        threshold_met_record_groups.push((input, findings.clone(), existing_bead_lookup_ran));
+    }
+
+    if threshold_met_record_groups.is_empty() {
         return Ok(ProposedBeadReconciliationSummary {
             amendments_processed,
             records_written: 0,
@@ -1476,60 +2160,81 @@ fn reconcile_proposed_bead_records(
     })?;
 
     let mut records = Vec::new();
-    for (_, findings) in threshold_met_groups {
-        let occurrence_count = findings
+    let mut created_events = Vec::new();
+    for (input, findings, existing_bead_lookup_ran) in threshold_met_record_groups {
+        let source_count = distinct_proposal_source_count(&findings);
+        let amendment_ids = findings
             .iter()
-            .map(|finding| finding.occurrence_count)
-            .sum::<usize>();
+            .map(|finding| finding.amendment_id.clone())
+            .collect::<Vec<_>>();
         let amendment_id = findings
             .iter()
             .map(|finding| finding.amendment_id.as_str())
             .min()
             .unwrap_or_default()
             .to_owned();
-        if existing.amendment_ids.contains(&amendment_id) {
-            continue;
-        }
-        records.push(ProposedBeadRecord {
-            amendment_id,
+        let record = ProposedBeadRecord {
+            amendment_id: amendment_id.clone(),
             source_run_id: run_id.to_owned(),
             current_bead_id: bead_id.to_owned(),
-            summary: display_proposal_summary(findings),
-            count: occurrence_count,
+            summary: input.proposed_title.clone(),
+            proposed_title: Some(input.proposed_title.clone()),
+            proposed_scope: Some(input.proposed_scope.clone()),
+            severity: Some(input.severity.clone()),
+            rationale: input.rationale.clone(),
+            count: source_count,
             timestamp: now,
-        });
+        };
+        created_events.push((input, amendment_ids, source_count, existing_bead_lookup_ran));
+        if !existing.amendment_ids.contains(&amendment_id) {
+            records.push(record);
+        }
     }
 
-    if records.is_empty() {
+    if records.is_empty() && created_events.is_empty() {
         return Ok(ProposedBeadReconciliationSummary {
             amendments_processed,
             records_written: 0,
         });
     }
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| {
-            milestone_error(format!(
-                "failed to create proposed-beads.ndjson parent directory: {error}"
-            ))
-        })?;
+    if !records.is_empty() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                milestone_error(format!(
+                    "failed to create proposed-beads.ndjson parent directory: {error}"
+                ))
+            })?;
+        }
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|error| {
+                milestone_error(format!(
+                    "failed to open proposed-beads.ndjson for append: {error}"
+                ))
+            })?;
+        for record in &records {
+            serde_json::to_writer(&mut file, record).map_err(|error| {
+                milestone_error(format!("failed to serialize proposed bead record: {error}"))
+            })?;
+            file.write_all(b"\n").map_err(|error| {
+                milestone_error(format!("failed to append proposed bead record: {error}"))
+            })?;
+        }
     }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| {
-            milestone_error(format!(
-                "failed to open proposed-beads.ndjson for append: {error}"
-            ))
-        })?;
-    for record in &records {
-        serde_json::to_writer(&mut file, record).map_err(|error| {
-            milestone_error(format!("failed to serialize proposed bead record: {error}"))
-        })?;
-        file.write_all(b"\n").map_err(|error| {
-            milestone_error(format!("failed to append proposed bead record: {error}"))
-        })?;
+    for (input, amendment_ids, source_count, existing_bead_lookup_ran) in &created_events {
+        record_propose_new_bead_created_event(
+            base_dir,
+            milestone_id,
+            input,
+            amendment_ids,
+            *source_count,
+            threshold,
+            *existing_bead_lookup_ran,
+            now,
+        )?;
     }
 
     Ok(ProposedBeadReconciliationSummary {
@@ -1538,6 +2243,7 @@ fn reconcile_proposed_bead_records(
     })
 }
 
+#[cfg(test)]
 pub(crate) async fn reconcile_terminal_review_classifications<
     M: ProcessRunner,
     Q: ProcessRunner,
@@ -1550,6 +2256,40 @@ pub(crate) async fn reconcile_terminal_review_classifications<
     project_id: &str,
     run_id: &str,
 ) -> Result<ProposedBeadReconciliationSummary, ReconciliationError> {
+    reconcile_terminal_review_classifications_for_milestone(
+        br_mutation,
+        br_read,
+        base_dir,
+        bead_id,
+        task_id,
+        task_id,
+        project_id,
+        run_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn reconcile_terminal_review_classifications_for_milestone<
+    M: ProcessRunner,
+    Q: ProcessRunner,
+>(
+    br_mutation: &BrMutationAdapter<M>,
+    br_read: &BrAdapter<Q>,
+    base_dir: &Path,
+    bead_id: &str,
+    task_id: &str,
+    milestone_id_str: &str,
+    project_id: &str,
+    run_id: &str,
+) -> Result<ProposedBeadReconciliationSummary, ReconciliationError> {
+    let milestone_id = MilestoneId::new(milestone_id_str).map_err(|error| {
+        ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!("invalid milestone id for terminal review reconciliation: {error}"),
+        }
+    })?;
     let terminal =
         terminal_review_findings_for_run(base_dir, project_id, bead_id, task_id, run_id)?;
     if terminal.findings.is_empty() {
@@ -1567,14 +2307,18 @@ pub(crate) async fn reconcile_terminal_review_classifications<
     )
     .await?;
     let summary = reconcile_proposed_bead_records(
+        br_mutation,
+        br_read,
         base_dir,
         bead_id,
         task_id,
+        &milestone_id,
         project_id,
         run_id,
         &terminal.findings,
         Utc::now(),
-    )?;
+    )
+    .await?;
     tracing::info!(
         bead_id = bead_id,
         run_id = run_id,
@@ -4855,6 +5599,27 @@ mod tests {
         }
     }
 
+    fn final_review_source(
+        reviewer_id: &str,
+        model_id: &str,
+    ) -> crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource {
+        crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource {
+            reviewer_id: reviewer_id.to_owned(),
+            backend_family: "stub".to_owned(),
+            model_id: model_id.to_owned(),
+        }
+    }
+
+    fn final_review_sources(
+        specs: &[(&str, &str)],
+    ) -> Vec<crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource>
+    {
+        specs
+            .iter()
+            .map(|(reviewer_id, model_id)| final_review_source(reviewer_id, model_id))
+            .collect()
+    }
+
     fn write_terminal_aggregate_round(
         base: &Path,
         project_id: &str,
@@ -4901,13 +5666,26 @@ mod tests {
         run_id: &str,
         classified_findings: Vec<ClassifiedFinding>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        write_review_payload_with_id(
+            base,
+            project_id,
+            &format!("{run_id}-review-c1-a1-cr1-payload"),
+            classified_findings,
+        )
+    }
+
+    fn write_review_payload_with_id(
+        base: &Path,
+        project_id: &str,
+        payload_id: &str,
+        classified_findings: Vec<ClassifiedFinding>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let project_id = ProjectId::new(project_id)?;
         let project_root = FileSystem::project_root(base, &project_id);
         let payloads_dir = project_root.join("history/payloads");
         std::fs::create_dir_all(&payloads_dir)?;
-        let payload_id = format!("{run_id}-review-c1-a1-cr1-payload");
         let payload = PayloadRecord {
-            payload_id: payload_id.clone(),
+            payload_id: payload_id.to_owned(),
             stage_id: StageId::Review,
             cycle: 1,
             attempt: 1,
@@ -5644,6 +6422,79 @@ mod tests {
                 .join("proposed-beads.ndjson")
                 .exists()
         );
+        let journal =
+            FsMilestoneJournalStore.read_journal(base, &MilestoneId::new("task-propose-low")?)?;
+        let pending = journal
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_pending")
+            })
+            .expect("pending event");
+        let metadata = pending.metadata.as_ref().expect("metadata");
+        assert_eq!(metadata["current_count"], 1);
+        assert_eq!(metadata["threshold_count"], 2);
+        assert_eq!(metadata["proposed_title"], "Add retry telemetry");
+        assert_eq!(metadata["existing_bead_lookup_ran"], false);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classification_propose_new_bead_below_threshold_pending_event_is_idempotent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        let mut amendment = terminal_amendment(
+            "a1",
+            AmendmentClassification::ProposeNewBead,
+            "missing work",
+        );
+        amendment.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        let aggregate = terminal_aggregate(vec![amendment]);
+        write_terminal_aggregate(
+            base,
+            "proj-propose-low-idempotent",
+            "run-propose-low-idempotent",
+            &aggregate,
+        )?;
+
+        let mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        for _ in 0..2 {
+            let summary = reconcile_terminal_review_classifications(
+                &mutation,
+                &read,
+                base,
+                "active-bead",
+                "task-propose-low-idempotent",
+                "proj-propose-low-idempotent",
+                "run-propose-low-idempotent",
+            )
+            .await?;
+            assert_eq!(summary.amendments_processed, 1);
+            assert_eq!(summary.records_written, 0);
+        }
+
+        let journal = FsMilestoneJournalStore
+            .read_journal(base, &MilestoneId::new("task-propose-low-idempotent")?)?;
+        let pending_count = journal
+            .iter()
+            .filter(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_pending")
+            })
+            .count();
+        assert_eq!(pending_count, 1);
         Ok(())
     }
 
@@ -5751,18 +6602,20 @@ mod tests {
             "missing work 1",
         );
         first.proposed_bead_summary = Some(" Add retry telemetry ".to_owned());
+        first.sources = vec![final_review_source("reviewer-a", "a")];
         let mut second = terminal_amendment(
             "a2",
             AmendmentClassification::ProposeNewBead,
             "missing work 2",
         );
         second.proposed_bead_summary = Some("add retry telemetry".to_owned());
+        second.sources = vec![final_review_source("reviewer-b", "b")];
         let aggregate = terminal_aggregate(vec![first, second]);
         write_terminal_aggregate(base, "proj-propose-hit", "run-propose-hit", &aggregate)?;
 
         let mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
-        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success("[]")]));
         let summary = reconcile_terminal_review_classifications(
             &mutation,
             &read,
@@ -5789,11 +6642,32 @@ mod tests {
         assert_eq!(records[0]["summary"], "Add retry telemetry");
         assert_eq!(records[0]["count"], 2);
         assert_eq!(records[0]["amendment_id"], "a1");
+        let journal =
+            FsMilestoneJournalStore.read_journal(base, &MilestoneId::new("task-propose-hit")?)?;
+        let created = journal
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_created")
+            })
+            .expect("created event");
+        assert_eq!(created.event_type, MilestoneEventType::ProposedBeadCreated);
+        let metadata = created.metadata.as_ref().expect("metadata");
+        assert_eq!(metadata["proposed_title"], "Add retry telemetry");
+        assert_eq!(metadata["proposed_scope"], "missing work 1\nmissing work 2");
+        assert_eq!(metadata["severity"], "unknown");
+        assert_eq!(metadata["current_count"], 2);
+        assert_eq!(metadata["threshold_count"], 2);
+        assert_eq!(metadata["existing_bead_lookup_ran"], true);
         Ok(())
     }
 
     #[tokio::test]
-    async fn classification_propose_new_bead_counts_final_review_sources(
+    async fn classification_propose_new_bead_created_uses_final_review_metadata(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -5801,9 +6675,13 @@ mod tests {
         let mut amendment = terminal_amendment(
             "a1",
             AmendmentClassification::ProposeNewBead,
-            "missing work",
+            "legacy body should not drive proposal metadata",
         );
-        amendment.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        amendment.proposed_title = Some("Authoritative retry telemetry".to_owned());
+        amendment.proposed_scope =
+            Some("Instrument retry loops with counters and histograms".to_owned());
+        amendment.severity = Some(Severity::High);
+        amendment.rationale = Some("No existing bead owns retry observability".to_owned());
         amendment.sources = vec![
             crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource {
                 reviewer_id: "reviewer-a".to_owned(),
@@ -5819,6 +6697,244 @@ mod tests {
         let aggregate = terminal_aggregate(vec![amendment]);
         write_terminal_aggregate(
             base,
+            "proj-propose-metadata",
+            "run-propose-metadata",
+            &aggregate,
+        )?;
+
+        let mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success("[]")]));
+        let summary = reconcile_terminal_review_classifications(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-propose-metadata",
+            "proj-propose-metadata",
+            "run-propose-metadata",
+        )
+        .await?;
+
+        assert_eq!(summary.amendments_processed, 1);
+        assert_eq!(summary.records_written, 1);
+        let path = FileSystem::project_root(base, &ProjectId::new("proj-propose-metadata")?)
+            .join("proposed-beads.ndjson");
+        let record: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(path)?.trim())?;
+        assert_eq!(record["summary"], "Authoritative retry telemetry");
+        assert_eq!(record["proposed_title"], "Authoritative retry telemetry");
+        assert_eq!(
+            record["proposed_scope"],
+            "Instrument retry loops with counters and histograms"
+        );
+        assert_eq!(record["severity"], "high");
+        assert_eq!(
+            record["rationale"],
+            "No existing bead owns retry observability"
+        );
+
+        let journal = FsMilestoneJournalStore
+            .read_journal(base, &MilestoneId::new("task-propose-metadata")?)?;
+        let created = journal
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_created")
+            })
+            .expect("created event");
+        let metadata = created.metadata.as_ref().expect("metadata");
+        assert_eq!(metadata["proposed_title"], "Authoritative retry telemetry");
+        assert_eq!(
+            metadata["proposed_scope"],
+            "Instrument retry loops with counters and histograms"
+        );
+        assert_eq!(metadata["severity"], "high");
+        assert_eq!(
+            metadata["rationale"],
+            "No existing bead owns retry observability"
+        );
+        assert_eq!(metadata["threshold_count"], 2);
+        assert_eq!(metadata["existing_bead_lookup_ran"], true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classification_propose_new_bead_closed_active_match_writes_no_record(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        let mut amendment = terminal_amendment(
+            "a1",
+            AmendmentClassification::ProposeNewBead,
+            "retry telemetry should stay with active bead",
+        );
+        amendment.proposed_title = Some("Retry telemetry instrumentation".to_owned());
+        amendment.proposed_scope =
+            Some("Instrument retry loops with counters and histograms".to_owned());
+        amendment.sources = vec![
+            crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource {
+                reviewer_id: "reviewer-a".to_owned(),
+                backend_family: "stub".to_owned(),
+                model_id: "a".to_owned(),
+            },
+            crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource {
+                reviewer_id: "reviewer-b".to_owned(),
+                backend_family: "stub".to_owned(),
+                model_id: "b".to_owned(),
+            },
+        ];
+        let aggregate = terminal_aggregate(vec![amendment]);
+        write_terminal_aggregate(
+            base,
+            "proj-propose-closed-active",
+            "run-propose-closed-active",
+            &aggregate,
+        )?;
+
+        let list_json = r#"[{"id":"active-bead","title":"Retry telemetry instrumentation","status":"closed","priority":2,"bead_type":"task"}]"#;
+        let show_json = r#"{"id":"active-bead","title":"Retry telemetry instrumentation","status":"closed","priority":2,"bead_type":"task","description":"Instrument retry loops with counters and histograms","comments":[]}"#;
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![
+            MockBrRunner::success(show_json),
+            MockBrRunner::success(list_json),
+        ]));
+        let mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+
+        let summary = reconcile_terminal_review_classifications(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-propose-closed-active",
+            "proj-propose-closed-active",
+            "run-propose-closed-active",
+        )
+        .await?;
+
+        assert_eq!(summary.amendments_processed, 1);
+        assert_eq!(summary.records_written, 0);
+        assert!(
+            !FileSystem::project_root(base, &ProjectId::new("proj-propose-closed-active")?)
+                .join("proposed-beads.ndjson")
+                .exists()
+        );
+        let journal = FsMilestoneJournalStore
+            .read_journal(base, &MilestoneId::new("task-propose-closed-active")?)?;
+        assert!(journal.iter().all(|event| {
+            event
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("sub_type"))
+                .and_then(|value| value.as_str())
+                != Some("propose_new_bead_created")
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classification_propose_new_bead_existing_match_comments_without_record(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        write_beads_export(base)?;
+        let mut first = terminal_amendment(
+            "a1",
+            AmendmentClassification::ProposeNewBead,
+            "retry telemetry missing counters",
+        );
+        first.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        first.sources = vec![final_review_source("reviewer-a", "a")];
+        let mut second = terminal_amendment(
+            "a2",
+            AmendmentClassification::ProposeNewBead,
+            "add retry metrics",
+        );
+        second.proposed_bead_summary = Some("add retry telemetry".to_owned());
+        second.sources = vec![final_review_source("reviewer-b", "b")];
+        let aggregate = terminal_aggregate(vec![first, second]);
+        write_terminal_aggregate(
+            base,
+            "proj-propose-existing-match",
+            "run-propose-existing-match",
+            &aggregate,
+        )?;
+
+        let list_json = r#"[{"id":"target-bead","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task"}]"#;
+        let show_json = r#"{"id":"target-bead","title":"Add retry telemetry","status":"open","priority":2,"bead_type":"task","description":"retry telemetry missing counters add retry metrics","comments":[]}"#;
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![
+            MockBrRunner::success(show_json),
+            MockBrRunner::success(list_json),
+        ]));
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let mutation_runner = RecordingBrRunner::new(
+            vec![
+                MockBrRunner::success("synced"),
+                MockBrRunner::success("commented"),
+            ],
+            invocations.clone(),
+            None,
+        );
+        let mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        let summary = reconcile_terminal_review_classifications(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-propose-existing-match",
+            "proj-propose-existing-match",
+            "run-propose-existing-match",
+        )
+        .await?;
+
+        assert_eq!(summary.amendments_processed, 2);
+        assert_eq!(summary.records_written, 0);
+        assert!(
+            !FileSystem::project_root(base, &ProjectId::new("proj-propose-existing-match")?)
+                .join("proposed-beads.ndjson")
+                .exists()
+        );
+        let calls = invocations.lock().unwrap();
+        let comment_call = calls
+            .iter()
+            .find(|args| {
+                args.first().is_some_and(|arg| arg == "comments")
+                    && args.get(1).is_some_and(|arg| arg == "add")
+            })
+            .expect("covered-by-existing comment");
+        let comment_text = comment_call.last().expect("comment text");
+        assert!(comment_text.contains("classification=covered_by_existing_bead"));
+        assert!(comment_text.contains("active_bead_id=active-bead"));
+        assert!(comment_text.contains("run_id=run-propose-existing-match"));
+        assert!(
+            comment_text.contains("Finding: retry telemetry missing counters add retry metrics")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classification_propose_new_bead_counts_final_review_sources(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        let mut amendment = terminal_amendment(
+            "a1",
+            AmendmentClassification::ProposeNewBead,
+            "missing work",
+        );
+        amendment.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        amendment.sources = final_review_sources(&[("reviewer-a", "a"), ("reviewer-b", "b")]);
+        let aggregate = terminal_aggregate(vec![amendment]);
+        write_terminal_aggregate(
+            base,
             "proj-propose-sources",
             "run-propose-sources",
             &aggregate,
@@ -5826,7 +6942,7 @@ mod tests {
 
         let mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
-        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success("[]")]));
         let summary = reconcile_terminal_review_classifications(
             &mutation,
             &read,
@@ -5850,7 +6966,138 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn classification_reconciles_review_stage_findings(
+    async fn classification_propose_new_bead_duplicate_final_review_source_stays_pending(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        let source = final_review_source("reviewer-a", "a");
+        let mut first = terminal_amendment(
+            "a1",
+            AmendmentClassification::ProposeNewBead,
+            "missing work 1",
+        );
+        first.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        first.sources = vec![source.clone()];
+        let mut second = terminal_amendment(
+            "a2",
+            AmendmentClassification::ProposeNewBead,
+            "missing work 2",
+        );
+        second.proposed_bead_summary = Some("add retry telemetry".to_owned());
+        second.sources = vec![source];
+        let aggregate = terminal_aggregate(vec![first, second]);
+        write_terminal_aggregate(
+            base,
+            "proj-propose-single-source",
+            "run-propose-single-source",
+            &aggregate,
+        )?;
+
+        let mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let summary = reconcile_terminal_review_classifications(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-propose-single-source",
+            "proj-propose-single-source",
+            "run-propose-single-source",
+        )
+        .await?;
+
+        assert_eq!(summary.amendments_processed, 2);
+        assert_eq!(summary.records_written, 0);
+        assert!(
+            !FileSystem::project_root(base, &ProjectId::new("proj-propose-single-source")?)
+                .join("proposed-beads.ndjson")
+                .exists()
+        );
+        let journal = FsMilestoneJournalStore
+            .read_journal(base, &MilestoneId::new("task-propose-single-source")?)?;
+        let pending = journal
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_pending")
+            })
+            .expect("pending event");
+        assert_eq!(pending.metadata.as_ref().unwrap()["current_count"], 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classification_propose_new_bead_missing_final_review_sources_stay_pending(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        let mut first = terminal_amendment(
+            "a1",
+            AmendmentClassification::ProposeNewBead,
+            "missing work 1",
+        );
+        first.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        let mut second = terminal_amendment(
+            "a2",
+            AmendmentClassification::ProposeNewBead,
+            "missing work 2",
+        );
+        second.proposed_bead_summary = Some("add retry telemetry".to_owned());
+        let aggregate = terminal_aggregate(vec![first, second]);
+        write_terminal_aggregate(
+            base,
+            "proj-propose-missing-sources",
+            "run-propose-missing-sources",
+            &aggregate,
+        )?;
+
+        let mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let summary = reconcile_terminal_review_classifications(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-propose-missing-sources",
+            "proj-propose-missing-sources",
+            "run-propose-missing-sources",
+        )
+        .await?;
+
+        assert_eq!(summary.amendments_processed, 2);
+        assert_eq!(summary.records_written, 0);
+        assert!(
+            !FileSystem::project_root(base, &ProjectId::new("proj-propose-missing-sources")?)
+                .join("proposed-beads.ndjson")
+                .exists()
+        );
+        let journal = FsMilestoneJournalStore
+            .read_journal(base, &MilestoneId::new("task-propose-missing-sources")?)?;
+        let pending = journal
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_pending")
+            })
+            .expect("pending event");
+        assert_eq!(pending.metadata.as_ref().unwrap()["current_count"], 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classification_review_stage_duplicate_payload_findings_stay_pending(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -5875,7 +7122,7 @@ mod tests {
 
         let mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
-        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success("[]")]));
         let summary = reconcile_terminal_review_classifications(
             &mutation,
             &read,
@@ -5888,8 +7135,75 @@ mod tests {
         .await?;
 
         assert_eq!(summary.amendments_processed, 2);
-        assert_eq!(summary.records_written, 1);
+        assert_eq!(summary.records_written, 0);
         let path = FileSystem::project_root(base, &ProjectId::new("proj-review-stage")?)
+            .join("proposed-beads.ndjson");
+        assert!(!path.exists());
+        let journal =
+            FsMilestoneJournalStore.read_journal(base, &MilestoneId::new("task-review-stage")?)?;
+        let pending = journal
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_pending")
+            })
+            .expect("pending event");
+        assert_eq!(pending.metadata.as_ref().unwrap()["current_count"], 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn classification_reconciles_review_stage_findings_from_distinct_payloads(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        write_review_payload_with_id(
+            base,
+            "proj-review-stage-distinct",
+            "run-review-stage-distinct-reviewer-a-c1-a1-cr1-payload",
+            vec![ClassifiedFinding {
+                body: "missing work 1".to_owned(),
+                classification: AmendmentClassification::ProposeNewBead,
+                covered_by_bead_id: None,
+                mapped_to_bead_id: None,
+                proposed_bead_summary: Some("Add retry telemetry".to_owned()),
+            }],
+        )?;
+        write_review_payload_with_id(
+            base,
+            "proj-review-stage-distinct",
+            "run-review-stage-distinct-reviewer-b-c1-a1-cr1-payload",
+            vec![ClassifiedFinding {
+                body: "missing work 2".to_owned(),
+                classification: AmendmentClassification::ProposeNewBead,
+                covered_by_bead_id: None,
+                mapped_to_bead_id: None,
+                proposed_bead_summary: Some(" add retry telemetry ".to_owned()),
+            }],
+        )?;
+
+        let mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success("[]")]));
+        let summary = reconcile_terminal_review_classifications(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-review-stage-distinct",
+            "proj-review-stage-distinct",
+            "run-review-stage-distinct",
+        )
+        .await?;
+
+        assert_eq!(summary.amendments_processed, 2);
+        assert_eq!(summary.records_written, 1);
+        let path = FileSystem::project_root(base, &ProjectId::new("proj-review-stage-distinct")?)
             .join("proposed-beads.ndjson");
         let record: serde_json::Value =
             serde_json::from_str(std::fs::read_to_string(path)?.trim())?;
@@ -5897,7 +7211,7 @@ mod tests {
         assert_eq!(record["count"], 2);
         assert_eq!(
             record["amendment_id"],
-            "review:run-review-stage-review-c1-a1-cr1-payload:0"
+            "review:run-review-stage-distinct-reviewer-a-c1-a1-cr1-payload:0"
         );
         Ok(())
     }
@@ -5914,12 +7228,14 @@ mod tests {
             "missing work 1",
         );
         first.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        first.sources = vec![final_review_source("reviewer-a", "a")];
         let mut second = terminal_amendment(
             "round-2",
             AmendmentClassification::ProposeNewBead,
             "missing work 2",
         );
         second.proposed_bead_summary = Some("add retry telemetry".to_owned());
+        second.sources = vec![final_review_source("reviewer-b", "b")];
         write_terminal_aggregate_round(
             base,
             "proj-final-rounds",
@@ -5937,7 +7253,7 @@ mod tests {
 
         let mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
-        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success("[]")]));
         let summary = reconcile_terminal_review_classifications(
             &mutation,
             &read,
@@ -5968,9 +7284,11 @@ mod tests {
         let mut first =
             terminal_amendment("a1", AmendmentClassification::ProposeNewBead, "missing 1");
         first.proposed_bead_summary = Some("Add retry telemetry".to_owned());
+        first.sources = vec![final_review_source("reviewer-a", "a")];
         let mut second =
             terminal_amendment("a2", AmendmentClassification::ProposeNewBead, "missing 2");
         second.proposed_bead_summary = Some("add retry telemetry".to_owned());
+        second.sources = vec![final_review_source("reviewer-b", "b")];
         let aggregate = terminal_aggregate(vec![first, second]);
         write_terminal_aggregate(
             base,
@@ -5981,7 +7299,10 @@ mod tests {
 
         let mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
-        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![
+            MockBrRunner::success("[]"),
+            MockBrRunner::success("[]"),
+        ]));
         reconcile_terminal_review_classifications(
             &mutation,
             &read,
@@ -6023,6 +7344,10 @@ mod tests {
             source_run_id: "previous-run".to_owned(),
             current_bead_id: "active-bead".to_owned(),
             summary: "Add retry telemetry".to_owned(),
+            proposed_title: None,
+            proposed_scope: None,
+            severity: None,
+            rationale: None,
             count: 2,
             timestamp: Utc::now(),
         };
@@ -6037,12 +7362,14 @@ mod tests {
             "missing 1",
         );
         first.proposed_bead_summary = Some(" add retry telemetry ".to_owned());
+        first.sources = vec![final_review_source("reviewer-a", "a")];
         let mut second = terminal_amendment(
             "new-a2",
             AmendmentClassification::ProposeNewBead,
             "missing 2",
         );
         second.proposed_bead_summary = Some("ADD RETRY TELEMETRY".to_owned());
+        second.sources = vec![final_review_source("reviewer-b", "b")];
         let aggregate = terminal_aggregate(vec![first, second]);
         write_terminal_aggregate(
             base,
@@ -6053,7 +7380,7 @@ mod tests {
 
         let mutation =
             BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![])));
-        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![MockBrRunner::success("[]")]));
         let summary = reconcile_terminal_review_classifications(
             &mutation,
             &read,

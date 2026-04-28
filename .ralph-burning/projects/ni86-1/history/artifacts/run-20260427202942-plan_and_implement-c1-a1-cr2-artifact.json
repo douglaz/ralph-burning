@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260427202942-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T22:34:24.584309551Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the parsimonious bead creation policy gaps in src/contexts/milestone_record/service.rs: project-scoped workflow.parsimonious_bead_creation is now loaded for propose-new-bead handling, existing-bead ownership lookup runs before below-threshold pending decisions when enabled, and exact-title/rendered-description recovery is gated behind the proposal threshold with created journal metadata including threshold_count and existing_bead_lookup_ran.\n\n## Steps\n\n0. [Completed] Inspected the propose-new-bead handler, current diff, related config lookup, and regression tests to map each pending amendment to the active code path.\n1. [Completed] Moved project-aware parsimonious policy loading into handle_propose_new_bead and threaded project_id through the handler call surface used by tests.\n2. [Completed] Ensured enabled parsimonious policy runs existing-open-bead similarity lookup before returning below-threshold Pending, so strong matches comment as CoveredByExistingBead instead of silently pending.\n3. [Completed] Kept the exact-title/rendered-description recovery path threshold-gated and updated its ProposedBeadCreated journal event to include policy metadata.\n4. [Completed] Added or preserved regression coverage for below-threshold existing matches, below-threshold recovery prevention, and project-scoped proposal_threshold behavior.\n5. [Skipped] Run br lint after backlog edits.\n\n## Validation Evidence\n\n- nix develop -c cargo test --features test-stub handle_propose_new_bead_ -- --nocapture passed: 29 propose-new-bead tests passed.\n- nix develop -c cargo test --features test-stub passed: 1323 lib tests, 378 cli tests, 1 run_attach_tmux test, 1126 unit tests, and doc tests completed with only pre-existing ignored tests.\n- nix develop -c cargo clippy -- -D warnings passed.\n- nix develop -c cargo fmt --check passed.\n- nix build passed.\n- git diff --check -- src/contexts/milestone_record/service.rs passed.\n\n## Outstanding Risks\n\n- Pre-existing dirty live orchestration/backlog files under .beads/ and .ralph-burning/ were left untouched.\n- br lint could not be run because the br binary is unavailable in this environment; no backlog edits were made for this remediation.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

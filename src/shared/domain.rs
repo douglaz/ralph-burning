@@ -1244,6 +1244,11 @@ pub struct WorkflowSettings {
     pub new_bead_proposal_threshold: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_change_action: Option<PromptChangeAction>,
+    #[serde(
+        default,
+        skip_serializing_if = "ParsimoniousBeadCreationSettings::is_empty"
+    )]
+    pub parsimonious_bead_creation: ParsimoniousBeadCreationSettings,
     #[serde(default, skip_serializing_if = "IterativeMinimalSettings::is_empty")]
     pub iterative_minimal: IterativeMinimalSettings,
     #[serde(flatten)]
@@ -1261,7 +1266,29 @@ impl WorkflowSettings {
             && self.max_completion_rounds.is_none()
             && self.new_bead_proposal_threshold.is_none()
             && self.prompt_change_action.is_none()
+            && self.parsimonious_bead_creation.is_empty()
             && self.iterative_minimal.is_empty()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ParsimoniousBeadCreationSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_bead_match_threshold_score: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_threshold: Option<u32>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl ParsimoniousBeadCreationSettings {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.existing_bead_match_threshold_score.is_none()
+            && self.proposal_threshold.is_none()
             && self.extra.is_empty()
     }
 }
@@ -1576,7 +1603,7 @@ impl BackendRoleTimeouts {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EffectiveRunPolicy {
     pub default_flow: FlowPreset,
     pub max_qa_iterations: u32,
@@ -1584,7 +1611,15 @@ pub struct EffectiveRunPolicy {
     pub max_completion_rounds: u32,
     pub new_bead_proposal_threshold: u32,
     pub prompt_change_action: PromptChangeAction,
+    pub parsimonious_bead_creation: EffectiveParsimoniousBeadCreationPolicy,
     pub iterative_minimal: EffectiveIterativeMinimalPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectiveParsimoniousBeadCreationPolicy {
+    pub enabled: bool,
+    pub existing_bead_match_threshold_score: f64,
+    pub proposal_threshold: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

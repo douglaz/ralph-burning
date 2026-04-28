@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260427202942-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T23:35:39.389822972Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCompleted the parsimonious bead-creation remediation in the current tree: the propose-new-bead service path checks active-bead ownership before any creation attempt, terminal reconciliation emits propose_new_bead_pending events for below-threshold groups, and covered-by-existing comment idempotency now includes finding and proposed-scope content so distinct findings in the same run are preserved. Regression coverage exists for active-bead matches, distinct covered-by-existing findings, below-threshold pending journaling, threshold creation, and disabled lookup behavior.\n\n## Steps\n\n0. [Completed] Inspected the pending amendments against src/contexts/milestone_record/service.rs and src/contexts/automation_runtime/success_reconciliation.rs.\n1. [Completed] Verified the source diff implements active-bead ownership blocking before creation, terminal pending journal events, and finding/scope-aware covered-by-existing comment deduplication.\n2. [Completed] Confirmed regression tests cover active-bead ownership, distinct same-run covered-by-existing comments, below-threshold pending journaling, creation at threshold, and disabled parsimonious lookup behavior.\n3. [Completed] Ran targeted propose-new-bead regression tests.\n4. [Completed] Ran full cargo test, clippy, fmt check, and nix build verification gates.\n5. [Skipped] Run br lint after backlog edits.\n\n## Validation Evidence\n\n- nix develop -c cargo test --features test-stub propose_new_bead -- --nocapture passed: 49 lib tests and 6 unit tests matched; all passed.\n- nix develop -c cargo test --features test-stub passed: 1325 lib tests passed with 6 ignored, 378 CLI tests passed with 3 ignored, run_attach_tmux passed, 1126 unit tests passed with 1 ignored, and doc tests were ignored as expected.\n- nix develop -c cargo fmt --check passed.\n- nix develop -c cargo clippy -- -D warnings passed.\n- nix build passed.\n- git diff --stat for the reviewed source files reports changes only in src/contexts/automation_runtime/success_reconciliation.rs and src/contexts/milestone_record/service.rs for this remediation scope.\n\n## Outstanding Risks\n\n- The working tree still has pre-existing dirty files outside the reviewed source diff: .ralph-burning/projects/ni86-1/journal.ndjson, .ralph-burning/projects/ni86-1/run.json, src/cli/run.rs, and src/contexts/automation_runtime/daemon_loop.rs. They were left untouched.\n- br lint was skipped because no .beads backlog files were edited in this remediation round.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

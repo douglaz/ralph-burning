@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T00:48:31.163345276Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReview found one correctness gap: the production terminal review reconciliation path still bypasses the new parsimonious existing-bead lookup. `nix build`, `nix develop -c cargo test --features test-stub`, `nix develop -c cargo clippy -- -D warnings`, and `nix develop -c cargo fmt --check` passed.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/success_reconciliation.rs:1575`-`1714` still routes terminal `propose_new_bead` findings by grouping summaries and appending `proposed-beads.ndjson`; it never runs the new open-bead similarity lookup or downgrades to `covered_by_existing_bead`. The production entrypoint calls this path directly at `src/contexts/automation_runtime/success_reconciliation.rs:1780`, so an accepted final-review proposal with a strong existing open bead match will still be surfaced as a new bead proposal once the threshold is met. This bypasses the parsimonious policy implemented in `handle_propose_new_bead` and can create duplicate follow-up work from the real reconciliation flow.\n   Classification: fix_current_bead\n   Rationale: The current branch hardens the service helper but leaves the terminal reconciliation path that processes persisted review/final-review classifications without the required existing-bead ownership check.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 4
+}

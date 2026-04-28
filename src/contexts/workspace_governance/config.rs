@@ -10,9 +10,9 @@ use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRoleModels, BackendRoleTimeouts,
     BackendRuntimeSettings, BackendSelection, EffectiveBackendPolicy, EffectiveCompletionPolicy,
     EffectiveDaemonPrPolicy, EffectiveFinalReviewPolicy, EffectiveIterativeMinimalPolicy,
-    EffectivePromptReviewPolicy, EffectiveRebasePolicy, EffectiveRunPolicy,
-    EffectiveValidationPolicy, ExecutionMode, FlowPreset, PanelBackendSpec, PrPolicy,
-    ProjectConfig, ProjectId, PromptChangeAction, WorkspaceConfig,
+    EffectiveParsimoniousBeadCreationPolicy, EffectivePromptReviewPolicy, EffectiveRebasePolicy,
+    EffectiveRunPolicy, EffectiveValidationPolicy, ExecutionMode, FlowPreset, PanelBackendSpec,
+    PrPolicy, ProjectConfig, ProjectId, PromptChangeAction, WorkspaceConfig,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -32,6 +32,8 @@ pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 25;
 pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 25;
 pub const DEFAULT_NEW_BEAD_PROPOSAL_THRESHOLD: u32 = 2;
+pub const DEFAULT_PARSIMONIOUS_BEAD_CREATION_ENABLED: bool = true;
+pub const DEFAULT_EXISTING_BEAD_MATCH_THRESHOLD_SCORE: f64 = 0.65;
 pub const DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS: u32 = 10;
 pub const DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED: u32 = 2;
 pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
@@ -177,6 +179,22 @@ impl EffectiveConfig {
         };
         validate_iterative_minimal_settings(&workspace_config, &project_config)?;
 
+        let parsimonious_proposal_threshold = resolve_scalar(
+            workspace_config
+                .workflow
+                .parsimonious_bead_creation
+                .proposal_threshold
+                .or(workspace_config.workflow.new_bead_proposal_threshold),
+            project_config
+                .workflow
+                .parsimonious_bead_creation
+                .proposal_threshold
+                .or(project_config.workflow.new_bead_proposal_threshold),
+            None,
+            DEFAULT_NEW_BEAD_PROPOSAL_THRESHOLD,
+        )
+        .max(1);
+
         let run_policy = EffectiveRunPolicy {
             default_flow: resolve_scalar(
                 workspace_config.settings.default_flow,
@@ -215,6 +233,27 @@ impl EffectiveConfig {
                 None,
                 PromptChangeAction::RestartCycle,
             ),
+            parsimonious_bead_creation: EffectiveParsimoniousBeadCreationPolicy {
+                enabled: resolve_scalar(
+                    workspace_config.workflow.parsimonious_bead_creation.enabled,
+                    project_config.workflow.parsimonious_bead_creation.enabled,
+                    None,
+                    DEFAULT_PARSIMONIOUS_BEAD_CREATION_ENABLED,
+                ),
+                existing_bead_match_threshold_score: resolve_scalar(
+                    workspace_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .existing_bead_match_threshold_score,
+                    project_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .existing_bead_match_threshold_score,
+                    None,
+                    DEFAULT_EXISTING_BEAD_MATCH_THRESHOLD_SCORE,
+                ),
+                proposal_threshold: parsimonious_proposal_threshold,
+            },
             iterative_minimal: EffectiveIterativeMinimalPolicy {
                 max_consecutive_implementer_rounds: resolve_scalar(
                     workspace_config
@@ -891,6 +930,58 @@ impl EffectiveConfig {
                 source_for_option(
                     self.workspace_config.workflow.new_bead_proposal_threshold,
                     self.project_config.workflow.new_bead_proposal_threshold,
+                    None::<u32>,
+                ),
+            ),
+            ["workflow", "parsimonious_bead_creation", "enabled"] => (
+                ConfigValue::Bool(self.run_policy.parsimonious_bead_creation.enabled),
+                source_for_option(
+                    self.workspace_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .enabled,
+                    self.project_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .enabled,
+                    None::<bool>,
+                ),
+            ),
+            ["workflow", "parsimonious_bead_creation", "existing_bead_match_threshold_score"] => (
+                ConfigValue::Float(
+                    self.run_policy
+                        .parsimonious_bead_creation
+                        .existing_bead_match_threshold_score,
+                ),
+                source_for_option(
+                    self.workspace_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .existing_bead_match_threshold_score
+                        .map(|_| ()),
+                    self.project_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .existing_bead_match_threshold_score
+                        .map(|_| ()),
+                    None::<()>,
+                ),
+            ),
+            ["workflow", "parsimonious_bead_creation", "proposal_threshold"] => (
+                ConfigValue::Integer(
+                    self.run_policy
+                        .parsimonious_bead_creation
+                        .proposal_threshold as u64,
+                ),
+                source_for_option(
+                    self.workspace_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .proposal_threshold,
+                    self.project_config
+                        .workflow
+                        .parsimonious_bead_creation
+                        .proposal_threshold,
                     None::<u32>,
                 ),
             ),
@@ -1745,6 +1836,9 @@ fn known_config_keys() -> Vec<String> {
         "workflow.max_review_iterations".to_owned(),
         "workflow.max_completion_rounds".to_owned(),
         "workflow.new_bead_proposal_threshold".to_owned(),
+        "workflow.parsimonious_bead_creation.enabled".to_owned(),
+        "workflow.parsimonious_bead_creation.existing_bead_match_threshold_score".to_owned(),
+        "workflow.parsimonious_bead_creation.proposal_threshold".to_owned(),
         "workflow.prompt_change_action".to_owned(),
         "workflow.iterative_minimal.max_consecutive_implementer_rounds".to_owned(),
         "workflow.iterative_minimal.stable_rounds_required".to_owned(),
@@ -1874,6 +1968,36 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
             key,
             raw_value,
         )?,
+        ["workflow", "parsimonious_bead_creation", "enabled"] => apply_optional_bool(
+            document,
+            &["workflow", "parsimonious_bead_creation", "enabled"],
+            key,
+            raw_value,
+        )?,
+        ["workflow", "parsimonious_bead_creation", "existing_bead_match_threshold_score"] => {
+            apply_optional_unit_interval_float(
+                document,
+                &[
+                    "workflow",
+                    "parsimonious_bead_creation",
+                    "existing_bead_match_threshold_score",
+                ],
+                key,
+                raw_value,
+            )?
+        }
+        ["workflow", "parsimonious_bead_creation", "proposal_threshold"] => {
+            apply_optional_positive_u64(
+                document,
+                &[
+                    "workflow",
+                    "parsimonious_bead_creation",
+                    "proposal_threshold",
+                ],
+                key,
+                raw_value,
+            )?
+        }
         ["workflow", "prompt_change_action"] => {
             if is_unset(raw_value) {
                 document["workflow"]["prompt_change_action"] = Item::None;
@@ -2112,6 +2236,29 @@ fn apply_optional_float(
     }
 
     let parsed = parse_f64(key, raw_value)?;
+    set_item(document, path, value(parsed));
+    Ok(())
+}
+
+fn apply_optional_unit_interval_float(
+    document: &mut DocumentMut,
+    path: &[&str],
+    key: &str,
+    raw_value: &str,
+) -> AppResult<()> {
+    if is_unset(raw_value) {
+        set_item(document, path, Item::None);
+        return Ok(());
+    }
+
+    let parsed = parse_f64(key, raw_value)?;
+    if !(0.0..=1.0).contains(&parsed) {
+        return Err(AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+            reason: "expected a number between 0.0 and 1.0".to_owned(),
+        });
+    }
     set_item(document, path, value(parsed));
     Ok(())
 }

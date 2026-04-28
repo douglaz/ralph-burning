@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T03:02:06.117532220Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against the fork point and ran `nix build` successfully. Found one correctness issue in the proposal threshold accounting.\n\n## Amendments\n\n1. `src/contexts/automation_runtime/success_reconciliation.rs:1999` groups propose-new-bead amendments only by normalized proposal title, and `src/contexts/automation_runtime/success_reconciliation.rs:2012` sums each finding's `occurrence_count` to decide whether the N=2 threshold is met. Because review-stage findings are assigned `occurrence_count: 1` at `src/contexts/automation_runtime/success_reconciliation.rs:1091`, a single reviewer/payload can emit two duplicate findings with the same proposed title and incorrectly satisfy the two-source creation threshold. The same double-counting can happen in final review if one source contributes multiple accepted amendments with the same proposed title. This violates the required \"proposed by at least 2 sources\" policy and can still create/propose beads from one noisy source. Carry a stable source identity per finding and threshold on distinct sources per proposal group instead of summed occurrences.\n   Classification: fix_current_bead\n   Rationale: The central proliferation guard is source quorum; counting duplicate findings as independent sources undermines the policy this bead is meant to enforce.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 6
+}

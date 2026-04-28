@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T21:36:40.989790370Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound two policy-enforcement issues. Reviewed the branch diff against 2e54e84499c17f6d5cfafe87ff0d6ee5068770e8, ignored .ralph-burning runtime state as requested, and verified nix build passes.\n\n## Amendments\n\n1. src/contexts/milestone_record/service.rs:5126-5184 still runs the unjournaled exact-title/rendered-description recovery path before the proposal threshold check at src/contexts/milestone_record/service.rs:5186-5210. A below-threshold propose_new_bead input can therefore add a dependency and return/record Created whenever a matching bead exists, instead of emitting propose_new_bead_pending with no mutation. That same recovery branch calls record_proposed_bead_created_event at src/contexts/milestone_record/service.rs:5174-5182, which omits the new threshold_count and existing_bead_lookup_ran metadata. Gate this recovery path behind the threshold, or require proof of a prior threshold-compliant creation, and emit the structured created event with the policy metadata.\n   Classification: fix_current_bead\n   Rationale: This violates the threshold enforcement and structured journal event acceptance criteria on an existing branch path not covered by the new tests.\n2. src/contexts/milestone_record/service.rs:4486-4488 loads parsimonious_bead_creation with project_id=None, and src/contexts/milestone_record/service.rs:5186-5220 uses that policy for enabled, proposal_threshold, and match threshold decisions. Project-level workflow.parsimonious_bead_creation settings are silently ignored, so a project can set enabled=false or proposal_threshold=3 and this handler will still use workspace/default values. Pass the project id into handle_propose_new_bead or otherwise load the same project-scoped EffectiveConfig used by reconciliation.\n   Classification: fix_current_bead\n   Rationale: The new configuration is intended to control creation policy; ignoring project-scoped overrides can create or reroute beads contrary to the active run's config.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

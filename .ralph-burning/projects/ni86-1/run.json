@@ -1,0 +1,48 @@
+{
+  "active_run": {
+    "run_id": "run-20260427202942",
+    "stage_cursor": {
+      "stage": "final_review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 8
+    },
+    "started_at": "2026-04-27T20:29:42.856811532Z",
+    "prompt_hash_at_cycle_start": "91f3ab09e8d9e8480e73e306ea1872b06e1d70cdc22f72ba712f48e6b60eaf3a",
+    "prompt_hash_at_stage_start": "91f3ab09e8d9e8480e73e306ea1872b06e1d70cdc22f72ba712f48e6b60eaf3a",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 7
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 8,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 15
+  },
+  "status_summary": "running: completed Plan and Implement, next Final Review",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-28T04:09:54.310659509Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.5-xhigh"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.5-xhigh"
+    }
+  }
+}

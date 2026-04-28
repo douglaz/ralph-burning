@@ -1113,14 +1113,15 @@ async fn reconcile_cli_terminal_bead_state(
     }
 
     use crate::contexts::automation_runtime::success_reconciliation::{
-        reconcile_terminal_review_classifications, ReconciliationError,
+        reconcile_terminal_review_classifications_for_milestone, ReconciliationError,
     };
-    reconcile_terminal_review_classifications(
+    reconcile_terminal_review_classifications_for_milestone(
         br_mutation,
         br_read,
         base_dir,
         &task_source.bead_id,
         task_id,
+        &task_source.milestone_id,
         project_id.as_str(),
         &run_id,
     )

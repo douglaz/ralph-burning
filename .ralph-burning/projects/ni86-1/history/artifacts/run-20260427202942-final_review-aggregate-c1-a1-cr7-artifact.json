@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427202942-final_review-aggregate-c1-a1-cr7-artifact",
+  "payload_id": "run-20260427202942-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T04:29:01.054310970Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 7/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-7-f6986f8d`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-7-f6986f8d`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/milestone_record/service.rs:5212 and src/contexts/milestone_record/service.rs:5310 still perform pre-create bead discovery in the threshold-met path when workflow.parsimonious_bead_creation.enabled=false. The disabled-policy branch only short-circuits below-threshold proposals; once current_count >= threshold, handle_propose_new_bead calls br list, derives matching_beads, and can reuse an exact title/rendered-description match before create. That means the feature flag does not fully satisfy the acceptance case that disabled policy skips existing-bead lookup while still enforcing the threshold, and a br list/show failure can block creation even though the lookup policy is off.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}
