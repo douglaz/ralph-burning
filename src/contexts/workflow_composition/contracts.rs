@@ -208,6 +208,7 @@ impl StageContract {
                 }
             }
             StagePayload::Execution(p) => {
+                use crate::contexts::workflow_composition::payloads::StepStatus;
                 let mut errors = Vec::new();
                 if p.change_summary.trim().is_empty() {
                     errors.push("change_summary must not be empty".to_string());
@@ -219,6 +220,25 @@ impl StageContract {
                     if step.description.is_empty() {
                         errors.push(format!("steps[{i}].description must not be empty"));
                     }
+                }
+                // Forward-progress check: a terminal Execution payload must
+                // include at least one Completed or Skipped step. An all-
+                // `Intended` payload describes a plan, not a result, so it
+                // cannot be the end of a turn. This requirement was added to
+                // align the contract with the codex interim-message
+                // detector (GitHub issue #188); both backends are held to
+                // the same forward-progress invariant for execution stages.
+                let has_progress = p
+                    .steps
+                    .iter()
+                    .any(|s| matches!(s.status, StepStatus::Completed | StepStatus::Skipped));
+                if !p.steps.is_empty() && !has_progress {
+                    errors.push(
+                        "steps must contain at least one item with status \
+                         'completed' or 'skipped' (forward-progress invariant; \
+                         see GitHub issue #188)"
+                            .to_string(),
+                    );
                 }
                 if !errors.is_empty() {
                     return Err(ContractError::DomainValidation {
