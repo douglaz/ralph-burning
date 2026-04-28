@@ -24,6 +24,8 @@ use crate::contexts::agent_execution::model::{
     RawOutputReference, TokenCounts,
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
+use crate::contexts::workflow_composition::contracts::ContractFamily;
+use crate::contexts::workflow_composition::payloads::ExecutionPayload;
 use crate::shared::domain::{BackendFamily, FailureClass, ResolvedBackendTarget, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
@@ -459,6 +461,33 @@ impl PreparedCommand {
                         }
                     };
                 let raw_output = codex_raw_transcript(&stdout_text, last_message_text.as_deref());
+
+                // Defense-in-depth against issue #188: codex's `--output-schema`
+                // flag treats the first model JSON message that matches the
+                // schema as the terminal output, ending the turn before tool
+                // calls return. The schema-level fix (validation_evidence
+                // minItems=1 in ExecutionPayload) prevents codex from accepting
+                // the interim message as a match. This check enforces the same
+                // invariant at the ralph-burning side: if an interim payload
+                // somehow reaches us, fail with SchemaValidationFailure rather
+                // than treating it as a successful stage completion.
+                if let Some(reason) =
+                    detect_codex_interim_execution_payload(&request.contract, &parsed_payload)
+                {
+                    self.cleanup_failed_invocation(request, &output).await;
+                    return Err(ProcessBackendAdapter::invocation_failed(
+                        request,
+                        FailureClass::SchemaValidationFailure,
+                        format!(
+                            "codex emitted an interim execution payload before tool calls \
+                             returned ({reason}); the model's turn ended without doing \
+                             actual work. This is GitHub issue #188 — re-running this stage \
+                             should produce a terminal payload as long as the implementer \
+                             does not regress to the gpt-5.5 'emit interim status before \
+                             tool calls' pattern."
+                        ),
+                    ));
+                }
 
                 best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
 
@@ -1944,7 +1973,45 @@ pub fn processed_contract_schema_value(
     if backend_family == BackendFamily::Claude {
         wrap_claude_structured_output_schema(schema_value)
     } else {
+        // Codex-only: defeat the interim ExecutionPayload trap (issue #188)
+        // by requiring `validation_evidence` to be non-empty in the schema
+        // codex sees. The shared `ExecutionPayload` schema does NOT carry
+        // this constraint because Claude's semantic validators and
+        // renderers tolerate empty evidence; this is purely a workaround
+        // for codex's `--output-schema` matcher ending the turn on the
+        // first JSON match.
+        if matches!(
+            contract.stage_contract().map(|c| c.family),
+            Some(ContractFamily::Execution)
+        ) {
+            inject_codex_min_validation_evidence(&mut schema_value);
+        }
         schema_value
+    }
+}
+
+/// Walk the codex-bound execution schema and add `minItems: 1` to the
+/// `validation_evidence` array property. Idempotent: if the constraint is
+/// already present (or stronger) it leaves it alone.
+fn inject_codex_min_validation_evidence(schema_value: &mut serde_json::Value) {
+    let Some(properties) = schema_value
+        .get_mut("properties")
+        .and_then(|v| v.as_object_mut())
+    else {
+        return;
+    };
+    let Some(validation_evidence) = properties
+        .get_mut("validation_evidence")
+        .and_then(|v| v.as_object_mut())
+    else {
+        return;
+    };
+    let already = validation_evidence
+        .get("minItems")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if already < 1 {
+        validation_evidence.insert("minItems".to_owned(), serde_json::json!(1));
     }
 }
 
@@ -1973,6 +2040,42 @@ fn unwrap_claude_structured_output_transport_payload(
         }
         other => unwrap_claude_structured_output_payload(other),
     }
+}
+
+/// Detect codex's "interim execution payload" trap (GitHub issue #188).
+///
+/// When codex (`gpt-5.5-high` and `-xhigh`) is invoked with `--output-schema`,
+/// it emits an interim status message before dispatching tool calls — with
+/// every `steps[].status == "intended"` and an empty `validation_evidence`.
+/// If codex's matcher accepts that as a complete schema match, the turn ends
+/// before any work happens.
+///
+/// Returns `Some(reason)` ONLY when the parsed payload matches the canonical
+/// interim shape (every step still in `Intended` AND `validation_evidence`
+/// empty). Mixed-status terminal payloads — e.g. completed steps plus one
+/// deferred `Intended` follow-up with real evidence — are accepted, since the
+/// implementer contract permits that shape (codex-review #188 P1 finding).
+///
+/// Returns `None` when the contract isn't an Execution-family stage or when
+/// the JSON does not deserialize as `ExecutionPayload` (in which case
+/// downstream contract evaluation will produce its own error).
+fn detect_codex_interim_execution_payload(
+    contract: &InvocationContract,
+    payload: &Value,
+) -> Option<String> {
+    let stage = contract.stage_contract()?;
+    if !matches!(stage.family, ContractFamily::Execution) {
+        return None;
+    }
+    let parsed: ExecutionPayload = serde_json::from_value(payload.clone()).ok()?;
+    if !parsed.looks_like_codex_interim_message() {
+        return None;
+    }
+    Some(format!(
+        "validation_evidence is empty AND all {} step(s) are still 'intended' \
+         (canonical issue #188 interim shape)",
+        parsed.steps.len(),
+    ))
 }
 
 fn codex_raw_transcript(stdout: &str, last_message: Option<&str>) -> String {
