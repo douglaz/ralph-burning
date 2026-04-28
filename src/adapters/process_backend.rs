@@ -481,10 +481,11 @@ impl PreparedCommand {
                         format!(
                             "codex emitted an interim execution payload before tool calls \
                              returned ({reason}); the model's turn ended without doing \
-                             actual work. This is GitHub issue #188 — re-running this stage \
-                             should produce a terminal payload as long as the implementer \
-                             does not regress to the gpt-5.5 'emit interim status before \
-                             tool calls' pattern."
+                             actual work. This is GitHub issue #188. Retries from a fresh \
+                             codex session generally reproduce the same shape, so the \
+                             practical workaround is to override the implementer backend: \
+                             `ralph-burning config set workflow.implementer_backend claude`. \
+                             Tracking session-resume-aware retry at issue #188 follow-up."
                         ),
                     ));
                 }

@@ -67,16 +67,27 @@ pub struct ExecutionPayload {
 }
 
 impl ExecutionPayload {
-    /// Returns `true` when this payload looks like the canonical "interim"
-    /// status message codex emits *before* its tool calls return on
-    /// gpt-5.5-high (GitHub issue #188): empty `validation_evidence` AND
-    /// every step still in `Intended`. A real terminal payload may have a
-    /// mix of `Completed`/`Skipped` and one deferred `Intended` step plus
-    /// real evidence — those are accepted, since the implementer contract
-    /// permits that shape.
+    /// Returns `true` when this payload looks like the codex "interim"
+    /// status message emitted *before* tool calls return on gpt-5.5-high
+    /// (GitHub issue #188).
+    ///
+    /// The signal: every step is still in `Intended`. We deliberately do
+    /// NOT also require `validation_evidence` to be empty: the original
+    /// PR #189 detector did, but issue #188 was reopened after codex was
+    /// observed satisfying the codex-only `minItems: 1` schema constraint
+    /// with a single placeholder string (e.g. "Workspace: …; task accepted
+    /// for execution.") while keeping every step intended. A bogus-but-
+    /// schema-conformant evidence string does not change the substantive
+    /// fact: nothing has been completed or skipped yet, so the turn cannot
+    /// be terminal.
+    ///
+    /// A real terminal payload always has at least one `Completed` or
+    /// `Skipped` step (the implementer contract requires forward
+    /// progress). A mixed-status terminal payload — completed steps plus
+    /// one deferred `Intended` follow-up — still passes because not every
+    /// step is intended.
     pub fn looks_like_codex_interim_message(&self) -> bool {
-        self.validation_evidence.is_empty()
-            && !self.steps.is_empty()
+        !self.steps.is_empty()
             && self
                 .steps
                 .iter()
@@ -331,16 +342,29 @@ mod tests {
     }
 
     #[test]
-    fn looks_like_codex_interim_message_rejects_payload_with_evidence_even_if_all_intended() {
-        // If the model produced any evidence, this isn't the
-        // tools-haven't-returned-yet interim shape.
+    fn looks_like_codex_interim_message_matches_issue_188_reopen_shape_with_placeholder_evidence() {
+        // Issue #188 reopen: codex satisfies the codex-only minItems=1
+        // schema constraint with a placeholder evidence string while
+        // keeping every step in Intended. The placeholder describes the
+        // workspace, not actual validation work. Original PR #189 detector
+        // missed this because it required validation_evidence to be empty.
         let payload = ExecutionPayload {
-            change_summary: "explored before deferring".to_owned(),
-            steps: vec![step(1, StepStatus::Intended)],
-            validation_evidence: vec!["read existing file; nothing to change".to_owned()],
+            change_summary: "Starting the documentation review/edit task".to_owned(),
+            steps: vec![
+                step(1, StepStatus::Intended),
+                step(2, StepStatus::Intended),
+                step(3, StepStatus::Intended),
+            ],
+            validation_evidence: vec![
+                "Workspace: /home/user/work; task accepted for execution.".to_owned()
+            ],
             outstanding_risks: vec![],
         };
-        assert!(!payload.looks_like_codex_interim_message());
+        assert!(
+            payload.looks_like_codex_interim_message(),
+            "all-intended steps + bogus placeholder evidence is the canonical \
+             issue #188 reopen shape — must be detected"
+        );
     }
 
     #[test]
