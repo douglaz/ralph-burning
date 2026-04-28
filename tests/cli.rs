@@ -12328,6 +12328,87 @@ fn run_tail_renders_iterative_minimal_iteration_events() {
 }
 
 #[test]
+fn run_status_and_tail_surface_force_complete_deferred_amendments() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "tail-force-complete",
+            "--name",
+            "Tail Force Complete",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "tail-force-complete"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    let summary = "force-completed at round 3: 2 amendments deferred to journal (see force_complete_amendments_deferred event)";
+    let completed_snapshot = format!(
+        r#"{{
+  "active_run": null,
+  "interrupted_run": null,
+  "status": "completed",
+  "cycle_history": [],
+  "completion_rounds": 3,
+  "max_completion_rounds": 3,
+  "rollback_point_meta": {{ "last_rollback_id": null, "rollback_count": 0 }},
+  "amendment_queue": {{ "pending": [], "processed_count": 0 }},
+  "status_summary": "{summary}"
+}}"#
+    );
+    fs::write(
+        project_root(temp_dir.path(), "tail-force-complete").join("run.json"),
+        completed_snapshot,
+    )
+    .expect("write force-completed snapshot");
+
+    let journal_path = project_root(temp_dir.path(), "tail-force-complete").join("journal.ndjson");
+    let events = format!(
+        r#"{{"sequence":2,"timestamp":"2026-04-02T10:00:00Z","event_type":"run_started","details":{{"run_id":"run-force","first_stage":"planning","max_completion_rounds":3}}}}
+{{"sequence":3,"timestamp":"2026-04-02T10:30:00Z","event_type":"force_complete_amendments_deferred","details":{{"run_id":"run-force","round":3,"amendment_count":2,"amendments":[{{"id":"amend-1","summary":"capture follow-up","classification":"propose_new_bead"}},{{"id":"amend-2","summary":"fix active bead","classification":"fix_current_bead"}}]}}}}
+{{"sequence":4,"timestamp":"2026-04-02T10:30:01Z","event_type":"run_completed","details":{{"run_id":"run-force","completion_rounds":3,"max_completion_rounds":3,"force_completed":true,"force_completed_at_round":3,"deferred_amendment_count":2}}}}"#
+    ) + "\n";
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .expect("open journal")
+        .write_all(events.as_bytes())
+        .expect("append force-complete events");
+
+    let status_output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+    assert!(status_output.status.success());
+    let status_stdout = String::from_utf8_lossy(&status_output.stdout);
+    assert!(status_stdout.contains("Status: completed"));
+    assert!(status_stdout.contains(summary));
+
+    let tail_output = Command::new(binary())
+        .args(["run", "tail", "--logs"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail --logs");
+    assert!(tail_output.status.success());
+    let tail_stdout = String::from_utf8_lossy(&tail_output.stdout);
+    assert!(tail_stdout.contains(summary));
+}
+
+#[test]
 fn run_tail_with_logs_shows_only_newest_log_file() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());

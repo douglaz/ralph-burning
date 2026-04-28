@@ -284,6 +284,31 @@ pub fn run_completed_event(
     }
 }
 
+/// Build a `run_completed` journal event for a force-completed run.
+pub fn force_completed_run_completed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    completion_rounds: u32,
+    max_completion_rounds: u32,
+    force_completed_at_round: u32,
+    deferred_amendment_count: u32,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::RunCompleted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "completion_rounds": completion_rounds,
+            "max_completion_rounds": max_completion_rounds,
+            "force_completed": true,
+            "force_completed_at_round": force_completed_at_round,
+            "deferred_amendment_count": deferred_amendment_count,
+        }),
+    }
+}
+
 /// Build a `completion_round_advanced` journal event.
 #[allow(clippy::too_many_arguments)]
 pub fn completion_round_advanced_event(
@@ -307,6 +332,28 @@ pub fn completion_round_advanced_event(
             "to_round": to_round,
             "amendment_count": amendment_count,
             "max_completion_rounds": max_completion_rounds,
+        }),
+    }
+}
+
+/// Build a `force_complete_amendments_deferred` journal event.
+pub fn force_complete_amendments_deferred_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    round: u32,
+    amendments: serde_json::Value,
+) -> JournalEvent {
+    let amendment_count = amendments.as_array().map_or(0, Vec::len) as u32;
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::ForceCompleteAmendmentsDeferred,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "round": round,
+            "amendment_count": amendment_count,
+            "amendments": amendments,
         }),
     }
 }

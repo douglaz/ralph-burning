@@ -1069,10 +1069,16 @@ struct TerminalReviewFinding {
     proposed_scope: Option<String>,
     proposed_bead_summary: Option<String>,
     severity: Option<Severity>,
+    force_completed: bool,
+    completion_round: Option<u32>,
 }
 
 impl TerminalReviewFinding {
-    fn from_final_review(amendment: &FinalReviewCanonicalAmendment) -> Self {
+    fn from_final_review(
+        amendment: &FinalReviewCanonicalAmendment,
+        force_completed: bool,
+        completion_round: u32,
+    ) -> Self {
         let source_identities = if amendment.sources.is_empty() {
             vec!["final_review:unknown_source".to_owned()]
         } else {
@@ -1099,6 +1105,8 @@ impl TerminalReviewFinding {
             proposed_scope: amendment.proposed_scope.clone(),
             proposed_bead_summary: amendment.proposed_bead_summary.clone(),
             severity: amendment.severity,
+            force_completed,
+            completion_round: Some(completion_round),
         }
     }
 
@@ -1115,6 +1123,8 @@ impl TerminalReviewFinding {
             proposed_scope: None,
             proposed_bead_summary: finding.proposed_bead_summary.clone(),
             severity: None,
+            force_completed: false,
+            completion_round: None,
         }
     }
 }
@@ -1209,12 +1219,15 @@ fn terminal_review_findings_for_run(
                     "failed to parse final-review aggregate for review-classification reconciliation at completion round {completion_round}: {error}"
                 ))
             })?;
-        output.findings.extend(
-            aggregate
-                .final_accepted_amendments
-                .iter()
-                .map(TerminalReviewFinding::from_final_review),
-        );
+        output
+            .findings
+            .extend(aggregate.final_accepted_amendments.iter().map(|amendment| {
+                TerminalReviewFinding::from_final_review(
+                    amendment,
+                    aggregate.force_completed,
+                    completion_round,
+                )
+            }));
         output.final_review_rounds += 1;
     }
 
@@ -1881,6 +1894,14 @@ async fn reconcile_covered_by_existing_beads<M: ProcessRunner, Q: ProcessRunner>
     };
     let mut comments_posted = 0usize;
     for finding in findings {
+        if finding.force_completed {
+            tracing::debug!(
+                amendment_id = finding.amendment_id.as_str(),
+                classification = ?finding.classification,
+                "force-completed final-review amendment is deferred to journal; skipping covered-by-existing reconciliation"
+            );
+            continue;
+        }
         if finding.classification != AmendmentClassification::CoveredByExistingBead {
             continue;
         }
@@ -2243,6 +2264,85 @@ async fn reconcile_proposed_bead_records<M: ProcessRunner, Q: ProcessRunner>(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn create_force_completed_propose_new_bead_followups<M: ProcessRunner>(
+    br_mutation: &BrMutationAdapter<M>,
+    base_dir: &Path,
+    bead_id: &str,
+    task_id: &str,
+    milestone_id: &MilestoneId,
+    project_id: &str,
+    run_id: &str,
+    findings: &[TerminalReviewFinding],
+    now: DateTime<Utc>,
+) -> Result<usize, ReconciliationError> {
+    let mut groups: HashMap<String, Vec<&TerminalReviewFinding>> = HashMap::new();
+    for finding in findings {
+        if finding.force_completed
+            && finding.classification == AmendmentClassification::ProposeNewBead
+        {
+            if let Some(summary_key) = normalized_proposal_summary(finding) {
+                groups.entry(summary_key).or_default().push(finding);
+            }
+        }
+    }
+
+    if groups.is_empty() {
+        return Ok(0);
+    }
+
+    let force_complete_threshold =
+        terminal_parsimonious_bead_creation_policy(base_dir, project_id).proposal_threshold;
+    let project_id =
+        ProjectId::new(project_id).map_err(|error| ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!(
+                "invalid project id for force-complete propose_new_bead reconciliation: {error}"
+            ),
+        })?;
+    let mut created_in_pass = 0usize;
+    let mut handled = 0usize;
+    for findings in groups.values() {
+        let proposal_count = distinct_proposal_source_count(findings).max(force_complete_threshold);
+        let severity = findings
+            .iter()
+            .find_map(|finding| finding.severity)
+            .unwrap_or(Severity::Medium);
+        let input = milestone_service::ProposeNewBeadInput {
+            active_bead_id: bead_id.to_owned(),
+            finding_summary: display_proposal_scope(findings),
+            proposed_title: display_proposal_summary(findings),
+            proposed_scope: display_proposal_scope(findings),
+            severity,
+            rationale: display_proposal_rationale(findings).unwrap_or_default(),
+            proposal_count,
+            run_id: Some(run_id.to_owned()),
+            completion_round: findings.iter().find_map(|finding| finding.completion_round),
+        };
+        milestone_service::handle_propose_new_bead(
+            &FsMilestoneJournalStore,
+            &FsPlannedElsewhereMappingStore,
+            br_mutation,
+            base_dir,
+            milestone_id,
+            Some(&project_id),
+            &input,
+            &mut created_in_pass,
+            now,
+        )
+        .await
+        .map_err(|error| ReconciliationError::MilestoneUpdateFailed {
+            bead_id: bead_id.to_owned(),
+            task_id: task_id.to_owned(),
+            details: format!("failed to create force-complete propose_new_bead follow-up: {error}"),
+        })?;
+        handled += findings.len();
+    }
+
+    Ok(handled)
+}
+
 #[cfg(test)]
 pub(crate) async fn reconcile_terminal_review_classifications<
     M: ProcessRunner,
@@ -2296,6 +2396,13 @@ pub(crate) async fn reconcile_terminal_review_classifications_for_milestone<
         return Ok(ProposedBeadReconciliationSummary::default());
     }
 
+    let non_force_completed_findings = terminal
+        .findings
+        .iter()
+        .filter(|finding| !finding.force_completed)
+        .cloned()
+        .collect::<Vec<_>>();
+
     reconcile_covered_by_existing_beads(
         br_mutation,
         br_read,
@@ -2303,12 +2410,11 @@ pub(crate) async fn reconcile_terminal_review_classifications_for_milestone<
         bead_id,
         task_id,
         run_id,
-        &terminal.findings,
+        &non_force_completed_findings,
     )
     .await?;
-    let summary = reconcile_proposed_bead_records(
+    let force_completed_followups = create_force_completed_propose_new_bead_followups(
         br_mutation,
-        br_read,
         base_dir,
         bead_id,
         task_id,
@@ -2319,11 +2425,26 @@ pub(crate) async fn reconcile_terminal_review_classifications_for_milestone<
         Utc::now(),
     )
     .await?;
+    let mut summary = reconcile_proposed_bead_records(
+        br_mutation,
+        br_read,
+        base_dir,
+        bead_id,
+        task_id,
+        &milestone_id,
+        project_id,
+        run_id,
+        &non_force_completed_findings,
+        Utc::now(),
+    )
+    .await?;
+    summary.amendments_processed += force_completed_followups;
     tracing::info!(
         bead_id = bead_id,
         run_id = run_id,
         review_payloads = terminal.review_payloads,
         final_review_rounds = terminal.final_review_rounds,
+        force_completed_followup_amendments = force_completed_followups,
         propose_new_bead_amendments = summary.amendments_processed,
         proposed_bead_records_written = summary.records_written,
         "terminal review-classification reconciliation complete"
@@ -5804,6 +5925,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn force_completed_covered_by_existing_deferrals_do_not_comment(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+
+        let fix = terminal_amendment(
+            "force-fix",
+            AmendmentClassification::FixCurrentBead,
+            "fix the active bead",
+        );
+        let mut covered = terminal_amendment(
+            "force-covered",
+            AmendmentClassification::CoveredByExistingBead,
+            "covered by another bead",
+        );
+        covered.covered_by_bead_id = Some("target-bead".to_owned());
+        covered.mapped_to_bead_id = Some("target-bead".to_owned());
+        let findings = vec![
+            TerminalReviewFinding::from_final_review(&fix, true, 7),
+            TerminalReviewFinding::from_final_review(&covered, true, 7),
+        ];
+
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let invocations = Arc::new(Mutex::new(Vec::new()));
+        let mutation_runner = RecordingBrRunner::new(vec![], invocations.clone(), None);
+        let mutation = BrMutationAdapter::with_adapter(BrAdapter::with_runner(mutation_runner));
+
+        reconcile_covered_by_existing_beads(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-force-covered",
+            "run-force-covered",
+            &findings,
+        )
+        .await?;
+
+        assert!(
+            invocations.lock().unwrap().is_empty(),
+            "force-completed non-proposal deferrals must remain journal-only"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn classification_covered_by_existing_bead_substring_marker_does_not_skip(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -6663,6 +6831,118 @@ mod tests {
         assert_eq!(metadata["current_count"], 2);
         assert_eq!(metadata["threshold_count"], 2);
         assert_eq!(metadata["existing_bead_lookup_ran"], true);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn force_completed_mixed_deferrals_create_single_reviewer_propose_new_bead_followups(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join(".git"))?;
+        crate::contexts::workspace_governance::initialize_workspace(base, Utc::now())?;
+        write_beads_export(base)?;
+        let milestone_id = MilestoneId::new("task-force-propose")?;
+        std::fs::create_dir_all(FileSystem::milestone_root(base, &milestone_id))?;
+
+        let fix = terminal_amendment(
+            "fix-1",
+            AmendmentClassification::FixCurrentBead,
+            "fix the active bead",
+        );
+        let mut covered = terminal_amendment(
+            "covered-1",
+            AmendmentClassification::CoveredByExistingBead,
+            "covered by another bead",
+        );
+        covered.covered_by_bead_id = Some("existing-covered-bead".to_owned());
+        covered.mapped_to_bead_id = Some("existing-covered-bead".to_owned());
+        let mut proposal = terminal_amendment(
+            "proposal-1",
+            AmendmentClassification::ProposeNewBead,
+            "capture follow-up work",
+        );
+        proposal.proposed_bead_summary = Some("Add force-complete follow-up".to_owned());
+        proposal.proposed_title = Some("Add force-complete follow-up".to_owned());
+        proposal.proposed_scope = Some("Track work deferred by force-completion.".to_owned());
+        proposal.sources = final_review_sources(&[("reviewer-a", "a")]);
+        let mut aggregate = terminal_aggregate(vec![fix, covered, proposal]);
+        aggregate.force_completed = true;
+        aggregate.summary =
+            "force-completed at round 1: 3 amendments deferred to journal".to_owned();
+        write_terminal_aggregate(base, "proj-force-propose", "run-force-propose", &aggregate)?;
+
+        let created_description = "## Finding Summary\nTrack work deferred by force-completion.\n\n## Proposed Scope\nTrack work deferred by force-completion.\n\n## Rationale\n";
+        let created_detail = serde_json::json!({
+            "id": "bead-force-followup",
+            "title": "Add force-complete follow-up",
+            "status": "open",
+            "priority": 2,
+            "issue_type": "task",
+            "description": created_description,
+            "dependencies": [],
+            "dependents": [],
+            "comments": [],
+            "labels": []
+        })
+        .to_string();
+        let mutation =
+            BrMutationAdapter::with_adapter(BrAdapter::with_runner(MockBrRunner::new(vec![
+                MockBrRunner::success("flushed"),
+                MockBrRunner::success("dependency added"),
+                MockBrRunner::success(&created_detail),
+                MockBrRunner::success("created bead-force-followup"),
+                MockBrRunner::error(1, "active bead not found"),
+                MockBrRunner::success("[]"),
+            ])));
+        let read = BrAdapter::with_runner(MockBrRunner::new(vec![]));
+        let summary = reconcile_terminal_review_classifications(
+            &mutation,
+            &read,
+            base,
+            "active-bead",
+            "task-force-propose",
+            "proj-force-propose",
+            "run-force-propose",
+        )
+        .await?;
+
+        assert_eq!(summary.amendments_processed, 1);
+        assert_eq!(summary.records_written, 0);
+        assert!(
+            !FileSystem::project_root(base, &ProjectId::new("proj-force-propose")?)
+                .join("proposed-beads.ndjson")
+                .exists()
+        );
+        let journal = FsMilestoneJournalStore.read_journal(base, &milestone_id)?;
+        let created = journal
+            .iter()
+            .find(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    == Some("propose_new_bead_created")
+            })
+            .expect("force-complete propose_new_bead created event");
+        let metadata = created.metadata.as_ref().expect("metadata");
+        assert_eq!(metadata["created_bead_id"], "bead-force-followup");
+        assert_eq!(metadata["proposed_title"], "Add force-complete follow-up");
+        assert_eq!(metadata["active_bead_id"], "active-bead");
+        assert_eq!(metadata["run_id"], "run-force-propose");
+        assert_eq!(metadata["threshold_count"], 2);
+        assert!(
+            journal.iter().all(|event| {
+                event
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("sub_type"))
+                    .and_then(|value| value.as_str())
+                    != Some("propose_new_bead_pending")
+            }),
+            "force-completed accepted proposals must not be left pending below threshold"
+        );
         Ok(())
     }
 

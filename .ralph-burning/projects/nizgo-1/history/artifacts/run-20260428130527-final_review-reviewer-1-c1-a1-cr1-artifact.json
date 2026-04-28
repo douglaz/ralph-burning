@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428130527-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260428130527-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T15:20:01.959515971Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound one correctness issue in the force-complete reconciliation path. `nix build` passed on this checkout.\n\n## Amendments\n\n1. src/contexts/automation_runtime/success_reconciliation.rs:2389 passes all terminal findings into covered-by-existing reconciliation before force-completed findings are filtered, and src/contexts/automation_runtime/success_reconciliation.rs:1896 plus src/contexts/automation_runtime/success_reconciliation.rs:1963 then posts/flushed br comments for every covered_by_existing_bead finding. A force-completed round containing a fix_current_bead amendment plus a covered_by_existing_bead deferral will therefore mutate the target bead, even though non-propose_new_bead deferrals are supposed to stay in the journal for operator decision. Filter force_completed findings out of covered-by-existing reconciliation and add a mixed-classification regression for this case.\n   Classification: fix_current_bead\n   Rationale: This violates the force-complete deferral contract and can create durable bead side effects for classifications that should remain journal-only.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

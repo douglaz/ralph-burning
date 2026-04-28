@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428130527-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260428130527-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-28T16:47:15.155279950Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRemediated the pending force-complete proposal threshold leak in src/contexts/automation_runtime/success_reconciliation.rs. The force-completed propose_new_bead follow-up path now passes at least the configured parsimonious proposal threshold into handle_propose_new_bead, so an accepted single-reviewer deferral cannot be left pending solely because reviewer count is below the normal proposal threshold. This keeps the existing handle_propose_new_bead duplicate, active-bead, existing-open-bead, journal replay, dependency repair, and br mutation safeguards intact. The mixed force-complete regression now uses a single reviewer and asserts that a created event is recorded with the configured threshold and no propose_new_bead_pending event is emitted.\n\n## Steps\n\n1. [Completed] Inspected the terminal review reconciliation path, the force-completed propose_new_bead follow-up helper, and the existing mixed-classification regression coverage.\n2. [Completed] Adjusted the force-completed follow-up creation path to satisfy the configured proposal threshold before calling handle_propose_new_bead, preserving existing duplicate and existing-bead checks inside that handler.\n3. [Completed] Updated the force-completed mixed deferral regression so the accepted proposal has only one reviewer source and verified it creates a follow-up bead instead of a pending event.\n4. [Completed] Ran targeted and full validation gates required by the contract.\n\n## Validation Evidence\n\n- nix develop --command cargo test --features test-stub --locked force_completed_mixed_deferrals_create_single_reviewer_propose_new_bead_followups -- --nocapture passed.\n- nix develop --command cargo fmt --check passed.\n- nix develop --command cargo test --features test-stub --locked passed: 1346 lib tests, 379 CLI tests, 1 run_attach_tmux test, 1130 unit tests, and doctests all passed with expected ignored tests.\n- nix develop --command cargo clippy --locked -- -D warnings passed.\n- nix build passed.\n\n## Outstanding Risks\n\n- Live .ralph-burning orchestration state remains modified in the working tree and was excluded from code review scope per the prompt.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}
