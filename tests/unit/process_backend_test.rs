@@ -2908,3 +2908,483 @@ sleep 99999
         "background child (pid {child_pid}) should have been killed by process group signal"
     );
 }
+
+// ── Issue #188: codex execution stages skip --output-schema ─────────────────
+
+fn execution_stage_request_fixture(
+    backend_family: BackendFamily,
+) -> (tempfile::TempDir, InvocationRequest) {
+    let temp_dir = tempdir().expect("create temp dir");
+    fs::create_dir_all(temp_dir.path().join("runtime/temp")).expect("create runtime/temp");
+
+    let request = InvocationRequest {
+        invocation_id: format!("execstage-{}", backend_family.as_str()),
+        project_root: temp_dir.path().to_path_buf(),
+        working_dir: temp_dir.path().to_path_buf(),
+        contract: InvocationContract::Stage(contract_for_stage(StageId::PlanAndImplement)),
+        role: BackendRole::Implementer,
+        resolved_target: ResolvedBackendTarget::new(
+            backend_family,
+            backend_family.default_model_id(),
+        ),
+        payload: InvocationPayload {
+            prompt: "do the implementation".to_owned(),
+            context: serde_json::json!({"stage": "plan_and_implement"}),
+        },
+        timeout: Duration::from_secs(10),
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    };
+    (temp_dir, request)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_execution_stage_args_do_not_include_output_schema() {
+    // Issue #188 fix: codex's `--output-schema` matcher accepts an
+    // interim JSON status before tool calls return, ending the turn early.
+    // The fix is to drop `--output-schema` for Execution-family stages
+    // and synthesize an ExecutionPayload from the natural-language last
+    // message instead. This regression test pins the negative assertion.
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = execution_stage_request_fixture(BackendFamily::Codex);
+
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(&payload_file, "wrote a fix and ran cargo test").expect("write last-message text");
+    write_fake_codex(bin_dir.path(), &payload_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let args_file = request.working_dir.join("codex-args.txt");
+    let args = read_logged_args(&args_file);
+    assert!(
+        !args.iter().any(|a| a == "--output-schema"),
+        "codex Execution-family invocations must NOT pass --output-schema \
+         (issue #188); got: {args:?}"
+    );
+    assert!(
+        args.iter().any(|a| a == "--output-last-message"),
+        "codex Execution-family invocations should still pass \
+         --output-last-message; got: {args:?}"
+    );
+    // With --output-schema dropped, codex must be invoked with --json so
+    // stdout becomes a complete NDJSON event transcript that we can
+    // preserve verbatim into history/transcripts (issue #188 amendment).
+    assert!(
+        args.iter().any(|a| a == "--json"),
+        "codex Execution-family invocations must pass --json so stdout is a \
+         complete event transcript; got: {args:?}"
+    );
+
+    // The schema temp file should never have been written for the
+    // execution path either.
+    let schema_path = request.project_root.join(format!(
+        "runtime/temp/{}.schema.json",
+        request.invocation_id
+    ));
+    assert!(
+        !schema_path.exists(),
+        "schema file must not be written for codex Execution stages: \
+         {schema_path:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_planning_stage_does_not_pass_json_flag() {
+    // The --json flag is reserved for the codex Execution synth path
+    // (which has no --output-schema). Planning/Validation stages still
+    // use --output-schema and must NOT receive --json — adding it would
+    // break the existing single-value stdout fallback path.
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = request_fixture(BackendFamily::Codex);
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(
+        &payload_file,
+        serde_json::to_string(&planning_payload()).unwrap(),
+    )
+    .expect("write payload");
+    write_fake_codex(bin_dir.path(), &payload_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let args_file = request.working_dir.join("codex-args.txt");
+    let args = read_logged_args(&args_file);
+    assert!(
+        args.iter().any(|a| a == "--output-schema"),
+        "Planning-family codex invocations must still pass --output-schema; \
+         got: {args:?}"
+    );
+    assert!(
+        !args.iter().any(|a| a == "--json"),
+        "Planning-family codex invocations must NOT pass --json (only the \
+         issue #188 Execution synth path uses --json); got: {args:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_execution_stage_synthesizes_payload_and_copies_transcript() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = execution_stage_request_fixture(BackendFamily::Codex);
+
+    let last_message = "Edited src/foo.rs and added tests; cargo test passed.";
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(&payload_file, last_message).expect("write last-message text");
+    let stdout_text = "{\"type\":\"event\",\"name\":\"exec_command\",\"exit_code\":0}\n\
+{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":42}}";
+    write_fake_codex_with_stdout(bin_dir.path(), &payload_file, stdout_text);
+
+    let adapter = ProcessBackendAdapter::new();
+    let envelope = adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    // Synthesized payload must satisfy the forward-progress invariant: at
+    // least one step with status "completed" or "skipped".
+    assert_eq!(
+        envelope.parsed_payload["steps"][0]["status"], "completed",
+        "synthesized payload must report a completed step; got: {}",
+        envelope.parsed_payload
+    );
+    assert_eq!(envelope.parsed_payload["steps"][0]["order"], 1);
+    let change_summary = envelope.parsed_payload["change_summary"]
+        .as_str()
+        .expect("change_summary should be a string");
+    assert!(
+        change_summary.contains("cargo test passed"),
+        "change_summary should reflect codex's last-message text; got: \
+         {change_summary:?}"
+    );
+    assert_eq!(
+        envelope.parsed_payload["validation_evidence"]
+            .as_array()
+            .expect("validation_evidence should be an array")
+            .len(),
+        0,
+        "synthesized payload validation_evidence should be empty (the \
+         git diff is the load-bearing record)"
+    );
+
+    // Transcript copied verbatim to history/transcripts. With --json,
+    // stdout is a complete NDJSON event transcript: each non-blank line
+    // must parse as a JSON object so the file is genuinely usable as a
+    // forensic event log (rather than being a human-readable summary
+    // dump that happens to contain a JSON line or two).
+    let transcript_path = request
+        .project_root
+        .join("history/transcripts")
+        .join(format!("codex-{}.jsonl", request.invocation_id));
+    let transcript_contents =
+        fs::read_to_string(&transcript_path).expect("transcript file should exist");
+    assert!(
+        transcript_contents.contains("turn.completed"),
+        "transcript should contain codex stdout events; got: \
+         {transcript_contents:?}"
+    );
+    let event_count = transcript_contents
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap_or_else(|error| {
+                panic!(
+                    "every transcript line must be valid JSON (--json mode); \
+                     line was {line:?}, error: {error}"
+                )
+            })
+        })
+        .count();
+    assert_eq!(
+        event_count, 2,
+        "transcript should contain exactly the two NDJSON events written \
+         by the fake codex; got: {transcript_contents:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recover_codex_execution_payload_from_raw_transcript_synthesizes_completed_step() {
+    // Issue #188 recovery path: when the iterative parsed sidecar is
+    // missing but the raw codex transcript envelope is on disk, the
+    // engine must still be able to recover a synthesized ExecutionPayload
+    // matching what synthesize_codex_execution_payload would have produced
+    // live. The codex Execution synth path stores natural-language
+    // last-message text (not JSON), so the generic stdout-as-JSON
+    // recovery path cannot deserialize it.
+    use ralph_burning::adapters::process_backend::recover_codex_execution_payload_from_raw_transcript;
+
+    let envelope = serde_json::json!({
+        "transport": "rb_codex_process_v1",
+        "stdout": "{\"type\":\"event\"}\n{\"type\":\"turn.completed\"}",
+        "last_message": "Edited src/foo.rs and added a regression test."
+    });
+    let raw_output = serde_json::to_string(&envelope).expect("serialize envelope");
+
+    let recovered = recover_codex_execution_payload_from_raw_transcript(&raw_output)
+        .expect("recovery should succeed");
+
+    assert_eq!(
+        recovered["steps"][0]["status"], "completed",
+        "recovered payload must satisfy the forward-progress invariant; got: \
+         {recovered}"
+    );
+    assert_eq!(recovered["steps"][0]["order"], 1);
+    assert_eq!(
+        recovered["steps"][0]["description"],
+        "codex implementation turn"
+    );
+    let change_summary = recovered["change_summary"]
+        .as_str()
+        .expect("change_summary should be a string");
+    assert!(
+        change_summary.contains("regression test"),
+        "recovered change_summary must echo the natural-language last \
+         message; got: {change_summary:?}"
+    );
+    assert_eq!(
+        recovered["validation_evidence"]
+            .as_array()
+            .expect("validation_evidence array")
+            .len(),
+        0
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recover_codex_execution_payload_falls_back_when_last_message_missing() {
+    use ralph_burning::adapters::process_backend::recover_codex_execution_payload_from_raw_transcript;
+
+    let envelope = serde_json::json!({
+        "transport": "rb_codex_process_v1",
+        "stdout": "{\"type\":\"turn.completed\"}",
+        // last_message intentionally omitted
+    });
+    let raw_output = serde_json::to_string(&envelope).expect("serialize envelope");
+
+    let recovered = recover_codex_execution_payload_from_raw_transcript(&raw_output)
+        .expect("recovery should succeed");
+
+    let change_summary = recovered["change_summary"]
+        .as_str()
+        .expect("change_summary should be a string");
+    assert!(
+        change_summary.contains("codex implementation turn completed"),
+        "missing last_message in raw transcript must fall back to the \
+         deterministic summary; got: {change_summary:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recover_codex_execution_payload_rejects_unrecognized_transport_version() {
+    use ralph_burning::adapters::process_backend::recover_codex_execution_payload_from_raw_transcript;
+
+    let envelope = serde_json::json!({
+        "transport": "rb_codex_process_v999",
+        "stdout": "",
+        "last_message": "Edited src/foo.rs."
+    });
+    let raw_output = serde_json::to_string(&envelope).expect("serialize envelope");
+
+    let result = recover_codex_execution_payload_from_raw_transcript(&raw_output);
+    assert!(
+        result.is_err(),
+        "recovery must reject unknown transport versions; got: {result:?}"
+    );
+    let message = result.unwrap_err();
+    assert!(
+        message.contains("rb_codex_process_v1"),
+        "error should mention the expected transport version; got: {message}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn is_codex_raw_transcript_envelope_distinguishes_codex_from_openrouter_http() {
+    // Round 3 amendment: the engine's iterative-recovery dispatcher must
+    // be able to tell apart the codex-CLI raw output (a transport
+    // envelope produced by `codex_raw_transcript`) from the direct
+    // `OpenRouterBackendAdapter` raw output (an OpenRouter
+    // chat-completions HTTP response body). Both report
+    // `BackendFamily::OpenRouter` to the engine, so this predicate is
+    // the load-bearing disambiguator: a chat-completions response must
+    // NOT trigger codex synth recovery, otherwise the entire response
+    // JSON gets returned instead of `choices[0].message.content`.
+    use ralph_burning::adapters::process_backend::is_codex_raw_transcript_envelope;
+
+    let codex_envelope = serde_json::to_string(&serde_json::json!({
+        "transport": "rb_codex_process_v1",
+        "stdout": "{\"type\":\"turn.completed\"}",
+        "last_message": "Edited src/foo.rs."
+    }))
+    .expect("serialize codex envelope");
+    assert!(
+        is_codex_raw_transcript_envelope(&codex_envelope),
+        "modern codex transcript envelope must be recognized"
+    );
+
+    // Direct OpenRouter chat-completions HTTP response body — has no
+    // `transport` field. Must NOT be recognized as a codex envelope, or
+    // the engine would feed it to the codex synth recovery and lose the
+    // model output.
+    let openrouter_response = serde_json::to_string(&serde_json::json!({
+        "id": "chatcmpl-abc",
+        "model": "openai/gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "{\"change_summary\":\"did the work\",\"steps\":[{\"order\":1,\"description\":\"x\",\"status\":\"completed\"}],\"validation_evidence\":[],\"outstanding_risks\":[]}"
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
+    }))
+    .expect("serialize openrouter response");
+    assert!(
+        !is_codex_raw_transcript_envelope(&openrouter_response),
+        "OpenRouter chat-completions response body must NOT be recognized \
+         as a codex envelope (round 3 amendment regression)"
+    );
+
+    // An envelope with the wrong transport version is also not a current
+    // codex envelope. The engine should refuse to synth-recover from it.
+    let wrong_version = serde_json::to_string(&serde_json::json!({
+        "transport": "rb_codex_process_v999",
+        "stdout": "",
+        "last_message": "x"
+    }))
+    .expect("serialize wrong-version envelope");
+    assert!(
+        !is_codex_raw_transcript_envelope(&wrong_version),
+        "future/unknown transport versions must NOT match the predicate"
+    );
+
+    // Plain bare-JSON ExecutionPayload (legacy fixture shape) is not an
+    // envelope either — recovery for such artifacts must fall through to
+    // the generic `recover_structured_payload_from_process_stdout` path.
+    let bare_payload = serde_json::to_string(&serde_json::json!({
+        "change_summary": "did the work",
+        "steps": [{"order": 1, "description": "x", "status": "completed"}],
+        "validation_evidence": [],
+        "outstanding_risks": []
+    }))
+    .expect("serialize bare payload");
+    assert!(
+        !is_codex_raw_transcript_envelope(&bare_payload),
+        "bare-JSON ExecutionPayload must NOT match the codex envelope predicate"
+    );
+
+    // Garbage / non-JSON input.
+    assert!(
+        !is_codex_raw_transcript_envelope("not json"),
+        "non-JSON input must not match"
+    );
+    assert!(
+        !is_codex_raw_transcript_envelope(""),
+        "empty input must not match"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn recover_codex_execution_payload_rejects_non_envelope_input() {
+    // After round 3, the recovery helper is envelope-only — callers must
+    // pre-filter via `is_codex_raw_transcript_envelope`. Feeding it a
+    // bare-JSON ExecutionPayload (the round-2 shape-3 fallback) or an
+    // OpenRouter chat-completions response must error rather than silently
+    // mis-handle the payload.
+    use ralph_burning::adapters::process_backend::recover_codex_execution_payload_from_raw_transcript;
+
+    let bare_payload = serde_json::to_string(&serde_json::json!({
+        "change_summary": "did the work",
+        "steps": [{"order": 1, "description": "x", "status": "completed"}],
+        "validation_evidence": [],
+        "outstanding_risks": []
+    }))
+    .expect("serialize bare payload");
+    let result = recover_codex_execution_payload_from_raw_transcript(&bare_payload);
+    assert!(
+        result.is_err(),
+        "bare-JSON input must error from the envelope-only recovery; got: \
+         {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_execution_stage_synthesizes_payload_with_fallback_when_last_message_missing() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = execution_stage_request_fixture(BackendFamily::Codex);
+
+    write_fake_codex_without_last_message(bin_dir.path());
+
+    let adapter = ProcessBackendAdapter::new();
+    let envelope = adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let change_summary = envelope.parsed_payload["change_summary"]
+        .as_str()
+        .expect("change_summary should be a string");
+    assert!(
+        change_summary.contains("codex implementation turn completed"),
+        "missing last-message should fall back to a deterministic summary; \
+         got: {change_summary:?}"
+    );
+    assert_eq!(envelope.parsed_payload["steps"][0]["status"], "completed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn claude_execution_stage_still_passes_json_schema() {
+    // Negative regression: Claude's path is unaffected by the codex
+    // issue #188 fix — Claude execution stages still receive
+    // `--json-schema` and produce a fully-validated ExecutionPayload.
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = execution_stage_request_fixture(BackendFamily::Claude);
+
+    let envelope_file = request.working_dir.join("claude-envelope.json");
+    let execution_payload = serde_json::json!({
+        "change_summary": "did the work",
+        "steps": [
+            {"order": 1, "description": "touch foo.rs", "status": "completed"}
+        ],
+        "validation_evidence": ["cargo test passed"],
+        "outstanding_risks": []
+    });
+    write_claude_envelope(&envelope_file, &execution_payload, Some("ses-claude-exec"));
+    write_fake_claude(bin_dir.path(), &envelope_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let args_text =
+        fs::read_to_string(request.working_dir.join("claude-args.txt")).expect("read args");
+    assert!(
+        args_text.contains("--json-schema"),
+        "Claude execution stages must still receive --json-schema; got: \
+         {args_text}"
+    );
+}

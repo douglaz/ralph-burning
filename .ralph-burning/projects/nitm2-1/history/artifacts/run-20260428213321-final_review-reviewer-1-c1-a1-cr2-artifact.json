@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428213321-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260428213321-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T22:47:31.507526523Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against the requested fork point and the changed src/tests files. Found one correctness issue in OpenRouter execution recovery. A targeted cargo test command could not run because rustup has no default toolchain configured.\n\n## Amendments\n\n1. `src/contexts/workflow_composition/engine.rs:6833`-`6849` now routes every OpenRouter Execution raw-output recovery through `recover_codex_execution_payload_from_raw_transcript`. That works for the process adapter's Codex-CLI/OpenRouter path, but it breaks the direct `OpenRouterBackendAdapter` path: its raw output is an OpenRouter chat-completions response body, so the Codex helper falls back to returning the whole response JSON instead of extracting `choices[0].message.content`. When an iterative terminal resume is missing the parsed sidecar, direct OpenRouter execution can no longer recover from raw output and will fail contract validation. Preserve the existing `recover_structured_payload_from_response_body` path for HTTP OpenRouter responses, or first detect a real Codex raw transcript envelope before using the Codex synth recovery.\n   Classification: fix_current_bead\n   Rationale: The branch changed recovery dispatch in the same area as this bead, and the regression affects resumability/robustness for an existing backend path.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428213321-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260428213321-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T22:15:28.707052726Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth amendments identify real robustness gaps in the current Codex execution handling.\n\n## Votes\n\n- `fr-1-92c13b74`: Accept\n  The code writes captured process stdout to history/transcripts while labeling it as the Codex transcript. Codex is invoked without --json, and the CLI only promises JSONL events on stdout with --json, so stdout is not proven to be the verbatim session transcript from ~/.codex/sessions. The existing test uses fake JSONL stdout and does not validate the required forensic source.\n- `fr-1-a3e3e8a2`: Accept\n  For synthesized Codex execution stages, last_message is natural language and the parsed payload is synthesized in the success path, but raw-output recovery still parses last_message/stdout as JSON. If the parsed sidecar is missing, terminal recovery from the raw envelope will fail despite a completed invocation. Recovery needs a synthetic ExecutionPayload path or the raw envelope must persist a recoverable payload.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

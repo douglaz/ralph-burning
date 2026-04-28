@@ -1,0 +1,47 @@
+{
+  "active_run": null,
+  "interrupted_run": {
+    "run_id": "run-20260428192020",
+    "stage_cursor": {
+      "stage": "plan_and_implement",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 1
+    },
+    "started_at": "2026-04-28T19:20:20.544938555Z",
+    "prompt_hash_at_cycle_start": "f777c606422142cf7c960f3ee15e4c9b4d8f0530a4688506ee12dddeeccb365b",
+    "prompt_hash_at_stage_start": "f777c606422142cf7c960f3ee15e4c9b4d8f0530a4688506ee12dddeeccb365b",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 0,
+    "stage_resolution_snapshot": {
+      "stage_id": "plan_and_implement",
+      "resolved_at": "2026-04-28T19:20:20.629708435Z",
+      "primary_target": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.5-high"
+      }
+    }
+  },
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 0
+  },
+  "status_summary": "failed at Plan and Implement: backend invocation cancelled for contract 'plan_and_implement' via 'codex'",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-28T19:20:20.629708435Z",
+    "primary_target": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.5-high"
+    }
+  }
+}

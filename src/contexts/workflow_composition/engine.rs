@@ -18,7 +18,9 @@ use crate::adapters::fs::{
 };
 use crate::adapters::openrouter_backend::recover_structured_payload_from_response_body;
 use crate::adapters::process_backend::{
-    processed_contract_schema_value, recover_structured_payload_from_process_stdout,
+    is_codex_raw_transcript_envelope, processed_contract_schema_value,
+    recover_codex_execution_payload_from_raw_transcript,
+    recover_structured_payload_from_process_stdout,
 };
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
@@ -6829,10 +6831,41 @@ fn recover_iterative_payload_from_raw_output(
             ),
         }
     })?;
-    let parsed_payload = match resolved_target.backend.family {
-        BackendFamily::OpenRouter => recover_structured_payload_from_response_body(&raw_output),
-        backend_family => {
-            recover_structured_payload_from_process_stdout(&raw_output, backend_family)
+    let backend_family = resolved_target.backend.family;
+    let is_codex_family = matches!(
+        backend_family,
+        BackendFamily::Codex | BackendFamily::OpenRouter
+    );
+    let is_execution_contract = matches!(
+        stage_entry.contract.family,
+        contracts::ContractFamily::Execution
+    );
+    // Codex Execution stages run without `--output-schema` (issue #188 fix)
+    // and store the model's natural-language last message rather than a
+    // JSON payload in the raw transcript envelope. The generic
+    // `recover_codex_structured_payload_from_stdout` cannot deserialize
+    // that text — synthesize the same `ExecutionPayload` instead.
+    //
+    // Use `is_codex_raw_transcript_envelope` to disambiguate the codex CLI
+    // path (envelope wrapper) from the direct `OpenRouterBackendAdapter`
+    // path (chat-completions HTTP response body): both report
+    // `BackendFamily::OpenRouter`, but their raw-output shapes are
+    // completely different and only the codex envelope is safe to feed to
+    // the synth recovery. A non-envelope OpenRouter raw output falls
+    // through to `recover_structured_payload_from_response_body`.
+    let parsed_payload = if is_codex_family
+        && is_execution_contract
+        && is_codex_raw_transcript_envelope(&raw_output)
+    {
+        recover_codex_execution_payload_from_raw_transcript(&raw_output)
+    } else {
+        match backend_family {
+            BackendFamily::OpenRouter => {
+                recover_structured_payload_from_response_body(&raw_output)
+            }
+            backend_family => {
+                recover_structured_payload_from_process_stdout(&raw_output, backend_family)
+            }
         }
     }
     .map_err(|error| {
@@ -11990,6 +12023,142 @@ mod tests {
                         requested_model_id: "gpt-5.5".to_owned(),
                         actual_backend_family: "codex".to_owned(),
                         actual_model_id: "gpt-5.5".to_owned(),
+                    }
+                );
+            }
+            other => panic!("expected recovered terminal result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resume_terminal_iterative_stage_result_recovers_from_direct_openrouter_http_response_when_sidecar_is_missing(
+    ) {
+        // Round 3 amendment regression: when an iterative_minimal terminal
+        // resume is missing the parsed sidecar AND the backend is the
+        // direct `OpenRouterBackendAdapter` (raw output is an
+        // OpenRouter chat-completions HTTP response body, NOT a codex
+        // transport envelope), the engine must recover via
+        // `recover_structured_payload_from_response_body` rather than
+        // routing the response through the codex synth helper, which
+        // would return the entire response JSON instead of extracting
+        // `choices[0].message.content`.
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+
+        let project_id = ProjectId::new("iter-terminal-or-http").expect("project id");
+        let prompt_contents = "# Test prompt";
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: "Iterative terminal recovery from direct OpenRouter HTTP".to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: FileSystem::prompt_hash(prompt_contents),
+                created_at: Utc::now(),
+                task_source: None,
+            },
+        )
+        .expect("create project");
+
+        let run_id = RunId::new("run-iter-terminal-or-http").expect("run id");
+        let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).expect("cursor");
+        let resolved_target =
+            ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-4o");
+        let stage_entry = StagePlan {
+            stage_id: StageId::PlanAndImplement,
+            role: role_for_stage(StageId::PlanAndImplement),
+            contract: contracts::contract_for_stage(StageId::PlanAndImplement),
+            target: resolved_target.clone(),
+        };
+        let project_root = FileSystem::project_root(temp_dir.path(), &project_id);
+        let invocation_id =
+            invocation_id_for_stage(&run_id, StageId::PlanAndImplement, &cursor, Some("it2"));
+        let raw_output_path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        let payload_json = json!({
+            "change_summary": "Recovered iterative execution output from OpenRouter HTTP response",
+            "steps": [
+                {
+                    "order": 1,
+                    "description": "Resume from direct OpenRouter chat-completions response",
+                    "status": "completed"
+                }
+            ],
+            "validation_evidence": ["recovered from raw OpenRouter HTTP response"],
+            "outstanding_risks": []
+        });
+        // Direct OpenRouter HTTP response shape (no codex transport
+        // envelope). The structured payload is JSON-encoded inside
+        // `choices[0].message.content`.
+        let raw_response = json!({
+            "id": "chatcmpl-or-http",
+            "model": "openai/gpt-4o",
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": serde_json::to_string(&payload_json)
+                        .expect("serialize content")
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
+        });
+        fs::write(
+            &raw_output_path,
+            serde_json::to_string(&raw_response).expect("serialize raw response"),
+        )
+        .expect("write raw output");
+
+        let mut seq = FsJournalStore
+            .read_journal(temp_dir.path(), &project_id)
+            .expect("read existing journal")
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(0);
+        let recovered = resume_terminal_iterative_stage_result(
+            &FsJournalStore,
+            temp_dir.path(),
+            &project_root,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &stage_entry,
+            &cursor,
+            &resolved_target,
+            2,
+            2,
+            2,
+            10,
+        )
+        .expect("recover terminal result from direct OpenRouter HTTP response");
+
+        match recovered {
+            TerminalIterativeResumeResult::Recovered(recovered) => {
+                let (bundle, producer) = *recovered;
+                match bundle.payload {
+                    StagePayload::Execution(payload) => {
+                        assert_eq!(
+                            payload.change_summary,
+                            "Recovered iterative execution output from OpenRouter HTTP response",
+                            "expected the inner payload's change_summary, NOT the entire \
+                             chat-completions response — round 3 amendment regression"
+                        );
+                    }
+                    other => panic!("expected execution payload, got {other:?}"),
+                }
+                assert_eq!(
+                    producer,
+                    RecordProducer::Agent {
+                        requested_backend_family: "openrouter".to_owned(),
+                        requested_model_id: "openai/gpt-4o".to_owned(),
+                        actual_backend_family: "openrouter".to_owned(),
+                        actual_model_id: "openai/gpt-4o".to_owned(),
                     }
                 );
             }

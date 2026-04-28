@@ -25,7 +25,6 @@ use crate::contexts::agent_execution::model::{
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::workflow_composition::contracts::ContractFamily;
-use crate::contexts::workflow_composition::payloads::ExecutionPayload;
 use crate::shared::domain::{BackendFamily, FailureClass, ResolvedBackendTarget, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
@@ -144,7 +143,7 @@ impl PreparedCommand {
                 schema_path,
                 message_path,
                 ..
-            } => best_effort_cleanup(Some(schema_path), message_path).await,
+            } => best_effort_cleanup(schema_path.as_deref(), message_path).await,
         }
     }
 
@@ -166,11 +165,13 @@ impl PreparedCommand {
                 message_path,
                 ..
             } => {
-                let failed_schema_path =
-                    failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                if let Some(schema_path) = schema_path {
+                    let failed_schema_path =
+                        failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                    best_effort_move_file(schema_path, &failed_schema_path).await;
+                }
                 let failed_message_path =
                     failed_dir.join(format!("{}.last-message.json", request.invocation_id));
-                best_effort_move_file(schema_path, &failed_schema_path).await;
                 best_effort_move_file(message_path, &failed_message_path).await;
             }
         }
@@ -195,11 +196,13 @@ impl PreparedCommand {
                 message_path,
                 ..
             } => {
-                let failed_schema_path =
-                    failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                if let Some(schema_path) = schema_path {
+                    let failed_schema_path =
+                        failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                    best_effort_move_file(schema_path, &failed_schema_path).await;
+                }
                 let failed_message_path =
                     failed_dir.join(format!("{}.last-message.json", request.invocation_id));
-                best_effort_move_file(schema_path, &failed_schema_path).await;
                 best_effort_move_file(message_path, &failed_message_path).await;
             }
         }
@@ -384,10 +387,50 @@ impl PreparedCommand {
                 schema_path,
                 message_path,
                 session_resuming,
+                synthesize_execution_payload,
             } => {
                 let session_resuming = *session_resuming;
+                let synthesize_execution_payload = *synthesize_execution_payload;
                 let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
-                let (parsed_payload, last_message_text) =
+
+                let (parsed_payload, last_message_text) = if synthesize_execution_payload {
+                    // Issue #188 fix: codex Execution-family stages run without
+                    // `--output-schema`, so the model's last message is plain
+                    // natural-language text rather than JSON. Synthesize an
+                    // `ExecutionPayload` from that text — the run's git diff
+                    // is the load-bearing record of work done; this payload
+                    // keeps stage rendering and the forward-progress contract
+                    // satisfied without trusting the model's structured
+                    // output.
+                    let last_message_text = match tokio::fs::read_to_string(message_path).await {
+                        Ok(text) => Some(text),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                        Err(error) => {
+                            self.cleanup_failed_invocation(request, &output).await;
+                            let stderr_text = String::from_utf8_lossy(&output.stderr).into_owned();
+                            let stderr_tail = truncate_str_tail(&stderr_text, STDERR_DETAIL_LIMIT);
+                            return Err(ProcessBackendAdapter::invocation_failed(
+                                request,
+                                FailureClass::TransportFailure,
+                                format!(
+                                    "failed to read codex last-message file: {error} \
+                                     (stdout_len: {}, stderr_len: {}, \
+                                     stderr_tail: {stderr_tail:?})",
+                                    output.stdout.len(),
+                                    output.stderr.len(),
+                                ),
+                            ));
+                        }
+                    };
+                    copy_codex_transcript_into_history(
+                        &request.project_root,
+                        &request.invocation_id,
+                        &output.stdout,
+                    )
+                    .await;
+                    let payload = synthesize_codex_execution_payload(last_message_text.as_deref());
+                    (payload, last_message_text)
+                } else {
                     match tokio::fs::read_to_string(message_path).await {
                         Ok(last_message_text) => {
                             match serde_json::from_str::<Value>(&last_message_text) {
@@ -459,38 +502,11 @@ impl PreparedCommand {
                                 ),
                             ));
                         }
-                    };
+                    }
+                };
                 let raw_output = codex_raw_transcript(&stdout_text, last_message_text.as_deref());
 
-                // Defense-in-depth against issue #188: codex's `--output-schema`
-                // flag treats the first model JSON message that matches the
-                // schema as the terminal output, ending the turn before tool
-                // calls return. The schema-level fix (validation_evidence
-                // minItems=1 in ExecutionPayload) prevents codex from accepting
-                // the interim message as a match. This check enforces the same
-                // invariant at the ralph-burning side: if an interim payload
-                // somehow reaches us, fail with SchemaValidationFailure rather
-                // than treating it as a successful stage completion.
-                if let Some(reason) =
-                    detect_codex_interim_execution_payload(&request.contract, &parsed_payload)
-                {
-                    self.cleanup_failed_invocation(request, &output).await;
-                    return Err(ProcessBackendAdapter::invocation_failed(
-                        request,
-                        FailureClass::SchemaValidationFailure,
-                        format!(
-                            "codex emitted an interim execution payload before tool calls \
-                             returned ({reason}); the model's turn ended without doing \
-                             actual work. This is GitHub issue #188. Retries from a fresh \
-                             codex session generally reproduce the same shape, so the \
-                             practical workaround is to override the implementer backend: \
-                             `ralph-burning config set workflow.implementer_backend claude`. \
-                             Tracking session-resume-aware retry at issue #188 follow-up."
-                        ),
-                    ));
-                }
-
-                best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
+                best_effort_cleanup(schema_path.as_deref(), message_path.as_path()).await;
 
                 let session_id = if session_resuming {
                     request.prior_session.as_ref().map(|s| s.session_id.clone())
@@ -527,9 +543,14 @@ enum ResponseDecoder {
         session_resuming: bool,
     },
     Codex {
-        schema_path: std::path::PathBuf,
+        schema_path: Option<std::path::PathBuf>,
         message_path: std::path::PathBuf,
         session_resuming: bool,
+        /// When `true`, the codex command was invoked without `--output-schema`
+        /// (Execution-family stages on codex/openrouter — issue #188 fix). The
+        /// finish path synthesizes an `ExecutionPayload` from the last-message
+        /// text rather than parsing the model's structured output.
+        synthesize_execution_payload: bool,
     },
 }
 
@@ -986,22 +1007,28 @@ impl ProcessBackendAdapter {
                 let temp_dir = request.project_root.join("runtime/temp");
                 let _ = tokio::fs::create_dir_all(&temp_dir).await;
 
-                let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                let synthesize_execution_payload =
+                    is_codex_execution_stage_contract(&request.contract);
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
                 let schema_value = Self::contract_schema_for_backend(request);
-                let schema_json =
-                    serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
-
-                if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
-                    best_effort_cleanup(Some(&schema_path), &message_path).await;
-                    return Err(Self::invocation_failed(
-                        request,
-                        FailureClass::TransportFailure,
-                        format!("failed to write schema file: {error}"),
-                    ));
-                }
+                let schema_path = if synthesize_execution_payload {
+                    None
+                } else {
+                    let path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                    let schema_json = serde_json::to_string_pretty(&schema_value)
+                        .unwrap_or_else(|_| "{}".to_owned());
+                    if let Err(error) = tokio::fs::write(&path, &schema_json).await {
+                        best_effort_cleanup(Some(&path), &message_path).await;
+                        return Err(Self::invocation_failed(
+                            request,
+                            FailureClass::TransportFailure,
+                            format!("failed to write schema file: {error}"),
+                        ));
+                    }
+                    Some(path)
+                };
 
                 let args = if session_resuming {
                     let session = request
@@ -1010,13 +1037,18 @@ impl ProcessBackendAdapter {
                         .expect("session_resuming requires a prior session");
                     Self::codex_resume_args(
                         model_id,
-                        &schema_path,
+                        schema_path.as_deref(),
                         &message_path,
                         &session.session_id,
                         true,
                     )
                 } else {
-                    Self::codex_new_session_args(model_id, &schema_path, &message_path, true)
+                    Self::codex_new_session_args(
+                        model_id,
+                        schema_path.as_deref(),
+                        &message_path,
+                        true,
+                    )
                 };
 
                 Ok(PreparedCommand {
@@ -1027,6 +1059,7 @@ impl ProcessBackendAdapter {
                         schema_path,
                         message_path,
                         session_resuming,
+                        synthesize_execution_payload,
                     },
                     env_overrides: Vec::new(),
                 })
@@ -1067,22 +1100,28 @@ impl ProcessBackendAdapter {
                 let temp_dir = request.project_root.join("runtime/temp");
                 let _ = tokio::fs::create_dir_all(&temp_dir).await;
 
-                let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                let synthesize_execution_payload =
+                    is_codex_execution_stage_contract(&request.contract);
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
                 let schema_value = Self::contract_schema_for_backend(request);
-                let schema_json =
-                    serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
-
-                if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
-                    best_effort_cleanup(Some(&schema_path), &message_path).await;
-                    return Err(Self::invocation_failed(
-                        request,
-                        FailureClass::TransportFailure,
-                        format!("failed to write schema file: {error}"),
-                    ));
-                }
+                let schema_path = if synthesize_execution_payload {
+                    None
+                } else {
+                    let path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                    let schema_json = serde_json::to_string_pretty(&schema_value)
+                        .unwrap_or_else(|_| "{}".to_owned());
+                    if let Err(error) = tokio::fs::write(&path, &schema_json).await {
+                        best_effort_cleanup(Some(&path), &message_path).await;
+                        return Err(Self::invocation_failed(
+                            request,
+                            FailureClass::TransportFailure,
+                            format!("failed to write schema file: {error}"),
+                        ));
+                    }
+                    Some(path)
+                };
 
                 let args = if session_resuming {
                     let session = request
@@ -1091,13 +1130,18 @@ impl ProcessBackendAdapter {
                         .expect("session_resuming requires a prior session");
                     Self::codex_resume_args(
                         model_id,
-                        &schema_path,
+                        schema_path.as_deref(),
                         &message_path,
                         &session.session_id,
                         false,
                     )
                 } else {
-                    Self::codex_new_session_args(model_id, &schema_path, &message_path, false)
+                    Self::codex_new_session_args(
+                        model_id,
+                        schema_path.as_deref(),
+                        &message_path,
+                        false,
+                    )
                 };
 
                 Ok(PreparedCommand {
@@ -1108,6 +1152,7 @@ impl ProcessBackendAdapter {
                         schema_path,
                         message_path,
                         session_resuming,
+                        synthesize_execution_payload,
                     },
                     env_overrides: vec![
                         (
@@ -1465,7 +1510,7 @@ impl ProcessBackendAdapter {
 
     fn codex_new_session_args(
         model_id: &str,
-        schema_path: &Path,
+        schema_path: Option<&Path>,
         message_path: &Path,
         supports_fast_mode: bool,
     ) -> Vec<String> {
@@ -1486,9 +1531,21 @@ impl ProcessBackendAdapter {
             args.push("-c".to_owned());
             args.push("service_tier=\"fast\"".to_owned());
         }
+        if let Some(schema_path) = schema_path {
+            args.push("--output-schema".to_owned());
+            args.push(schema_path.to_string_lossy().into_owned());
+        } else {
+            // Issue #188 codex execution path: `--output-schema` is dropped
+            // so the schema-driven early-termination cannot trigger. Pair
+            // this with `--json` so stdout becomes a complete NDJSON event
+            // transcript (model messages, tool calls, tool results) — that
+            // stream is what we copy verbatim into history/transcripts as
+            // the forensic record. Without `--json`, codex emits a
+            // human-readable summary on stdout instead, which is not
+            // adequate as an event log.
+            args.push("--json".to_owned());
+        }
         args.extend([
-            "--output-schema".to_owned(),
-            schema_path.to_string_lossy().into_owned(),
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
             "-".to_owned(),
@@ -1498,7 +1555,7 @@ impl ProcessBackendAdapter {
 
     fn codex_resume_args(
         model_id: &str,
-        schema_path: &Path,
+        schema_path: Option<&Path>,
         message_path: &Path,
         session_id: &str,
         supports_fast_mode: bool,
@@ -1521,9 +1578,14 @@ impl ProcessBackendAdapter {
             args.push("-c".to_owned());
             args.push("service_tier=\"fast\"".to_owned());
         }
+        if let Some(schema_path) = schema_path {
+            args.push("--output-schema".to_owned());
+            args.push(schema_path.to_string_lossy().into_owned());
+        } else {
+            // See `codex_new_session_args` for the `--json` rationale.
+            args.push("--json".to_owned());
+        }
         args.extend([
-            "--output-schema".to_owned(),
-            schema_path.to_string_lossy().into_owned(),
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
             session_id.to_owned(),
@@ -1974,54 +2036,8 @@ pub fn processed_contract_schema_value(
     if backend_family == BackendFamily::Claude {
         wrap_claude_structured_output_schema(schema_value)
     } else {
-        // Codex-only: narrow `steps[].items.properties.status.enum` to
-        // {"completed", "skipped"} on the schema codex sends to OpenAI.
-        // The shared `ExecutionPayload` schema includes `Intended` for
-        // planning shapes (and Claude tolerates it via semantic
-        // validation), but codex's `--output-schema` matcher accepts the
-        // first JSON that conforms structurally — so an interim status
-        // message with all-`Intended` steps satisfies the broader enum
-        // and ends the turn before tool calls return (GitHub issue #188).
-        //
-        // Restricting the enum at the schema layer forces codex's matcher
-        // to refuse any payload until at least one step has progressed
-        // to `Completed` or `Skipped`. Per a gpt-5.5-xhigh design
-        // consultation, this is the cleanest schema-level fix that uses
-        // only strict-mode-allowed keywords (`enum` is allowed; `contains`
-        // / `minContains` / `not` / `if-then-else` are not).
-        //
-        // Drawback: schema cannot prove tool execution actually happened
-        // — a model could still hallucinate `completed` without doing
-        // the work. The runtime detector + Execution semantic validator
-        // (PR #193) remain in place as defense-in-depth for that case.
-        // The durable architectural fix would be to parse codex's
-        // transcript directly and require a real tool-call event;
-        // tracked separately.
-        if matches!(
-            contract.stage_contract().map(|c| c.family),
-            Some(ContractFamily::Execution)
-        ) {
-            inject_codex_steps_status_enum(&mut schema_value);
-        }
         schema_value
     }
-}
-
-/// Narrow the codex-bound execution schema's
-/// `properties.steps.items.properties.status.enum` to
-/// `["completed", "skipped"]`. Idempotent: if the enum is already at most
-/// that set, leaves it alone.
-fn inject_codex_steps_status_enum(schema_value: &mut serde_json::Value) {
-    let Some(status) = schema_value
-        .pointer_mut("/properties/steps/items/properties/status")
-        .and_then(|v| v.as_object_mut())
-    else {
-        return;
-    };
-    status.insert(
-        "enum".to_owned(),
-        serde_json::json!(["completed", "skipped"]),
-    );
 }
 
 fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
@@ -2051,40 +2067,77 @@ fn unwrap_claude_structured_output_transport_payload(
     }
 }
 
-/// Detect codex's "interim execution payload" trap (GitHub issue #188).
+/// Returns `true` when the contract is an Execution-family stage. Used to
+/// gate the codex `--output-schema` skip path (GitHub issue #188): codex
+/// invocations for Execution stages run without `--output-schema` and the
+/// adapter synthesizes an `ExecutionPayload` from the natural-language last
+/// message instead of trusting the model's structured output.
+fn is_codex_execution_stage_contract(contract: &InvocationContract) -> bool {
+    matches!(
+        contract.stage_contract().map(|c| c.family),
+        Some(ContractFamily::Execution)
+    )
+}
+
+/// Synthesize a minimal `ExecutionPayload` for codex Execution-family stages
+/// run without `--output-schema`. The git diff is the load-bearing record of
+/// work done; this payload only exists to satisfy stage rendering and the
+/// forward-progress contract validator. See GitHub issue #188.
+fn synthesize_codex_execution_payload(last_message_text: Option<&str>) -> Value {
+    const CHANGE_SUMMARY_LIMIT: usize = 1000;
+    let change_summary = match last_message_text.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(text) => truncate_str(text, CHANGE_SUMMARY_LIMIT).to_owned(),
+        None => "codex implementation turn completed (exit 0); see transcript".to_owned(),
+    };
+    serde_json::json!({
+        "change_summary": change_summary,
+        "steps": [
+            {
+                "order": 1,
+                "description": "codex implementation turn",
+                "status": "completed",
+            }
+        ],
+        "validation_evidence": [],
+        "outstanding_risks": [],
+    })
+}
+
+/// Copy the codex stdout NDJSON event transcript verbatim into
+/// `<project_root>/history/transcripts/codex-<invocation_id>.jsonl` so the
+/// run history is self-contained for forensics.
 ///
-/// When codex (`gpt-5.5-high` and `-xhigh`) is invoked with `--output-schema`,
-/// it emits an interim status message before dispatching tool calls — with
-/// every `steps[].status == "intended"` and an empty `validation_evidence`.
-/// If codex's matcher accepts that as a complete schema match, the turn ends
-/// before any work happens.
-///
-/// Returns `Some(reason)` ONLY when the parsed payload matches the canonical
-/// interim shape (every step still in `Intended` AND `validation_evidence`
-/// empty). Mixed-status terminal payloads — e.g. completed steps plus one
-/// deferred `Intended` follow-up with real evidence — are accepted, since the
-/// implementer contract permits that shape (codex-review #188 P1 finding).
-///
-/// Returns `None` when the contract isn't an Execution-family stage or when
-/// the JSON does not deserialize as `ExecutionPayload` (in which case
-/// downstream contract evaluation will produce its own error).
-fn detect_codex_interim_execution_payload(
-    contract: &InvocationContract,
-    payload: &Value,
-) -> Option<String> {
-    let stage = contract.stage_contract()?;
-    if !matches!(stage.family, ContractFamily::Execution) {
-        return None;
+/// This is invoked only on the codex Execution synth path, which passes
+/// `--json` to codex (see `codex_new_session_args`). With `--json`, codex
+/// emits one JSON event per stdout line covering model messages, tool
+/// calls, and tool results — the same forensic content as the codex
+/// session rollout file at `~/.codex/sessions/...rollout-*.jsonl`, but
+/// captured directly from the child process so we don't have to discover
+/// the rollout path. Best-effort: failures are logged but do not fail the
+/// invocation.
+async fn copy_codex_transcript_into_history(
+    project_root: &Path,
+    invocation_id: &str,
+    stdout: &[u8],
+) {
+    let dir = project_root.join("history/transcripts");
+    if let Err(error) = tokio::fs::create_dir_all(&dir).await {
+        tracing::warn!(
+            invocation_id,
+            error = %error,
+            "failed to create history/transcripts directory; skipping codex transcript copy"
+        );
+        return;
     }
-    let parsed: ExecutionPayload = serde_json::from_value(payload.clone()).ok()?;
-    if !parsed.looks_like_codex_interim_message() {
-        return None;
+    let path = dir.join(format!("codex-{invocation_id}.jsonl"));
+    if let Err(error) = tokio::fs::write(&path, stdout).await {
+        tracing::warn!(
+            invocation_id,
+            path = %path.display(),
+            error = %error,
+            "failed to write codex transcript into history"
+        );
     }
-    Some(format!(
-        "validation_evidence is empty AND all {} step(s) are still 'intended' \
-         (canonical issue #188 interim shape)",
-        parsed.steps.len(),
-    ))
 }
 
 fn codex_raw_transcript(stdout: &str, last_message: Option<&str>) -> String {
@@ -2112,6 +2165,71 @@ fn recover_codex_structured_payload_from_stdout(raw_output: &str) -> Result<Valu
 
     serde_json::from_str(raw_output)
         .map_err(|error| format!("failed to parse raw output as JSON: {error}"))
+}
+
+/// Returns `true` when `raw_output` is a recognizable codex raw-transcript
+/// envelope produced by [`codex_raw_transcript`] — a JSON object whose
+/// `transport` field is the current sentinel string.
+///
+/// Callers (notably `engine::recover_iterative_payload_from_raw_output`)
+/// use this to disambiguate the codex CLI / OpenRouter-via-codex path
+/// (envelope wrapper) from the direct `OpenRouterBackendAdapter` path
+/// (raw HTTP chat-completions response body) before deciding which
+/// recovery helper to call. A JSON object that lacks the field, has a
+/// different `transport` value, or fails to parse is not an envelope.
+pub fn is_codex_raw_transcript_envelope(raw_output: &str) -> bool {
+    serde_json::from_str::<CodexRawTranscriptEnvelope>(raw_output)
+        .map(|envelope| envelope.transport == CODEX_RAW_TRANSCRIPT_VERSION)
+        .unwrap_or(false)
+}
+
+/// Recover an `ExecutionPayload` JSON value from a codex raw-transcript
+/// envelope (issue #188 codex Execution synth path).
+///
+/// **Precondition**: callers must pre-filter via
+/// [`is_codex_raw_transcript_envelope`] — passing a non-envelope payload
+/// here returns `Err`. This split keeps the direct
+/// `OpenRouterBackendAdapter` recovery path (HTTP chat-completions
+/// response body) separate from the codex CLI path so a chat-completions
+/// response is never silently treated as a codex transcript.
+///
+/// Two on-disk shapes inside the envelope are accepted:
+///
+/// 1. Modern shape: `last_message` is natural-language text. Synthesized
+///    via `synthesize_codex_execution_payload` — this is what the codex
+///    Execution synth path produces today.
+/// 2. Compat shape: `last_message` is a JSON-encoded `ExecutionPayload`.
+///    Returned verbatim so older codex runs (or hand-crafted fixtures)
+///    preserve the model's structured fields.
+///
+/// An envelope with an unrecognized `transport` version is a hard error
+/// so that on-disk format drift is caught loudly.
+pub fn recover_codex_execution_payload_from_raw_transcript(
+    raw_output: &str,
+) -> Result<Value, String> {
+    let envelope: CodexRawTranscriptEnvelope = serde_json::from_str(raw_output)
+        .map_err(|error| format!("failed to parse Codex raw transcript envelope: {error}"))?;
+    if envelope.transport != CODEX_RAW_TRANSCRIPT_VERSION {
+        return Err(format!(
+            "unrecognized Codex raw transcript version {:?}; expected {CODEX_RAW_TRANSCRIPT_VERSION}",
+            envelope.transport
+        ));
+    }
+    if let Some(last_message) = envelope.last_message.as_deref() {
+        // Compat: if last_message is a JSON-encoded ExecutionPayload, pass
+        // it through. The structural check (both `change_summary` and
+        // `steps` keys present) keeps the divert narrow — natural-
+        // language summaries with the words "change" or "steps" in them
+        // won't accidentally short-circuit the synth path.
+        if let Ok(parsed) = serde_json::from_str::<Value>(last_message) {
+            if parsed.get("change_summary").is_some() && parsed.get("steps").is_some() {
+                return Ok(parsed);
+            }
+        }
+    }
+    Ok(synthesize_codex_execution_payload(
+        envelope.last_message.as_deref(),
+    ))
 }
 
 pub(crate) fn recover_structured_payload_from_process_stdout(
@@ -4188,9 +4306,10 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
-                schema_path: schema_path.clone(),
+                schema_path: Some(schema_path.clone()),
                 message_path: message_path.clone(),
                 session_resuming: false,
+                synthesize_execution_payload: false,
             },
             env_overrides: Vec::new(),
         };
@@ -4235,9 +4354,10 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
-                schema_path: schema_path.clone(),
+                schema_path: Some(schema_path.clone()),
                 message_path: message_path.clone(),
                 session_resuming: false,
+                synthesize_execution_payload: false,
             },
             env_overrides: Vec::new(),
         };
@@ -4267,9 +4387,10 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
-                schema_path: schema_path.clone(),
+                schema_path: Some(schema_path.clone()),
                 message_path: message_path.clone(),
                 session_resuming: false,
+                synthesize_execution_payload: false,
             },
             env_overrides: Vec::new(),
         };
@@ -4297,9 +4418,10 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
-                schema_path: schema_path.clone(),
+                schema_path: Some(schema_path.clone()),
                 message_path: message_path.clone(),
                 session_resuming: false,
+                synthesize_execution_payload: false,
             },
             env_overrides: Vec::new(),
         };
@@ -4351,9 +4473,10 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
-                schema_path: schema_path.clone(),
+                schema_path: Some(schema_path.clone()),
                 message_path: message_path.clone(),
                 session_resuming: false,
+                synthesize_execution_payload: false,
             },
             env_overrides: Vec::new(),
         };
@@ -4414,9 +4537,10 @@ mod tests {
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
-                schema_path: schema_path.clone(),
+                schema_path: Some(schema_path.clone()),
                 message_path: message_path.clone(),
                 session_resuming: false,
+                synthesize_execution_payload: false,
             },
             env_overrides: Vec::new(),
         };

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428213321-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260428213321-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T22:48:16.004610413Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the amendment; the described recovery regression is technically valid.\n\n## Votes\n\n- `fr-2-5a897369`: Accept\n  The current branch treats BackendFamily::OpenRouter plus an Execution contract as a Codex raw transcript and calls recover_codex_execution_payload_from_raw_transcript. Direct OpenRouter raw output is the chat-completions response body, and that helper falls back to parsing the whole response JSON instead of extracting choices[0].message.content. That produces a payload with the wrong shape and will fail Execution contract validation when the parsed sidecar is missing. The recovery path should keep the OpenRouter HTTP response-body extractor unless the raw output is actually the Codex transcript envelope.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

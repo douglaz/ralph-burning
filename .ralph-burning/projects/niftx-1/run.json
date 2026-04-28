@@ -1,0 +1,47 @@
+{
+  "active_run": null,
+  "interrupted_run": {
+    "run_id": "run-20260428204829",
+    "stage_cursor": {
+      "stage": "plan_and_implement",
+      "cycle": 1,
+      "attempt": 5,
+      "completion_round": 1
+    },
+    "started_at": "2026-04-28T20:48:29.193245277Z",
+    "prompt_hash_at_cycle_start": "30e0fbfb315852bf0b1cf051a5b8fd56e01d7bd5ab1c4e17bd48b5be4299cf5e",
+    "prompt_hash_at_stage_start": "30e0fbfb315852bf0b1cf051a5b8fd56e01d7bd5ab1c4e17bd48b5be4299cf5e",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 0,
+    "stage_resolution_snapshot": {
+      "stage_id": "plan_and_implement",
+      "resolved_at": "2026-04-28T20:49:54.065210446Z",
+      "primary_target": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.5-high"
+      }
+    }
+  },
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 0
+  },
+  "status_summary": "failed at Plan and Implement: backend invocation failed for contract 'plan_and_implement' via 'codex': codex exited with code 1: \",\n    \"param\": \"text.format.schema\"\n  },\n  \"status\": 400\n}\nERROR: {\n  \"type\": \"error\",\n  \"error\": {\n    \"type\": \"invalid_request_error\",\n    \"code\": \"invalid_json_schema\",\n    \"message\": \"Invalid schema for response_format 'codex_output_schema': In context=('properties', 'steps'), 'contains' is not permitted.\",\n    \"param\": \"text.format.schema\"\n  },\n  \"status\": 400\n}\n2026-04-28T20:49:56.382577Z ERROR codex_core::session: failed to record rollout items: thread 019dd5db-065c-7f30-bb67-42ff03eb1c78 not found\n (stdout_len: 0, stderr_len: 10660, stdout_tail: )",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "plan_and_implement",
+    "resolved_at": "2026-04-28T20:49:54.065210446Z",
+    "primary_target": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.5-high"
+    }
+  }
+}
