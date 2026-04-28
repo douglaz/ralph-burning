@@ -1076,6 +1076,23 @@ cat <<'EOF'
 EOF
 exit 0
 fi
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-3" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {{
+    "id": "ms-alpha.bead-3",
+    "title": "Document task bootstrap follow-up",
+    "status": "open",
+    "priority": "P2",
+    "issue_type": "docs",
+    "description": "Document the follow-up workflow after project creation.",
+    "acceptance_criteria": "Document the workflow clearly",
+    "dependencies": []
+  }}
+]
+EOF
+exit 0
+fi
 if [ "$1" = "ready" ] && [ "$2" = "--json" ]; then
 echo '[]'
 exit 0
@@ -16122,10 +16139,15 @@ fn run_sync_milestone_reconciles_failed_terminal_review_classifications() {
     let payloads_dir = project_root.join("history/payloads");
     fs::create_dir_all(&payloads_dir).expect("create payloads dir");
     fs::write(
-        payloads_dir.join("run-20260401101100-review-c1-a1-cr1-payload.json"),
-        r#"{"payload_id":"run-20260401101100-review-c1-a1-cr1-payload","stage_id":"review","cycle":1,"attempt":1,"created_at":"2026-04-01T10:14:00Z","payload":{"family":"Validation","data":{"outcome":"request_changes","evidence":["review evidence"],"findings_or_gaps":["deferred follow-up"],"follow_up_or_amendments":[],"classified_findings":[{"body":"Track the retry policy separately.","classification":"propose_new_bead","proposed_bead_summary":"Track retry policy follow-up"},{"body":"Track the retry policy in a separate triage item.","classification":"propose_new_bead","proposed_bead_summary":" track retry policy follow-up "}]}},"record_kind":"stage_primary","completion_round":1}"#,
+        payloads_dir.join("run-20260401101100-reviewer-a-c1-a1-cr1-payload.json"),
+        r#"{"payload_id":"run-20260401101100-reviewer-a-c1-a1-cr1-payload","stage_id":"review","cycle":1,"attempt":1,"created_at":"2026-04-01T10:14:00Z","payload":{"family":"Validation","data":{"outcome":"request_changes","evidence":["review evidence"],"findings_or_gaps":["deferred follow-up"],"follow_up_or_amendments":[],"classified_findings":[{"body":"Track the retry policy separately.","classification":"propose_new_bead","proposed_bead_summary":"Track retry policy follow-up"}]}},"record_kind":"stage_primary","completion_round":1}"#,
     )
-    .expect("write review payload");
+    .expect("write review payload a");
+    fs::write(
+        payloads_dir.join("run-20260401101100-reviewer-b-c1-a1-cr1-payload.json"),
+        r#"{"payload_id":"run-20260401101100-reviewer-b-c1-a1-cr1-payload","stage_id":"review","cycle":1,"attempt":1,"created_at":"2026-04-01T10:14:30Z","payload":{"family":"Validation","data":{"outcome":"request_changes","evidence":["review evidence"],"findings_or_gaps":["deferred follow-up"],"follow_up_or_amendments":[],"classified_findings":[{"body":"Track the retry policy in a separate triage item.","classification":"propose_new_bead","proposed_bead_summary":" track retry policy follow-up "}]}},"record_kind":"stage_primary","completion_round":1}"#,
+    )
+    .expect("write review payload b");
 
     let task_runs_path = milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson");
     fs::write(

@@ -9,6 +9,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use std::collections::BTreeSet;
+
 use crate::adapters::br_models::{BeadPriority, BeadStatus, BeadType, DependencyRef};
 use crate::contexts::milestone_record::model::TaskRunOutcome;
 use crate::contexts::project_run_record::model::ProjectStatusSummary;
@@ -84,6 +86,43 @@ pub struct BeadRecommendation {
     /// IDs of beads that block this recommendation.
     #[serde(default)]
     pub blocked_by: Vec<String>,
+}
+
+// ── Existing-Bead Matching ─────────────────────────────────────────────────
+
+/// Jaccard similarity for reviewer-proposed bead text against candidate bead
+/// ownership text. The parser intentionally uses only ASCII alphanumeric
+/// tokens so the score is deterministic and easy to inspect in tests.
+pub fn bead_ownership_text_similarity(left: &str, right: &str) -> f64 {
+    let left_tokens = text_tokens(left);
+    let right_tokens = text_tokens(right);
+    if left_tokens.is_empty() || right_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = left_tokens.intersection(&right_tokens).count();
+    let union = left_tokens.union(&right_tokens).count();
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f64 / union as f64
+    }
+}
+
+fn text_tokens(value: &str) -> BTreeSet<String> {
+    let mut tokens = BTreeSet::new();
+    let mut current = String::new();
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            tokens.insert(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.insert(current);
+    }
+    tokens
 }
 
 // ── TriageView ───────────────────────────────────────────────────────────
@@ -244,6 +283,17 @@ mod tests {
             action: "implement".to_owned(),
             blocked_by: vec![],
         }
+    }
+
+    #[test]
+    fn bead_ownership_text_similarity_scores_token_overlap() {
+        let score = bead_ownership_text_similarity(
+            "Retry telemetry Instrument retry loops with counters",
+            "Add retry telemetry. Instrument retry loops with counters and histograms.",
+        );
+
+        assert!(score >= 0.65, "expected strong overlap, got {score}");
+        assert_eq!(0.0, bead_ownership_text_similarity("", "something"));
     }
 
     fn sample_bead_lineage() -> BeadLineageView {

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260427202942-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-28T04:09:54.012790096Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented the pending distinct-source threshold remediation in `src/contexts/automation_runtime/success_reconciliation.rs`: terminal propose-new-bead groups now threshold on distinct source identities instead of summed finding occurrences. Review-stage findings use the review payload as the source identity, final-review findings use reviewer/backend/model identities, and missing final-review source metadata is treated as a single unknown source so duplicate source-less amendments cannot satisfy N=2. Added regression coverage for duplicate final-review sources, missing final-review sources, duplicate review-payload findings, and distinct review payloads reaching threshold.\n\n## Steps\n\n0. [Completed] Inspected the terminal propose-new-bead reconciliation path and confirmed the remaining issue was thresholding by duplicate findings rather than distinct reviewer/payload sources.\n1. [Completed] Replaced occurrence-count aggregation with stable source identity aggregation for terminal review findings.\n2. [Completed] Made source-less final-review amendments count as one unknown source instead of one source per amendment.\n3. [Completed] Updated threshold-positive tests to use explicit distinct final-review sources and added regression coverage for duplicate/missing-source cases staying pending.\n4. [Completed] Ran targeted propose-new-bead tests and the full required verification gates.\n5. [Skipped] Run `br lint` after backlog edits.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --features test-stub propose_new_bead -- --nocapture` passed: 56 lib propose-new-bead tests and 6 matching unit tests passed.\n- `nix develop -c cargo test --features test-stub` passed: 1333 lib tests, 378 CLI tests, 1 run_attach_tmux test, 1126 unit tests, and doc tests completed with expected ignored tests.\n- `nix develop -c cargo clippy -- -D warnings` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix build` passed.\n- `git diff --check -- src/contexts/automation_runtime/success_reconciliation.rs` passed.\n\n## Outstanding Risks\n\n- Pre-existing dirty files outside this remediation scope remain: `.ralph-burning/projects/ni86-1/journal.ndjson`, `.ralph-burning/projects/ni86-1/run.json`, `src/adapters/br_process.rs`, and `tests/cli.rs`.\n- `br lint` was skipped because no `.beads/` backlog files were edited.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 7
+}

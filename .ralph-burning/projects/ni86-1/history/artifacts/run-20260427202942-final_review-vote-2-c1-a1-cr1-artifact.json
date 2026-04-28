@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-vote-2-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427202942-final_review-vote-2-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T21:37:08.924019995Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. They each identify real policy- and correctness regressions in `handle_propose_new_bead` that can violate intended parsimonious creation behavior.\n\n## Votes\n\n- `fr-1-ed5cf798`: Accept\n  `handle_propose_new_bead` performs an unjournaled exact-title/detail recovery pass before threshold enforcement, so sub-threshold proposals can still mutate state (dependency + Created outcome) and emit a `ProposedBeadCreated` event without policy metadata. This bypasses the configured threshold semantics and loses `threshold_count`/`existing_bead_lookup_ran` observability.\n- `fr-1-919379c1`: Accept\n  `parsimonious_bead_creation_policy` calls `EffectiveConfig::load_for_project(base_dir, None, ...)`, so project-level `workflow.parsimonious_bead_creation` overrides are never loaded. This silently ignores project settings like `enabled=false` or custom `proposal_threshold`, creating inconsistent behavior versus other reconciliation code that resolves project-scoped config.\n- `fr-1-8eeee862`: Accept\n  The early `current_count < threshold` pending return executes before semantic existing-bead ownership lookup, so strong matches are never converted to `CoveredByExistingBead` when below threshold. This violates the required policy order (map to existing first, create only afterward) and misses deduplication/commenting behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 1
+}

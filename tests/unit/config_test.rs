@@ -3,8 +3,9 @@ use std::fs;
 use chrono::TimeZone;
 use ralph_burning::adapters::fs::FileSystem;
 use ralph_burning::contexts::workspace_governance::config::{
+    DEFAULT_EXISTING_BEAD_MATCH_THRESHOLD_SCORE,
     DEFAULT_ITERATIVE_MINIMAL_MAX_CONSECUTIVE_IMPLEMENTER_ROUNDS,
-    DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED,
+    DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED, DEFAULT_PARSIMONIOUS_BEAD_CREATION_ENABLED,
 };
 use ralph_burning::contexts::workspace_governance::{
     ConfigValue, EffectiveConfig, DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
@@ -139,6 +140,27 @@ fn effective_config_loads_compiled_defaults() {
         config
             .get("workflow.iterative_minimal.stable_rounds_required")
             .expect("iterative minimal stable rounds")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Bool(DEFAULT_PARSIMONIOUS_BEAD_CREATION_ENABLED),
+        config
+            .get("workflow.parsimonious_bead_creation.enabled")
+            .expect("parsimonious enabled")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Float(DEFAULT_EXISTING_BEAD_MATCH_THRESHOLD_SCORE),
+        config
+            .get("workflow.parsimonious_bead_creation.existing_bead_match_threshold_score")
+            .expect("parsimonious existing match threshold")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Integer(2),
+        config
+            .get("workflow.parsimonious_bead_creation.proposal_threshold")
+            .expect("parsimonious proposal threshold")
             .value
     );
 }
@@ -313,6 +335,59 @@ fn config_set_updates_new_bead_proposal_threshold() {
         reloaded
             .get("workflow.new_bead_proposal_threshold")
             .expect("reloaded proposal threshold")
+            .value
+    );
+}
+
+#[test]
+fn config_set_updates_parsimonious_bead_creation_settings() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let enabled = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.parsimonious_bead_creation.enabled",
+        "false",
+    )
+    .expect("set parsimonious enabled");
+    assert_eq!("false", enabled.value.display_value());
+
+    let score = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.parsimonious_bead_creation.existing_bead_match_threshold_score",
+        "0.7",
+    )
+    .expect("set parsimonious match threshold");
+    assert_eq!("0.7", score.value.display_value());
+
+    let threshold = EffectiveConfig::set(
+        temp_dir.path(),
+        "workflow.parsimonious_bead_creation.proposal_threshold",
+        "3",
+    )
+    .expect("set parsimonious proposal threshold");
+    assert_eq!("3", threshold.value.display_value());
+
+    let reloaded = EffectiveConfig::load(temp_dir.path()).expect("reload effective config");
+    assert_eq!(
+        ConfigValue::Bool(false),
+        reloaded
+            .get("workflow.parsimonious_bead_creation.enabled")
+            .expect("reloaded parsimonious enabled")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Float(0.7),
+        reloaded
+            .get("workflow.parsimonious_bead_creation.existing_bead_match_threshold_score")
+            .expect("reloaded parsimonious match threshold")
+            .value
+    );
+    assert_eq!(
+        ConfigValue::Integer(3),
+        reloaded
+            .get("workflow.parsimonious_bead_creation.proposal_threshold")
+            .expect("reloaded parsimonious proposal threshold")
             .value
     );
 }

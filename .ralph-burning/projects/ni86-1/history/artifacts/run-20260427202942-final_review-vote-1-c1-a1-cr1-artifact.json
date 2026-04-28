@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427202942-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T21:38:46.993858467Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nTwo amendments identify real defects in threshold/config handling; the below-threshold existing-lookup amendment would change the intended threshold gate rather than fix a correctness issue.\n\n## Votes\n\n- `fr-1-ed5cf798`: Accept\n  The unjournaled exact-title/rendered-description recovery branch runs before the proposal threshold gate and can mutate dependencies and record Created for a below-threshold proposal. It also uses the wrapper that omits the new policy metadata. This bypasses the intended threshold-controlled creation path and should be gated or proven as prior compliant recovery.\n- `fr-1-919379c1`: Accept\n  The helper loads EffectiveConfig with project_id=None, so project-level parsimonious_bead_creation overrides are ignored. Since the same policy fields control enabled, threshold, and matching behavior, this can create or look up beads contrary to a project-specific configuration.\n- `fr-1-8eeee862`: Reject\n  The cited below-threshold return does not create a bead, so it does not violate the required ordering of existing lookup before creation. Running the ownership lookup and posting comments below threshold would introduce an additional mutation for proposals that the threshold gate intentionally leaves pending.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,7 @@
+id = "ni86-1"
+name = "9ni.8.6 parsimonious bead creation"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "91f3ab09e8d9e8480e73e306ea1872b06e1d70cdc22f72ba712f48e6b60eaf3a"
+created_at = "2026-04-27T20:29:02.784354256Z"
+status_summary = "created"

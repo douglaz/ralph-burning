@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260427202942-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-28T01:37:34.915850932Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCompleted the pending terminal reconciliation remediation in the current tree: `reconcile_proposed_bead_records` now uses the parsimonious bead creation policy, enforces the configured proposal threshold, runs active/open-bead ownership similarity checks before writing `proposed-beads.ndjson`, comments on strong existing-bead matches as `covered_by_existing_bead`, and skips proposal records for work owned by the active bead. The production terminal path is covered by a regression test for threshold-met existing-bead matches producing a comment and no proposal record.\n\n## Steps\n\n0. [Completed] Inspected the terminal `propose_new_bead` reconciliation path, current source diff, and existing service-side parsimonious policy helpers.\n1. [Completed] Verified the current terminal path enforces policy before proposal persistence: threshold first, then active-bead ownership, then existing open-bead similarity routing, then record append only for genuinely missing work.\n2. [Completed] Confirmed regression coverage for the production terminal path where a threshold-met proposal with a strong existing-bead match comments on the existing bead and writes no `proposed-beads.ndjson` record.\n3. [Completed] Ran targeted `propose_new_bead` tests, full test suite, clippy, fmt check, diff whitespace check, and `nix build`.\n4. [Skipped] Run `br lint` after backlog edits.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --features test-stub classification_propose_new_bead_existing_match_comments_without_record -- --nocapture` passed.\n- `nix develop -c cargo test --features test-stub propose_new_bead -- --nocapture` passed: 52 lib tests and 6 unit tests matched; all passed.\n- `nix develop -c cargo test --features test-stub` passed: 1334 lib tests, 378 CLI tests, 1 run_attach_tmux test, 1126 unit tests, and doc tests completed successfully with expected ignored tests.\n- `nix develop -c cargo clippy -- -D warnings` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix build` passed.\n- `git diff --check -- src/contexts/automation_runtime/success_reconciliation.rs tests/cli.rs` passed.\n\n## Outstanding Risks\n\n- Live orchestration state under `.ralph-burning/projects/ni86-1/` remains dirty and was left untouched.\n- `br lint` was skipped because no `.beads/` backlog files were edited in this remediation round.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 5
+}

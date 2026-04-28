@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260427202942-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T01:55:07.981897363Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAll three amendments identify real reconciliation defects in the terminal final-review propose-new-bead path.\n\n## Votes\n\n- `fr-5-0b120d63`: Accept\n  The active bead is closed before terminal reconciliation, and the ownership check excludes closed statuses. That can route current-bead work into follow-up records, violating the fix-current-bead-first policy. Checking the active bead independently of terminal status is technically warranted.\n- `fr-5-49275fe9`: Accept\n  Threshold-met terminal proposals currently get only an ndjson handoff record, while below-threshold proposals are journaled. Adding an idempotent structured journal event for the created proposal improves auditability and keeps terminal reconciliation consistent with the rest of the propose-new-bead flow.\n- `fr-5-bc97dd0b`: Accept\n  Final review already preserves authoritative proposed title, scope, severity, and rationale, but terminal reconciliation drops them and falls back to summary/body text plus unknown severity. That weakens matching and produces lower-quality journal/proposal records, so carrying the richer metadata through is correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

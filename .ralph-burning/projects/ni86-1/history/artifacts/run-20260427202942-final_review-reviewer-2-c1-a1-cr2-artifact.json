@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-reviewer-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260427202942-final_review-reviewer-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T22:35:44.569313887Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nReviewed the full branch diff against 2e54e84499c17f6d5cfafe87ff0d6ee5068770e8 across tracked source files (excluding runtime state in .ralph-burning and docs/artifacts). No high-confidence correctness or safety issues were identified in the implemented policy-order, config wiring, similarity matching, or journal event logging. The reviewed changes appear to satisfy the stated acceptance criteria; I did not find actionable defects to fix.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

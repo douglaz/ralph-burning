@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260427202942-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-28T02:49:56.762364820Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nCompleted the terminal reconciliation remediation for parsimonious bead creation in `src/contexts/automation_runtime/success_reconciliation.rs`: active-bead ownership matching no longer depends on open/in-progress status, threshold-met terminal proposal records now emit `propose_new_bead_created` journal events, and terminal final-review proposal handling now preserves authoritative proposed title, scope, severity, and rationale for matching, records, and journal metadata.\n\n## Steps\n\n0. [Completed] Inspected the terminal success reconciliation path, proposed-bead grouping, active-bead ownership lookup, journal event helpers, and final-review metadata conversion against the three pending amendments.\n1. [Completed] Confirmed active-bead ownership lookup includes the active bead regardless of terminal status, so a just-closed current bead still satisfies the fix-current-bead-first policy before follow-up recording.\n2. [Completed] Confirmed threshold-met terminal proposed-bead groups with no active or existing-bead match record `propose_new_bead_created` journal events with proposed title, scope, severity, threshold count, current count, amendment ids, run id, and existing-bead lookup status.\n3. [Completed] Confirmed terminal final-review reconciliation carries proposed_title, proposed_scope, severity, and rationale through `TerminalReviewFinding`, `TerminalProposeNewBeadInput`, `ProposedBeadRecord`, and pending/created journal metadata.\n4. [Completed] Verified regression coverage for closed active-bead ownership matches, created-event emission, final-review metadata preservation, threshold behavior, existing-bead routing, and disabled policy behavior.\n5. [Completed] Ran required validation gates: targeted propose-new-bead tests, full cargo tests, clippy, fmt check, diff whitespace check, and nix build.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --features test-stub propose_new_bead -- --nocapture` passed: 54 matched tests passed.\n- `nix develop -c cargo test --features test-stub` passed: 1330 lib tests passed with 6 ignored, 378 CLI tests passed with 3 ignored, 1 run_attach_tmux test passed, 1126 unit tests passed with 1 ignored, and doc tests completed with expected ignored tests.\n- `nix develop -c cargo clippy -- -D warnings` passed.\n- `nix develop -c cargo fmt --check` passed.\n- `nix build` passed.\n- `git diff --check -- src/contexts/automation_runtime/success_reconciliation.rs` passed.\n\n## Outstanding Risks\n\n- Live orchestration state under `.ralph-burning/projects/ni86-1/` remains dirty and was left untouched as requested by repo policy.\n- `br lint` was skipped because no `.beads/` backlog files were edited in this remediation round.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 6
+}

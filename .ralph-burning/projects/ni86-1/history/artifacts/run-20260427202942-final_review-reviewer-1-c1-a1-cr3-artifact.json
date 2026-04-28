@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260427202942-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T23:47:15.703789185Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the full branch against 2e54e84499c17f6d5cfafe87ff0d6ee5068770e8, excluding .ralph-burning runtime state. `nix build` completed successfully. Found three correctness issues.\n\n## Amendments\n\n1. src/contexts/milestone_record/service.rs:5148-5171 treats a strong match against the active bead as `CoveredByExistingBead` and returns without creating a bead, posting a comment, or routing the finding back as fix-current work. That violates the required policy order: active-bead-owned findings must be fixed on the current bead, not silently marked covered. This can drop a real reviewer finding whenever the similarity check matches the current bead.\n   Classification: fix_current_bead\n   Rationale: A proposed follow-up that actually belongs to the active bead must cause current-bead remediation; returning a covered outcome loses the work.\n2. src/contexts/milestone_record/service.rs:5133-5145 queries all beads before loading the parsimonious policy and threshold. With `workflow.parsimonious_bead_creation.enabled=false` and `proposal_count < threshold`, threshold enforcement should be able to record a pending event without any existing-bead lookup, but this code can fail on `br list --all` before reaching the pending path at src/contexts/milestone_record/service.rs:5176-5221. Load the policy first and short-circuit disabled below-threshold proposals before any bead listing.\n   Classification: fix_current_bead\n   Rationale: The disabled-policy acceptance case says existing-bead lookup is skipped while threshold is still enforced; the current ordering still depends on br lookup for a no-mutation pending result.\n3. Pending journal events are appended unconditionally, so reconciliation is not idempotent for below-threshold proposals. `reconcile_proposed_bead_records` calls `record_propose_new_bead_pending_event` on every pass at src/contexts/automation_runtime/success_reconciliation.rs:1564-1573, and that helper always appends at src/contexts/automation_runtime/success_reconciliation.rs:1356-1362. The direct handler has the same pattern at src/contexts/milestone_record/service.rs:5212-5221 and src/contexts/milestone_record/service.rs:5552-5611. Re-running terminal sync or replaying the same below-threshold proposal will keep adding duplicate `propose_new_bead_pending` entries; dedupe by sub_type, run_id, active_bead_id, amendment/proposal identity, current_count, and threshold before appending.\n   Classification: fix_current_bead\n   Rationale: Other reconciliation paths are designed to be replay-safe; duplicate pending events inflate audit state and can mislead downstream consumers of the milestone journal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

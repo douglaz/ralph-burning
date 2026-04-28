@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-vote-2-c1-a1-cr2-artifact",
+  "payload_id": "run-20260427202942-final_review-vote-2-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T22:48:16.740559496Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.3-codex-spark-xhigh\n\n## Summary\n\nAccepted all three amendments. Each points to concrete control-flow gaps where current behavior can mis-handle proposal ownership, suppress required audit signaling, or drop distinct downgrade comments.\n\n## Votes\n\n- `fr-2-81740ac4`: Accept\n  `find_existing_open_bead_match` explicitly filters out `input.active_bead_id`, and the creation branch only falls back to `CoveredByExistingBead` via that function. A high-similarity proposal for the active bead can therefore bypass reuse and create a duplicate follow-up, violating the stated fix-current-bead-first policy.\n- `fr-2-454f93fd`: Accept\n  `reconcile_proposed_bead_records` returns only summary counters when threshold is not met (`ProposedBeadReconciliationSummary`), and the terminal reconciliation entrypoint at line 308 ignores pending-journal emission entirely. This means below-threshold terminal findings never emit `propose_new_bead_pending`, so observability/state of retry-count vs threshold is lost in that path.\n- `fr-2-a7f4c702`: Accept\n  `comment_covered_by_existing_bead` currently deduplicates using only classification/active_bead/run_id; two distinct findings in one run mapped to the same bead will be treated as duplicates and only one comment posted. Including finding/scope (or a stable marker) in the dedupe key is required to preserve per-finding audit trails for downgrades.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.3-codex-spark-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.3-codex-spark-xhigh"
+  },
+  "completion_round": 2
+}

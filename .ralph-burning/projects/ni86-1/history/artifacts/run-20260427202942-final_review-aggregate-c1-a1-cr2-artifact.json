@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260427202942-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260427202942-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-27T22:49:38.958565538Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 3\n**Final Review Restarts:** 2/25\n\n## Accepted\n\n- `fr-2-81740ac4`\n- `fr-2-454f93fd`\n- `fr-2-a7f4c702`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-81740ac4`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/milestone_record/service.rs:4555 excludes the active bead from the similarity ownership lookup, and the handler later proceeds to create a new bead at src/contexts/milestone_record/service.rs:5310 when no other match is found. That skips the required “fix-current-bead first” policy: a propose_new_bead whose title/scope strongly matches the active bead will still create a duplicate follow-up instead of being treated as in-scope current work. Add an active-bead ownership check before creation and block/downgrade creation when the current bead owns the proposed work.\n\n### `fr-2-454f93fd`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/automation_runtime/success_reconciliation.rs:1471 returns below-threshold propose_new_bead groups without emitting any pending journal event. The new propose_new_bead_pending event is only in handle_propose_new_bead, while the terminal success reconciliation path called at src/contexts/automation_runtime/success_reconciliation.rs:308 uses reconcile_proposed_bead_records and silently records only amendments_processed. Below-threshold proposals therefore miss the required structured pending event with current count and threshold.\n\n### `fr-2-a7f4c702`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/milestone_record/service.rs:5580 suppresses covered-by-existing comments using only classification, active_bead_id, and run_id. If one run maps two distinct propose_new_bead findings from the same active bead to the same existing bead, the second comment is skipped even when its finding summary/proposed scope differ, losing the audit trail for that downgrade. Include a stable finding/amendment marker or compare the finding/scope before treating the comment as already posted.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

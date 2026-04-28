@@ -2558,7 +2558,7 @@ where
 
         use crate::adapters::br_process::{BrAdapter, BrMutationAdapter, OsProcessRunner};
         use crate::contexts::automation_runtime::success_reconciliation::{
-            reconcile_terminal_review_classifications, ReconciliationError,
+            reconcile_terminal_review_classifications_for_milestone, ReconciliationError,
         };
         let br_mutation = BrMutationAdapter::with_adapter_id(
             BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf()),
@@ -2566,12 +2566,13 @@ where
         );
         let br_read =
             BrAdapter::<OsProcessRunner>::new().with_working_dir(project_dir.to_path_buf());
-        reconcile_terminal_review_classifications(
+        reconcile_terminal_review_classifications_for_milestone(
             &br_mutation,
             &br_read,
             project_dir,
             &task_source.bead_id,
             &task.task_id,
+            &task_source.milestone_id,
             project_id.as_str(),
             &run_id,
         )

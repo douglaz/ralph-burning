@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260427202942-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-27T21:26:43.285713934Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nImplemented parsimonious propose-new-bead handling: configurable workflow.parsimonious_bead_creation defaults, threshold-aware pending/created journal metadata, Jaccard-based open-bead ownership matching, covered_by_existing_bead comments instead of duplicate bead creation, and regression coverage for create, match, pending, and disabled-policy paths.\n\n## Steps\n\n0. [Completed] Inspected existing reconciliation, proposal threshold, config, and bead query code paths before editing behavior.\n1. [Completed] Added parsimonious bead creation policy fields and effective config resolution with defaults enabled=true, match score=0.65, proposal threshold=2.\n2. [Completed] Added deterministic token/Jaccard similarity lookup for open candidate beads and routed strong matches to covered_by_existing_bead comments without creating a bead.\n3. [Completed] Enforced configurable proposal threshold before creation and emitted propose_new_bead_pending / propose_new_bead_created journal metadata with counts and lookup status.\n4. [Completed] Updated and added regression tests for threshold creation, existing-bead downgrade, below-threshold pending, disabled lookup, and config get/set behavior.\n5. [Skipped] Run br lint after backlog edits.\n\n## Validation Evidence\n\n- nix develop -c cargo check --features test-stub passed.\n- nix develop -c cargo test --features test-stub passed on rerun; targeted propose-new-bead/config/classification tests also passed.\n- nix develop -c cargo clippy -- -D warnings passed.\n- nix develop -c cargo fmt --check passed.\n- nix build passed.\n\n## Outstanding Risks\n\n- br lint could not be run because the br binary is unavailable in this environment, including inside nix develop.\n- Pre-existing working tree changes under .beads/ and .ralph-burning/ were left untouched.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

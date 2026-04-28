@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260427202942-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260427202942-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T00:49:38.446834567Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the amendment; the terminal reconciliation path still bypasses the parsimonious existing-bead matching policy.\n\n## Votes\n\n- `fr-4-f1f1c73d`: Accept\n  The finding is technically valid. `reconcile_terminal_review_classifications_for_milestone` calls `reconcile_proposed_bead_records`, which only groups `ProposeNewBead` findings by summary, applies the threshold, and appends `proposed-beads.ndjson`. It does not perform the open-bead similarity lookup or convert a strong existing match into `covered_by_existing_bead`, even though `handle_propose_new_bead` implements that policy. This can surface duplicate follow-up work from the real success reconciliation flow.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 4
+}
