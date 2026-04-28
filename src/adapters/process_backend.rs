@@ -1974,134 +1974,54 @@ pub fn processed_contract_schema_value(
     if backend_family == BackendFamily::Claude {
         wrap_claude_structured_output_schema(schema_value)
     } else {
-        // Codex-only: defeat the interim ExecutionPayload trap (issue #188)
-        // by tightening the schema codex's `--output-schema` matcher sees.
-        // Two constraints, both injected here so Claude's shared schema
-        // (which has different validation semantics) is unaffected:
+        // Codex-only: narrow `steps[].items.properties.status.enum` to
+        // {"completed", "skipped"} on the schema codex sends to OpenAI.
+        // The shared `ExecutionPayload` schema includes `Intended` for
+        // planning shapes (and Claude tolerates it via semantic
+        // validation), but codex's `--output-schema` matcher accepts the
+        // first JSON that conforms structurally — so an interim status
+        // message with all-`Intended` steps satisfies the broader enum
+        // and ends the turn before tool calls return (GitHub issue #188).
         //
-        // 1. `validation_evidence` requires `minItems: 1`. Started in PR
-        //    #189; codex bypassed it with a placeholder string.
-        // 2. `steps` requires `contains` + `minContains: 1` matching at
-        //    least one step with `status ∈ {completed, skipped}`. This
-        //    is the actual fix for the issue #188 reopen: the matcher
-        //    now refuses any all-`intended` payload, so codex must
-        //    actually progress at least one step (which requires running
-        //    a tool) before its JSON conforms. Per the user's repro
-        //    comment on the issue, codex's matcher supports
-        //    `contains`/`minContains` (JSON Schema draft 6+).
+        // Restricting the enum at the schema layer forces codex's matcher
+        // to refuse any payload until at least one step has progressed
+        // to `Completed` or `Skipped`. Per a gpt-5.5-xhigh design
+        // consultation, this is the cleanest schema-level fix that uses
+        // only strict-mode-allowed keywords (`enum` is allowed; `contains`
+        // / `minContains` / `not` / `if-then-else` are not).
+        //
+        // Drawback: schema cannot prove tool execution actually happened
+        // — a model could still hallucinate `completed` without doing
+        // the work. The runtime detector + Execution semantic validator
+        // (PR #193) remain in place as defense-in-depth for that case.
+        // The durable architectural fix would be to parse codex's
+        // transcript directly and require a real tool-call event;
+        // tracked separately.
         if matches!(
             contract.stage_contract().map(|c| c.family),
             Some(ContractFamily::Execution)
         ) {
-            inject_codex_min_validation_evidence(&mut schema_value);
-            inject_codex_steps_forward_progress(&mut schema_value);
+            inject_codex_steps_status_enum(&mut schema_value);
         }
         schema_value
     }
 }
 
-/// Walk the codex-bound execution schema and add `minItems: 1` to the
-/// `validation_evidence` array property. Idempotent: if the constraint is
-/// already present (or stronger) it leaves it alone.
-fn inject_codex_min_validation_evidence(schema_value: &mut serde_json::Value) {
-    let Some(properties) = schema_value
-        .get_mut("properties")
+/// Narrow the codex-bound execution schema's
+/// `properties.steps.items.properties.status.enum` to
+/// `["completed", "skipped"]`. Idempotent: if the enum is already at most
+/// that set, leaves it alone.
+fn inject_codex_steps_status_enum(schema_value: &mut serde_json::Value) {
+    let Some(status) = schema_value
+        .pointer_mut("/properties/steps/items/properties/status")
         .and_then(|v| v.as_object_mut())
     else {
         return;
     };
-    let Some(validation_evidence) = properties
-        .get_mut("validation_evidence")
-        .and_then(|v| v.as_object_mut())
-    else {
-        return;
-    };
-    let already = validation_evidence
-        .get("minItems")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    if already < 1 {
-        validation_evidence.insert("minItems".to_owned(), serde_json::json!(1));
-    }
-}
-
-/// Walk the codex-bound execution schema and add a `contains` +
-/// `minContains: 1` constraint to the `steps` array, requiring at least
-/// one entry with `status ∈ {completed, skipped}`. This forces codex's
-/// `--output-schema` matcher to refuse all-`intended` payloads at the
-/// schema layer, before the matcher would otherwise end the turn on the
-/// first JSON match (GitHub issue #188).
-///
-/// Idempotent: if a stricter constraint is already present, it's left
-/// alone.
-fn inject_codex_steps_forward_progress(schema_value: &mut serde_json::Value) {
-    let Some(properties) = schema_value
-        .get_mut("properties")
-        .and_then(|v| v.as_object_mut())
-    else {
-        return;
-    };
-    let Some(steps) = properties.get_mut("steps").and_then(|v| v.as_object_mut()) else {
-        return;
-    };
-    if !steps.contains_key("contains") {
-        // Build the `contains` subschema from `steps.items` so it matches
-        // the same step shape (`order`, `description`, `status`,
-        // `additionalProperties: false`, every property in `required`)
-        // and only narrows `status` to {completed, skipped}.
-        //
-        // Why clone `items` instead of hand-writing the subschema:
-        //   - codex-review #194 P1 (first round): strict-mode requires
-        //     every object subschema to carry `additionalProperties: false`
-        //     and list every property in `required`. A hand-written subset
-        //     is easy to drift out of sync with `ExecutionStep`.
-        //   - codex-review #194 P1 (second round): a hand-written subset
-        //     with `additionalProperties: false` made the contains subschema
-        //     unsatisfiable because real steps also carry `order` and
-        //     `description` — no actual step could match.
-        // Cloning the items schema gives us the exact shape codex already
-        // expects step objects to take, then we override only `status`.
-        let contains_schema = steps.get("items").cloned().and_then(|items_value| {
-            let mut subschema = items_value;
-            let status = subschema
-                .get_mut("properties")
-                .and_then(|v| v.as_object_mut())
-                .and_then(|m| m.get_mut("status"));
-            let status_obj = status.and_then(|v| v.as_object_mut())?;
-            status_obj.insert(
-                "enum".to_owned(),
-                serde_json::json!(["completed", "skipped"]),
-            );
-            Some(subschema)
-        });
-
-        if let Some(contains_schema) = contains_schema {
-            steps.insert("contains".to_owned(), contains_schema);
-        } else {
-            // Fallback: if we couldn't derive from items (unexpected
-            // schema shape), inject a hand-written full-step subschema
-            // so the constraint still applies.
-            let mut subschema = serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "order": { "type": "integer", "format": "uint32", "minimum": 0 },
-                    "description": { "type": "string" },
-                    "status": { "enum": ["completed", "skipped"] }
-                },
-                "required": ["order", "description", "status"],
-                "additionalProperties": false,
-            });
-            enforce_strict_mode_schema(&mut subschema);
-            steps.insert("contains".to_owned(), subschema);
-        }
-    }
-    let already = steps
-        .get("minContains")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    if already < 1 {
-        steps.insert("minContains".to_owned(), serde_json::json!(1));
-    }
+    status.insert(
+        "enum".to_owned(),
+        serde_json::json!(["completed", "skipped"]),
+    );
 }
 
 fn unwrap_claude_structured_output_payload(value: serde_json::Value) -> serde_json::Value {
