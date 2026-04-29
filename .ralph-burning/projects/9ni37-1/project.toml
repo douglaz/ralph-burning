@@ -1,0 +1,7 @@
+id = "9ni37-1"
+name = "9ni.3.7 cache/invalidation/resume tests"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "7c3af7e1591581ab1fe852f84573a2ca234d6671a085f358d9dc09857da54797"
+created_at = "2026-04-29T19:10:54.890239193Z"
+status_summary = "created"

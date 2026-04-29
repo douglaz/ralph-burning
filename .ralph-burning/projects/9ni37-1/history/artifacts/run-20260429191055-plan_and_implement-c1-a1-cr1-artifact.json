@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429191055-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429191055-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T19:37:49.155030456Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented bead 9ni.3.7 by adding deterministic service-level regression coverage for requirements cache reuse, question-round invalidation, question-round resume, milestone bundle handoff serialization/source metadata, and legacy project-seed handoff serialization/load behavior. Also exposed serializable RequirementsCreateHandoff, SeedHandoff, MilestoneBundleHandoff, and load_requirements_handoff from the requirements service so internal handoff variants can be round-tripped and loaded directly in tests.\",\"outstanding_risks\":[\"Working tree still contains unrelated pre-existing orchestration/backlog state changes under .beads/issues.jsonl and .ralph-burning/projects/9ni37-1/, which were not part of the implementation scope.\"],\"steps\":[{\"description\":\"Inventoried requirements_drafting service/model internals and existing unit coverage to avoid duplicating user-facing CLI tests from 9ni.3.6.\",\"order\":0,\"status\":\"completed\"},{\"description\":\"Added serializable, comparab\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}
