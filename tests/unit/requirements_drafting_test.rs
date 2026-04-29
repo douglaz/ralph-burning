@@ -657,11 +657,12 @@ mod service_integration {
     use ralph_burning::contexts::milestone_record::service as milestone_service;
     use ralph_burning::contexts::project_run_record::service as project_service;
     use ralph_burning::contexts::requirements_drafting::model::{
-        RequirementsJournalEventType, RequirementsMode, RequirementsOutputKind, RequirementsStatus,
+        FullModeStage, RequirementsJournalEventType, RequirementsMode, RequirementsOutputKind,
+        RequirementsStatus,
     };
     use ralph_burning::contexts::requirements_drafting::service::{
         extract_milestone_bundle_handoff, extract_seed_handoff, is_requirements_run_complete,
-        RequirementsService,
+        load_requirements_handoff, RequirementsCreateHandoff, RequirementsService,
     };
     use ralph_burning::contexts::workspace_governance::{self, config::EffectiveConfig};
     use ralph_burning::shared::domain::{
@@ -1069,6 +1070,361 @@ mod service_integration {
             "default_flow": "standard",
             "agents_guidance": "Use stub guidance."
         })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answer_reuses_committed_ideation_and_research_without_backend_calls() {
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        std::env::set_var("EDITOR", "true");
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [{
+                "id": "q1",
+                "prompt": "Which framework?",
+                "rationale": "The answer should only affect synthesis and downstream.",
+                "required": true
+            }]
+        }));
+        let recorder = adapter.clone();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft(
+                temp_dir.path(),
+                "Cache stable answer-independent stages",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("draft should pause for answers");
+
+        let store = FsRequirementsStore;
+        let run_before = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let ideation_before = run_before
+            .committed_stages
+            .get(FullModeStage::Ideation.as_str())
+            .expect("ideation committed before answer")
+            .clone();
+        let research_before = run_before
+            .committed_stages
+            .get(FullModeStage::Research.as_str())
+            .expect("research committed before answer")
+            .clone();
+        assert!(
+            ideation_before.cache_key.is_some() && research_before.cache_key.is_some(),
+            "answer-independent stages must carry cache keys"
+        );
+
+        let count_label = |label: &str| {
+            recorder
+                .recorded_invocations()
+                .iter()
+                .filter(|invocation| invocation.contract_label == label)
+                .count()
+        };
+        assert_eq!(count_label("requirements:ideation"), 1);
+        assert_eq!(count_label("requirements:research"), 1);
+
+        let answers_path = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id)
+            .join("answers.toml");
+        std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
+
+        service
+            .answer(temp_dir.path(), &run_id, None)
+            .await
+            .expect("answer should complete");
+
+        assert_eq!(
+            count_label("requirements:ideation"),
+            1,
+            "cached ideation must not re-invoke the backend"
+        );
+        assert_eq!(
+            count_label("requirements:research"),
+            1,
+            "cached research must not re-invoke the backend"
+        );
+        assert_eq!(
+            count_label("requirements:synthesis"),
+            2,
+            "answer-sensitive synthesis must be regenerated"
+        );
+
+        let run_after = store
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read final run");
+        assert_eq!(
+            run_after
+                .committed_stages
+                .get(FullModeStage::Ideation.as_str()),
+            Some(&ideation_before),
+            "ideation should be reused from committed_stages"
+        );
+        assert_eq!(
+            run_after
+                .committed_stages
+                .get(FullModeStage::Research.as_str()),
+            Some(&research_before),
+            "research should be reused from committed_stages"
+        );
+        let journal = store
+            .read_journal(temp_dir.path(), &run_id)
+            .expect("read journal");
+        let reused_count = journal
+            .iter()
+            .filter(|event| event.event_type == RequirementsJournalEventType::StageReused)
+            .count();
+        assert_eq!(
+            reused_count, 2,
+            "only ideation and research should be reused after answering"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn question_round_resume_preserves_prompt_answers_and_counter_after_reload() {
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        std::env::set_var("EDITOR", "true");
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "Which framework?",
+                    "rationale": "Required for architecture.",
+                    "required": true
+                },
+                {
+                    "id": "q2",
+                    "prompt": "Any optional constraints?",
+                    "rationale": "Optional detail should survive resume.",
+                    "required": false
+                }
+            ]
+        }));
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft(
+                temp_dir.path(),
+                "Resume interrupted question round",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("draft should pause for questions");
+
+        let store = FsRequirementsStore;
+        let paused = service
+            .show(temp_dir.path(), &run_id)
+            .expect("show paused run")
+            .run;
+        assert_eq!(paused.status, RequirementsStatus::AwaitingAnswers);
+        assert_eq!(paused.question_round, 0);
+        let question_set_id = paused
+            .latest_question_set_id
+            .clone()
+            .expect("question set should be committed");
+        let question_payload = store
+            .read_payload(temp_dir.path(), &run_id, &question_set_id)
+            .expect("read question payload");
+        assert_eq!(
+            question_payload["questions"][0]["prompt"],
+            "Which framework?"
+        );
+
+        let answers_path = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id)
+            .join("answers.toml");
+        std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write partial answers");
+        assert!(
+            store
+                .read_answers_toml(temp_dir.path(), &run_id)
+                .expect("read answers from same service path")
+                .contains("Use Axum"),
+            "partial answers should remain available before reload"
+        );
+
+        let reloaded_service = RequirementsService::new(
+            AgentExecutionService::new(
+                StubBackendAdapter::default(),
+                FsRawOutputStore,
+                FsSessionStore,
+            ),
+            FsRequirementsStore,
+        );
+        let reloaded = reloaded_service
+            .show(temp_dir.path(), &run_id)
+            .expect("show reloaded run")
+            .run;
+        assert_eq!(reloaded.status, RequirementsStatus::AwaitingAnswers);
+        assert_eq!(reloaded.question_round, 0);
+        assert_eq!(
+            reloaded.latest_question_set_id.as_deref(),
+            Some(question_set_id.as_str()),
+            "resume must re-use the same question set"
+        );
+        let reloaded_payload = store
+            .read_payload(temp_dir.path(), &run_id, &question_set_id)
+            .expect("read reloaded question payload");
+        assert_eq!(
+            reloaded_payload["questions"][0]["prompt"], question_payload["questions"][0]["prompt"],
+            "the same question should be re-asked after loading persisted state"
+        );
+        assert!(
+            store
+                .read_answers_toml(temp_dir.path(), &run_id)
+                .expect("read answers after reload")
+                .contains("Use Axum"),
+            "partial answers should survive persisted reload"
+        );
+
+        reloaded_service
+            .answer(temp_dir.path(), &run_id, None)
+            .await
+            .expect("answer should resume and complete");
+        let completed = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        assert_eq!(completed.status, RequirementsStatus::Completed);
+        assert_eq!(
+            completed.question_round, 1,
+            "answering the resumed round should preserve and advance the counter"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn milestone_bundle_handoff_preserves_source_hash_and_roundtrips_payload() {
+        use milestone_service::MilestoneSnapshotPort;
+        use ralph_burning::contexts::milestone_record::bundle::MilestoneBundle;
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:milestone_bundle",
+            milestone_bundle_payload(
+                "Bundle handoff summary.",
+                "Deliver deterministic bundle handoff coverage",
+            ),
+        );
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone bundle handoff",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should complete");
+
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let bundle_id = run
+            .latest_milestone_bundle_id
+            .clone()
+            .expect("bundle payload id should be committed");
+        let payload_json = store
+            .read_payload(temp_dir.path(), &run_id, &bundle_id)
+            .expect("read bundle payload");
+        let payload_bundle: MilestoneBundle =
+            serde_json::from_value(payload_json).expect("deserialize bundle payload");
+        let serialized = serde_json::to_string(&payload_bundle).expect("serialize bundle");
+        let roundtripped: MilestoneBundle =
+            serde_json::from_str(&serialized).expect("roundtrip bundle");
+        assert_eq!(payload_bundle, roundtripped);
+
+        let handoff =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect("extract bundle handoff");
+        assert_eq!(handoff.requirements_run_id, run_id);
+        assert_eq!(
+            handoff.milestone_bundle_id.as_deref(),
+            Some(bundle_id.as_str())
+        );
+        assert_eq!(handoff.bundle.schema_version, MILESTONE_BUNDLE_VERSION);
+        assert_eq!(handoff.bundle.executive_summary, "Bundle handoff summary.");
+        let beads = &handoff.bundle.workstreams[0].beads;
+        assert_eq!(beads.len(), 1);
+        assert_eq!(beads[0].bead_id.as_deref(), Some("ms-stub.bead-1"));
+        assert_eq!(beads[0].title, "Stub bead");
+
+        let expected_source = milestone_service::MaterializeBundleSource::from_bundle(
+            handoff.requirements_run_id.clone(),
+            bundle_id.clone(),
+            &handoff.bundle,
+        )
+        .expect("compute expected source");
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(
+                temp_dir.path(),
+                &ralph_burning::contexts::milestone_record::model::MilestoneId::new(
+                    handoff.bundle.identity.id.clone(),
+                )
+                .expect("milestone id"),
+            )
+            .expect("read auto-materialized snapshot");
+        let source = snapshot
+            .source_requirements_bundle
+            .expect("auto-materialized milestone should record source bundle");
+        assert_eq!(source.plan_hash, expected_source.plan_hash);
+        assert_eq!(source.schema_version, expected_source.schema_version);
+        assert_eq!(source.milestone_bundle_id, bundle_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_project_seed_handoff_loads_and_roundtrips_serialization() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft(
+                temp_dir.path(),
+                "Legacy project seed compatibility",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("draft should produce project seed");
+
+        let handoff = load_requirements_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+            .expect("load requirements handoff");
+        let encoded = serde_json::to_string(&handoff).expect("serialize handoff");
+        let decoded: RequirementsCreateHandoff =
+            serde_json::from_str(&encoded).expect("deserialize handoff");
+        assert_eq!(decoded, handoff);
+
+        let RequirementsCreateHandoff::ProjectSeed(seed) = decoded else {
+            panic!("legacy full-mode terminal should load as ProjectSeed");
+        };
+        assert_eq!(seed.requirements_run_id, run_id);
+        assert_eq!(seed.project_id, "stub-project");
+        assert_eq!(seed.project_name, "Stub Project");
+        assert_eq!(seed.prompt_body, "Stub prompt body for the project.");
+        assert_eq!(
+            seed.recommended_flow,
+            Some(ralph_burning::shared::domain::FlowPreset::Standard)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -4267,6 +4623,114 @@ mod service_integration {
                         && stage != FullModeStage::Validation,
                     "current_stage should not reference an invalidated stage after answer-boundary recomputation, got {:?}",
                     stage
+                );
+            }
+        }
+
+        /// Answer invalidation must remove the complete question-round
+        /// downstream set, including whichever terminal stage is present.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn answer_invalidation_removes_all_downstream_committed_stages() {
+            std::env::set_var("EDITOR", "true");
+
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+            let run_id = service
+                .draft(
+                    temp_dir.path(),
+                    "Exercise answer invalidation cascade",
+                    deterministic_now(),
+                    None,
+                )
+                .await
+                .expect("draft should complete");
+
+            let store = FsRequirementsStore;
+            let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+            assert_eq!(run.status, RequirementsStatus::Completed);
+            assert!(
+                run.committed_stages
+                    .contains_key(FullModeStage::ProjectSeed.as_str()),
+                "project seed terminal stage should be committed before simulated question round"
+            );
+            let project_seed_entry = run
+                .committed_stages
+                .get(FullModeStage::ProjectSeed.as_str())
+                .expect("project seed entry")
+                .clone();
+            run.committed_stages.insert(
+                FullModeStage::MilestoneBundle.as_str().to_owned(),
+                project_seed_entry,
+            );
+
+            let question_id = format!("{run_id}-qs-1");
+            let question_artifact_id = format!("{run_id}-qs-art-1");
+            store
+                .write_payload_artifact_pair_atomic(
+                    temp_dir.path(),
+                    &run_id,
+                    &question_id,
+                    &json!({
+                        "questions": [{
+                            "id": "q1",
+                            "prompt": "What changed?",
+                            "rationale": "Force a resumable question boundary.",
+                            "required": true
+                        }]
+                    }),
+                    &question_artifact_id,
+                    "# Questions\n\n- q1: What changed?\n",
+                )
+                .expect("write question payload");
+            store
+                .write_answers_toml(temp_dir.path(), &run_id, "q1 = \"Scope changed\"\n")
+                .expect("write answers");
+
+            run.status = RequirementsStatus::AwaitingAnswers;
+            run.status_summary = "awaiting answers: 1 question(s), round 1".to_owned();
+            run.latest_question_set_id = Some(question_id);
+            run.pending_question_count = Some(1);
+            store
+                .write_run(temp_dir.path(), &run_id, &run)
+                .expect("write awaiting run");
+
+            let adapter2 = StubBackendAdapter::default();
+            let agent_service2 =
+                AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+            let failing_store = FailingJournalRequirementsStore::new(2);
+            let service2 = RequirementsService::new(agent_service2, failing_store);
+
+            let result = service2.answer(temp_dir.path(), &run_id, None).await;
+            assert!(
+                result.is_err(),
+                "answer should fail after invalidation so post-invalidation state is inspectable"
+            );
+
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run after failed answer");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            assert!(
+                run.committed_stages
+                    .contains_key(FullModeStage::Ideation.as_str()),
+                "ideation must survive question-round invalidation"
+            );
+            assert!(
+                run.committed_stages
+                    .contains_key(FullModeStage::Research.as_str()),
+                "research must survive question-round invalidation"
+            );
+            for stage in FullModeStage::question_round_invalidated() {
+                assert!(
+                    !run.committed_stages.contains_key(stage.as_str()),
+                    "{} should be removed by answer invalidation",
+                    stage.as_str()
                 );
             }
         }

@@ -2553,8 +2553,43 @@ pub fn extract_milestone_bundle_handoff(
     })
 }
 
+/// Terminal handoff produced by a completed requirements run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "handoff", rename_all = "snake_case")]
+pub enum RequirementsCreateHandoff {
+    ProjectSeed(SeedHandoff),
+    MilestoneBundle(MilestoneBundleHandoff),
+}
+
+/// Load the create-project handoff for a completed requirements run.
+pub fn load_requirements_handoff(
+    store: &dyn RequirementsStorePort,
+    base_dir: &Path,
+    run_id: &str,
+) -> AppResult<RequirementsCreateHandoff> {
+    let run = read_requirements_run_status(store, base_dir, run_id)?;
+    if run.status != RequirementsStatus::Completed {
+        return Err(AppError::RequirementsHandoffFailed {
+            task_id: run_id.to_owned(),
+            details: format!(
+                "requirements run is in '{}' status, expected 'completed'",
+                run.status
+            ),
+        });
+    }
+
+    match run.output_kind {
+        RequirementsOutputKind::ProjectSeed => extract_seed_handoff(store, base_dir, run_id)
+            .map(RequirementsCreateHandoff::ProjectSeed),
+        RequirementsOutputKind::MilestoneBundle => {
+            extract_milestone_bundle_handoff(store, base_dir, run_id)
+                .map(RequirementsCreateHandoff::MilestoneBundle)
+        }
+    }
+}
+
 /// Seed handoff data extracted from a completed requirements run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SeedHandoff {
     pub requirements_run_id: String,
     pub project_id: String,
@@ -2566,7 +2601,7 @@ pub struct SeedHandoff {
 }
 
 /// Milestone bundle handoff data extracted from a completed requirements run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MilestoneBundleHandoff {
     pub requirements_run_id: String,
     pub milestone_bundle_id: Option<String>,
