@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260428213321-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260428213321-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T22:48:16.037305656Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-5a897369`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-5a897369`\n\n**Classification:** fix_current_bead\n\n`src/contexts/workflow_composition/engine.rs:6833`-`6849` now routes every OpenRouter Execution raw-output recovery through `recover_codex_execution_payload_from_raw_transcript`. That works for the process adapter's Codex-CLI/OpenRouter path, but it breaks the direct `OpenRouterBackendAdapter` path: its raw output is an OpenRouter chat-completions response body, so the Codex helper falls back to returning the whole response JSON instead of extracting `choices[0].message.content`. When an iterative terminal resume is missing the parsed sidecar, direct OpenRouter execution can no longer recover from raw output and will fail contract validation. Preserve the existing `recover_structured_payload_from_response_body` path for HTTP OpenRouter responses, or first detect a real Codex raw transcript envelope before using the Codex synth recovery.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

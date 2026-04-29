@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260428213321-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260428213321-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T22:14:40.779083537Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against 4370f75910cd81f56d07c2f0a39f469c77711c20, ignoring .ralph-burning runtime state. Found two fix-current issues around transcript preservation and raw-output recovery. Targeted nix develop cargo tests for the new Codex and Claude execution cases passed.\n\n## Amendments\n\n1. src/adapters/process_backend.rs:2093-2112 claims to copy the Codex transcript, but it writes the process stdout buffer to history/transcripts/codex-<invocation_id>.jsonl. The bead requires the verbatim Codex session rollout JSONL from ~/.codex/sessions; without --json, stdout is not guaranteed to contain the tool-call transcript and can omit the forensic record this change relies on. Locate/copy the actual Codex session transcript, or otherwise prove stdout is the complete transcript, and cover that distinction in the regression test.\n   Classification: fix_current_bead\n   Rationale: The structured payload is now synthetic, so preserving the real transcript is the only durable audit trail for what tools ran.\n2. src/adapters/process_backend.rs:396-432 now stores a natural-language last-message for Codex execution stages, and line 507 persists that same text in the raw transcript envelope. However recover_codex_structured_payload_from_stdout at src/adapters/process_backend.rs:2131-2141 still unconditionally parses envelope.last_message or stdout as JSON. If the iterative parsed sidecar is missing, the existing raw-output recovery path in src/contexts/workflow_composition/engine.rs:6817-6845 can no longer recover a completed Codex execution iteration even though the raw output exists. Update recovery to synthesize the same ExecutionPayload for Codex execution raw envelopes, or persist a recoverable synthetic payload alongside the transcript.\n   Classification: fix_current_bead\n   Rationale: This regresses crash/resume robustness for the exact execution path being changed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

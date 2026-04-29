@@ -48,51 +48,12 @@ pub struct ReadinessAssessment {
 ///
 /// Requires structured change summaries, intended or completed steps,
 /// validation evidence or plans, and outstanding-risk fields.
-///
-/// The shared schema deliberately does NOT require `validation_evidence` to be
-/// non-empty: that constraint applies only to the codex transport (added at
-/// schema-emit time in `process_backend::processed_contract_schema_value`) so
-/// that Claude execution stages — whose semantic validators and renderers
-/// already tolerate empty validation evidence — are not affected. The codex
-/// constraint exists only to defeat issue #188, where codex's
-/// `--output-schema` flag treats the first matching JSON message (an interim
-/// status emitted before tool calls return) as the terminal output for the
-/// turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionPayload {
     pub change_summary: String,
     pub steps: Vec<ExecutionStep>,
     pub validation_evidence: Vec<String>,
     pub outstanding_risks: Vec<String>,
-}
-
-impl ExecutionPayload {
-    /// Returns `true` when this payload looks like the codex "interim"
-    /// status message emitted *before* tool calls return on gpt-5.5-high
-    /// (GitHub issue #188).
-    ///
-    /// The signal: every step is still in `Intended`. We deliberately do
-    /// NOT also require `validation_evidence` to be empty: the original
-    /// PR #189 detector did, but issue #188 was reopened after codex was
-    /// observed satisfying the codex-only `minItems: 1` schema constraint
-    /// with a single placeholder string (e.g. "Workspace: …; task accepted
-    /// for execution.") while keeping every step intended. A bogus-but-
-    /// schema-conformant evidence string does not change the substantive
-    /// fact: nothing has been completed or skipped yet, so the turn cannot
-    /// be terminal.
-    ///
-    /// A real terminal payload always has at least one `Completed` or
-    /// `Skipped` step (the implementer contract requires forward
-    /// progress). A mixed-status terminal payload — completed steps plus
-    /// one deferred `Intended` follow-up — still passes because not every
-    /// step is intended.
-    pub fn looks_like_codex_interim_message(&self) -> bool {
-        !self.steps.is_empty()
-            && self
-                .steps
-                .iter()
-                .all(|step| matches!(step.status, StepStatus::Intended))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -278,105 +239,4 @@ pub enum StagePayload {
     Planning(PlanningPayload),
     Execution(ExecutionPayload),
     Validation(ValidationPayload),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn step(order: u32, status: StepStatus) -> ExecutionStep {
-        ExecutionStep {
-            order,
-            description: "test step".to_owned(),
-            status,
-        }
-    }
-
-    #[test]
-    fn looks_like_codex_interim_message_matches_canonical_issue_188_shape() {
-        // The exact shape codex emits as the *interim* status before tool
-        // calls return: every step intended, validation_evidence empty.
-        let payload = ExecutionPayload {
-            change_summary: "Starting required reading and repository \
-                inspection before editing the documentation file."
-                .to_owned(),
-            steps: vec![step(1, StepStatus::Intended)],
-            validation_evidence: vec![],
-            outstanding_risks: vec![],
-        };
-        assert!(payload.looks_like_codex_interim_message());
-    }
-
-    #[test]
-    fn looks_like_codex_interim_message_rejects_terminal_payload() {
-        // Real terminal: completed/skipped steps with non-empty evidence.
-        let payload = ExecutionPayload {
-            change_summary: "did the thing".to_owned(),
-            steps: vec![step(1, StepStatus::Completed), step(2, StepStatus::Skipped)],
-            validation_evidence: vec!["cargo test passed".to_owned()],
-            outstanding_risks: vec![],
-        };
-        assert!(!payload.looks_like_codex_interim_message());
-    }
-
-    #[test]
-    fn looks_like_codex_interim_message_rejects_terminal_with_one_deferred_step() {
-        // Codex-review #188 P1 finding: the contract permits a
-        // mixed-status terminal payload — completed steps + one intended
-        // follow-up — so long as evidence is present. We MUST NOT misfire
-        // the interim detector on this shape.
-        let payload = ExecutionPayload {
-            change_summary: "did the main work; one item deferred".to_owned(),
-            steps: vec![
-                step(1, StepStatus::Completed),
-                step(2, StepStatus::Intended),
-            ],
-            validation_evidence: vec!["cargo test passed".to_owned()],
-            outstanding_risks: vec![],
-        };
-        assert!(
-            !payload.looks_like_codex_interim_message(),
-            "terminal payload with a deferred step + real evidence must not \
-             be treated as the codex interim shape"
-        );
-    }
-
-    #[test]
-    fn looks_like_codex_interim_message_matches_issue_188_reopen_shape_with_placeholder_evidence() {
-        // Issue #188 reopen: codex satisfies the codex-only minItems=1
-        // schema constraint with a placeholder evidence string while
-        // keeping every step in Intended. The placeholder describes the
-        // workspace, not actual validation work. Original PR #189 detector
-        // missed this because it required validation_evidence to be empty.
-        let payload = ExecutionPayload {
-            change_summary: "Starting the documentation review/edit task".to_owned(),
-            steps: vec![
-                step(1, StepStatus::Intended),
-                step(2, StepStatus::Intended),
-                step(3, StepStatus::Intended),
-            ],
-            validation_evidence: vec![
-                "Workspace: /home/user/work; task accepted for execution.".to_owned()
-            ],
-            outstanding_risks: vec![],
-        };
-        assert!(
-            payload.looks_like_codex_interim_message(),
-            "all-intended steps + bogus placeholder evidence is the canonical \
-             issue #188 reopen shape — must be detected"
-        );
-    }
-
-    #[test]
-    fn looks_like_codex_interim_message_rejects_empty_steps_array() {
-        // Defensive: a payload with no steps at all is not the interim
-        // shape (codex's interim always names at least one intended step).
-        let payload = ExecutionPayload {
-            change_summary: "no work needed".to_owned(),
-            steps: vec![],
-            validation_evidence: vec![],
-            outstanding_risks: vec![],
-        };
-        assert!(!payload.looks_like_codex_interim_message());
-    }
 }

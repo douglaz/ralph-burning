@@ -1,0 +1,7 @@
+id = "nii59-1"
+name = "i59 codex session resume on interim"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "f777c606422142cf7c960f3ee15e4c9b4d8f0530a4688506ee12dddeeccb365b"
+created_at = "2026-04-28T19:20:14.459303727Z"
+status_summary = "created"

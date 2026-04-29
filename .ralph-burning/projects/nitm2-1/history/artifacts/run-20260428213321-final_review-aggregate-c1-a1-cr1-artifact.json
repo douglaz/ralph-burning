@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260428213321-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260428213321-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-28T22:15:28.738006048Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-92c13b74`\n- `fr-1-a3e3e8a2`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-92c13b74`\n\n**Classification:** fix_current_bead\n\nsrc/adapters/process_backend.rs:2093-2112 claims to copy the Codex transcript, but it writes the process stdout buffer to history/transcripts/codex-<invocation_id>.jsonl. The bead requires the verbatim Codex session rollout JSONL from ~/.codex/sessions; without --json, stdout is not guaranteed to contain the tool-call transcript and can omit the forensic record this change relies on. Locate/copy the actual Codex session transcript, or otherwise prove stdout is the complete transcript, and cover that distinction in the regression test.\n\n### `fr-1-a3e3e8a2`\n\n**Classification:** fix_current_bead\n\nsrc/adapters/process_backend.rs:396-432 now stores a natural-language last-message for Codex execution stages, and line 507 persists that same text in the raw transcript envelope. However recover_codex_structured_payload_from_stdout at src/adapters/process_backend.rs:2131-2141 still unconditionally parses envelope.last_message or stdout as JSON. If the iterative parsed sidecar is missing, the existing raw-output recovery path in src/contexts/workflow_composition/engine.rs:6817-6845 can no longer recover a completed Codex execution iteration even though the raw output exists. Update recovery to synthesize the same ExecutionPayload for Codex execution raw envelopes, or persist a recoverable synthetic payload alongside the transcript.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}
