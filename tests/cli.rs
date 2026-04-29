@@ -55,6 +55,56 @@ fn milestone_root(base_dir: &std::path::Path, milestone_id: &str) -> std::path::
         .join(milestone_id)
 }
 
+#[cfg(feature = "test-stub")]
+fn workspace_tree_contains(base_dir: &std::path::Path, needle: &str) -> bool {
+    fn visit(path: &std::path::Path, needle: &str) -> bool {
+        let Ok(metadata) = fs::metadata(path) else {
+            return false;
+        };
+        if metadata.is_file() {
+            return fs::read_to_string(path)
+                .map(|contents| contents.contains(needle))
+                .unwrap_or(false);
+        }
+        if !metadata.is_dir() {
+            return false;
+        }
+        fs::read_dir(path)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|entry| visit(&entry.path(), needle))
+            })
+            .unwrap_or(false)
+    }
+
+    visit(&audit_workspace_root(base_dir), needle)
+}
+
+#[cfg(feature = "test-stub")]
+fn assert_no_milestone_state(base_dir: &std::path::Path) {
+    assert!(
+        !active_milestone_path(base_dir).exists(),
+        "legacy project-seed flows must not write active-milestone"
+    );
+    let milestones_dir = audit_workspace_root(base_dir).join("milestones");
+    if milestones_dir.exists() {
+        let milestone_count = fs::read_dir(&milestones_dir)
+            .expect("read milestones dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false))
+            .count();
+        assert_eq!(
+            milestone_count, 0,
+            "legacy project-seed flows must not create milestone records"
+        );
+    }
+    assert!(
+        !workspace_tree_contains(base_dir, "source_requirements_bundle"),
+        "legacy project-seed flows must not persist source_requirements_bundle metadata"
+    );
+}
+
 fn initialize_workspace_fixture() -> tempfile::TempDir {
     let temp_dir = tempdir().expect("create temp dir");
     let output = Command::new(binary())
@@ -8240,6 +8290,14 @@ fn project_create_from_requirements_creates_project_and_selects_it() {
             .expect("read project journal");
     assert!(journal.contains("\"source\":\"requirements\""));
     assert!(journal.contains(&format!("\"requirements_run_id\":\"{run_id}\"")));
+    let project_toml =
+        fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("project.toml"))
+            .expect("read project.toml");
+    assert!(
+        !project_toml.contains("[task_source]"),
+        "project-seed handoff should create a plain project record"
+    );
+    assert_no_milestone_state(temp_dir.path());
 }
 
 #[test]
@@ -8443,7 +8501,12 @@ fn project_bootstrap_from_idea_creates_project_and_selects_it() {
         fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("project.toml"))
             .expect("read project.toml");
     assert!(project_toml.contains("flow = \"standard\""));
+    assert!(
+        !project_toml.contains("[task_source]"),
+        "bootstrap project-seed handoff should create a plain project record"
+    );
     assert_eq!(requirements_run_ids(temp_dir.path()).len(), 1);
+    assert_no_milestone_state(temp_dir.path());
 
     let run_id = only_requirements_run_id(temp_dir.path());
     let requirements_run = fs::read_to_string(
@@ -8554,6 +8617,11 @@ fn project_bootstrap_from_file_quick_dev_start_runs_created_project() {
         fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("project.toml"))
             .expect("read project.toml");
     assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(
+        !project_toml.contains("[task_source]"),
+        "bootstrap project-seed handoff should create a plain project record"
+    );
+    assert_no_milestone_state(temp_dir.path());
 
     let run_json =
         fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("run.json"))
@@ -17497,6 +17565,64 @@ fn requirements_draft_with_empty_questions_completes() {
         stdout.contains("Requirements completed"),
         "should complete through pipeline.\nstdout: {stdout}"
     );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let run_json = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(&run_id)
+            .join("run.json"),
+    )
+    .expect("read requirements run.json");
+    let run: serde_json::Value =
+        serde_json::from_str(&run_json).expect("parse requirements run.json");
+    assert_eq!(run["status"], "completed");
+    assert_eq!(run["output_kind"], "project_seed");
+    assert!(
+        run["milestone_bundle"].is_null(),
+        "requirements draft project-seed path must not embed a milestone bundle"
+    );
+    assert!(
+        run["latest_milestone_bundle_id"].is_null(),
+        "requirements draft project-seed path must not persist a milestone bundle id"
+    );
+    let requirements_journal = fs::read_to_string(
+        requirements_root(temp_dir.path())
+            .join(&run_id)
+            .join("journal.ndjson"),
+    )
+    .expect("read requirements journal");
+    assert!(
+        !requirements_journal.contains("auto_milestone_materialization_failed"),
+        "requirements draft project-seed path must not emit milestone auto-materialization events"
+    );
+    assert!(
+        !requirements_journal.contains("MilestoneCreated")
+            && !requirements_journal.contains("milestone_created")
+            && !requirements_journal.contains("MilestoneJournalEvent")
+            && !requirements_journal.contains("milestone_journal_event"),
+        "requirements draft project-seed path must not emit milestone events"
+    );
+    assert_no_milestone_state(temp_dir.path());
+
+    let create = Command::new(binary())
+        .args(["project", "create", "--from-requirements", &run_id])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from requirements draft");
+    assert!(
+        create.status.success(),
+        "project create from requirements draft should succeed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+    let created_project =
+        fs::read_to_string(project_root(temp_dir.path(), "stub-project").join("project.toml"))
+            .expect("read created project.toml");
+    assert!(
+        !created_project.contains("[task_source]"),
+        "requirements draft handoff should create a plain project record"
+    );
+    assert_no_milestone_state(temp_dir.path());
 }
 
 #[cfg(feature = "test-stub")]

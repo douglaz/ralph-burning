@@ -1,0 +1,7 @@
+id = "9ni36-1"
+name = "9ni.3.6 preserve legacy paths"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "a2053917776c071ddbe71a7ecbb1fc2b2f731a84429a4afac0f07e2a8124a1cc"
+created_at = "2026-04-29T16:48:54.249928851Z"
+status_summary = "created"

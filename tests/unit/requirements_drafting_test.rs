@@ -642,8 +642,9 @@ mod service_integration {
     use tempfile::tempdir;
 
     use ralph_burning::adapters::fs::{
-        FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
-        FsMilestoneStore, FsRawOutputStore, FsRequirementsStore, FsSessionStore,
+        FileSystem, FsJournalStore, FsMilestoneJournalStore, FsMilestonePlanStore,
+        FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore, FsRawOutputStore,
+        FsRequirementsStore, FsSessionStore,
     };
     use ralph_burning::adapters::stub_backend::StubBackendAdapter;
     use ralph_burning::contexts::agent_execution::model::{
@@ -654,11 +655,13 @@ mod service_integration {
     };
     use ralph_burning::contexts::milestone_record::bundle::MILESTONE_BUNDLE_VERSION;
     use ralph_burning::contexts::milestone_record::service as milestone_service;
+    use ralph_burning::contexts::project_run_record::service as project_service;
     use ralph_burning::contexts::requirements_drafting::model::{
         RequirementsJournalEventType, RequirementsMode, RequirementsOutputKind, RequirementsStatus,
     };
     use ralph_burning::contexts::requirements_drafting::service::{
-        extract_milestone_bundle_handoff, is_requirements_run_complete, RequirementsService,
+        extract_milestone_bundle_handoff, extract_seed_handoff, is_requirements_run_complete,
+        RequirementsService,
     };
     use ralph_burning::contexts::workspace_governance::{self, config::EffectiveConfig};
     use ralph_burning::shared::domain::{
@@ -739,10 +742,36 @@ mod service_integration {
         .expect("write workspace config");
     }
 
+    fn workspace_tree_contains(base_dir: &Path, needle: &str) -> bool {
+        fn visit(path: &Path, needle: &str) -> bool {
+            let Ok(metadata) = std::fs::metadata(path) else {
+                return false;
+            };
+            if metadata.is_file() {
+                return std::fs::read_to_string(path)
+                    .map(|contents| contents.contains(needle))
+                    .unwrap_or(false);
+            }
+            if !metadata.is_dir() {
+                return false;
+            }
+            std::fs::read_dir(path)
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .any(|entry| visit(&entry.path(), needle))
+                })
+                .unwrap_or(false)
+        }
+
+        visit(&base_dir.join(".ralph-burning"), needle)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn quick_mode_creates_run_and_completes_through_pipeline() {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
+        FsMilestoneStore::reset_create_milestone_atomic_call_count(temp_dir.path());
 
         let adapter = StubBackendAdapter::default();
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
@@ -757,6 +786,105 @@ mod service_integration {
         assert!(
             run_id.starts_with("req-"),
             "run_id should start with 'req-'"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quick_mode_project_seed_path_does_not_touch_milestone_state() {
+        use milestone_service::MilestoneStorePort;
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+        FsMilestoneStore::reset_create_milestone_atomic_call_count(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .quick(
+                temp_dir.path(),
+                "Preserve quick requirements project seed",
+                deterministic_now(),
+                None,
+                true,
+            )
+            .await
+            .expect("quick should succeed");
+
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        assert_eq!(run.mode, RequirementsMode::Quick);
+        assert_eq!(run.output_kind, RequirementsOutputKind::ProjectSeed);
+        assert!(
+            run.milestone_bundle.is_none(),
+            "quick mode must not embed a milestone bundle"
+        );
+        assert!(
+            run.latest_milestone_bundle_id.is_none(),
+            "quick mode must not persist a milestone bundle payload id"
+        );
+
+        let journal = store
+            .read_journal(temp_dir.path(), &run_id)
+            .expect("read requirements journal");
+        assert!(
+            journal.iter().all(|event| {
+                event.event_type != RequirementsJournalEventType::AutoMilestoneMaterializationFailed
+            }),
+            "quick mode must not emit milestone auto-materialization journal events"
+        );
+        assert!(
+            FsMilestoneStore
+                .list_milestone_ids(temp_dir.path())
+                .expect("list milestones")
+                .is_empty(),
+            "quick mode must not create milestones"
+        );
+        assert_eq!(
+            FsMilestoneStore::create_milestone_atomic_call_count(temp_dir.path()),
+            0,
+            "quick mode must not call MilestoneStore::create_milestone_atomic"
+        );
+        assert_eq!(
+            workspace_governance::read_active_milestone(temp_dir.path())
+                .expect("read active milestone"),
+            None,
+            "quick mode must not set an active milestone"
+        );
+        assert!(
+            !workspace_tree_contains(temp_dir.path(), "source_requirements_bundle"),
+            "quick mode must not persist requirements source bundle metadata"
+        );
+
+        let handoff = extract_seed_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+            .expect("extract project-seed handoff");
+        let record = project_service::create_project_from_seed(
+            &FsProjectStore,
+            &FsJournalStore,
+            temp_dir.path(),
+            handoff,
+            None,
+            deterministic_now(),
+        )
+        .expect("create plain project from quick handoff");
+        assert!(
+            record.task_source.is_none(),
+            "quick handoff must materialize a plain project without milestone task source"
+        );
+        assert!(
+            FsMilestoneStore
+                .list_milestone_ids(temp_dir.path())
+                .expect("list milestones after project create")
+                .is_empty(),
+            "creating a project from quick handoff must not materialize a milestone"
+        );
+        assert_eq!(
+            FsMilestoneStore::create_milestone_atomic_call_count(temp_dir.path()),
+            0,
+            "creating a project from quick handoff must not call MilestoneStore::create_milestone_atomic"
         );
     }
 
@@ -1846,6 +1974,7 @@ mod service_integration {
 
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
+        FsMilestoneStore::reset_create_milestone_atomic_call_count(temp_dir.path());
 
         // Default stub returns pass for validation — no question round
         let adapter = StubBackendAdapter::default();
@@ -1862,6 +1991,15 @@ mod service_integration {
         let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
 
         assert_eq!(run.status, RequirementsStatus::Completed);
+        assert_eq!(run.output_kind, RequirementsOutputKind::ProjectSeed);
+        assert!(
+            run.latest_milestone_bundle_id.is_none(),
+            "project-seed full mode must not persist a milestone bundle id"
+        );
+        assert!(
+            run.milestone_bundle.is_none(),
+            "project-seed full mode must not embed a milestone bundle"
+        );
 
         // Verify all seven full-mode stages are committed
         let expected_stages = [
@@ -1898,6 +2036,28 @@ mod service_integration {
                 .expect("list milestones")
                 .is_empty(),
             "project-seed completion must not auto-create a milestone"
+        );
+        assert_eq!(
+            FsMilestoneStore::create_milestone_atomic_call_count(temp_dir.path()),
+            0,
+            "project-seed completion must not call MilestoneStore::create_milestone_atomic"
+        );
+        assert_eq!(
+            workspace_governance::read_active_milestone(temp_dir.path())
+                .expect("read active milestone"),
+            None,
+            "project-seed completion must not set an active milestone"
+        );
+        assert!(
+            !workspace_tree_contains(temp_dir.path(), "source_requirements_bundle"),
+            "project-seed completion must not persist milestone source metadata"
+        );
+        extract_seed_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+            .expect("project-seed completion should produce a seed handoff");
+        assert!(
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .is_err(),
+            "project-seed completion must not produce a milestone bundle handoff"
         );
     }
 
