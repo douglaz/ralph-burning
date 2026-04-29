@@ -16,6 +16,10 @@ use crate::adapters::br_process::{
 use crate::adapters::fs::{FileSystem, FsTaskRunLineageStore};
 use crate::contexts::project_run_record::model::{ActiveRun, RunStatus, TaskSource};
 use crate::contexts::project_run_record::service::{ProjectStorePort, RunSnapshotPort};
+use crate::contexts::requirements_drafting::model::{
+    FullModeStage, RequirementsOutputKind, RequirementsStatus,
+};
+use crate::contexts::requirements_drafting::service::RequirementsStorePort;
 use crate::contexts::workflow_composition::review_classification::Severity;
 use crate::contexts::workspace_governance::config::{
     CliBackendOverrides, EffectiveConfig, DEFAULT_EXISTING_BEAD_MATCH_THRESHOLD_SCORE,
@@ -35,7 +39,7 @@ use super::model::{
     collapse_task_run_attempts, latest_task_runs_per_bead, CompletionJournalDetails,
     MilestoneEventType, MilestoneId, MilestoneJournalEvent, MilestoneProgress, MilestoneRecord,
     MilestoneSnapshot, MilestoneStatus, PendingLineageReset, PlannedElsewhereMapping,
-    StartJournalDetails, TaskRunEntry, TaskRunOutcome,
+    SourceRequirementsBundleRef, StartJournalDetails, TaskRunEntry, TaskRunOutcome,
 };
 use super::queries::{
     bead_ownership_text_similarity, BeadExecutionHistoryView, BeadLineageView,
@@ -779,6 +783,8 @@ fn build_synthetic_transition_snapshot(
     let mut synthetic_snapshot = current_snapshot.clone();
     synthetic_snapshot.status = to_status;
     synthetic_snapshot.plan_hash = final_snapshot.plan_hash.clone();
+    synthetic_snapshot.source_requirements_bundle =
+        final_snapshot.source_requirements_bundle.clone();
     synthetic_snapshot.plan_version = final_snapshot.plan_version;
     synthetic_snapshot.progress.total_beads = final_snapshot.progress.total_beads;
     synthetic_snapshot.updated_at = event_timestamp;
@@ -1371,6 +1377,54 @@ pub fn materialize_bundle(
     bundle: &MilestoneBundle,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneRecord> {
+    materialize_bundle_with_source(
+        store,
+        snapshot_store,
+        journal_store,
+        plan_store,
+        base_dir,
+        bundle,
+        None,
+        now,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializeBundleSource {
+    pub requirements_run_id: String,
+    pub milestone_bundle_id: String,
+    pub schema_version: u32,
+    pub plan_hash: String,
+}
+
+impl MaterializeBundleSource {
+    pub fn from_bundle(
+        requirements_run_id: impl Into<String>,
+        milestone_bundle_id: impl Into<String>,
+        bundle: &MilestoneBundle,
+    ) -> AppResult<Self> {
+        let plan_json = render_plan_json(bundle).map_err(AppError::SerdeJson)?;
+        Ok(Self {
+            requirements_run_id: requirements_run_id.into(),
+            milestone_bundle_id: milestone_bundle_id.into(),
+            schema_version: bundle.schema_version,
+            plan_hash: hash_text(&plan_json),
+        })
+    }
+}
+
+/// Materialize a milestone bundle and persist the requirements bundle that
+/// produced it when the plan came from the requirements pipeline.
+pub fn materialize_bundle_with_source(
+    store: &impl MilestoneStorePort,
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    plan_store: &impl MilestonePlanPort,
+    base_dir: &Path,
+    bundle: &MilestoneBundle,
+    source: Option<MaterializeBundleSource>,
+    now: DateTime<Utc>,
+) -> AppResult<MilestoneRecord> {
     let milestone_id = MilestoneId::new(bundle.identity.id.clone())?;
     let expected_plan_json = render_plan_json(bundle).map_err(AppError::SerdeJson)?;
     let expected_plan_md = render_plan_md_checked(bundle)
@@ -1378,6 +1432,12 @@ pub fn materialize_bundle(
     let expected_plan_shape_signature = progress_shape_signature(bundle)
         .map_err(|errors| snapshot_corrupt_record(&milestone_id, errors.join("; ")))?;
     let expected_plan_hash = hash_text(&expected_plan_json);
+    let expected_source = source.map(|source| SourceRequirementsBundleRef {
+        requirements_run_id: source.requirements_run_id,
+        milestone_bundle_id: source.milestone_bundle_id,
+        schema_version: source.schema_version,
+        plan_hash: source.plan_hash,
+    });
     let expected_plan_shape =
         render_plan_shape_artifact(&expected_plan_hash, &expected_plan_shape_signature)?;
 
@@ -1462,6 +1522,13 @@ pub fn materialize_bundle(
                 MilestoneStatus::Ready,
                 now,
             )?;
+        }
+
+        if snapshot.source_requirements_bundle != expected_source {
+            snapshot.source_requirements_bundle = expected_source;
+            snapshot.updated_at = now;
+            validate_snapshot(&snapshot, &milestone_id)?;
+            snapshot_store.write_snapshot(base_dir, &milestone_id, &snapshot)?;
         }
 
         Ok(record)
@@ -3119,6 +3186,7 @@ fn persist_plan_locked(
 
     if plan_hash_changed {
         snapshot.plan_hash = Some(plan_hash.clone());
+        snapshot.source_requirements_bundle = None;
         snapshot.plan_version = next_plan_version;
         snapshot.progress = progress;
         snapshot.updated_at = now;
@@ -3606,6 +3674,205 @@ pub(crate) fn load_plan_bundle(
     Ok((bundle, plan_hash))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MilestoneSourceBundleStatus {
+    Fresh,
+    Stale(MilestoneSourceBundleStaleness),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MilestoneSourceBundleStaleness {
+    pub expected: SourceRequirementsBundleRef,
+    pub actual_milestone_bundle_id: Option<String>,
+    pub actual_schema_version: Option<u32>,
+    pub actual_plan_hash: Option<String>,
+    pub reason: String,
+}
+
+impl MilestoneSourceBundleStaleness {
+    fn into_error(self, milestone_id: &MilestoneId) -> AppError {
+        AppError::StaleMilestonePlan {
+            milestone_id: milestone_id.to_string(),
+            requirements_run_id: self.expected.requirements_run_id.clone(),
+            milestone_bundle_id: self.expected.milestone_bundle_id.clone(),
+            details: format!(
+                "{}; expected requirements run '{}' bundle '{}' schema {} plan_hash '{}', current bundle {:?} schema {:?} plan_hash {:?}",
+                self.reason,
+                self.expected.requirements_run_id,
+                self.expected.milestone_bundle_id,
+                self.expected.schema_version,
+                self.expected.plan_hash,
+                self.actual_milestone_bundle_id,
+                self.actual_schema_version,
+                self.actual_plan_hash
+            ),
+        }
+    }
+}
+
+pub fn detect_milestone_source_bundle_status(
+    requirements_store: &(impl RequirementsStorePort + ?Sized),
+    base_dir: &Path,
+    snapshot: &MilestoneSnapshot,
+) -> AppResult<MilestoneSourceBundleStatus> {
+    let Some(expected) = snapshot.source_requirements_bundle.as_ref() else {
+        return Ok(MilestoneSourceBundleStatus::Fresh);
+    };
+
+    let run = match requirements_store.read_run(base_dir, &expected.requirements_run_id) {
+        Ok(run) => run,
+        Err(AppError::InvalidRequirementsState { run_id, details })
+            if run_id == expected.requirements_run_id
+                && details == "requirements run not found" =>
+        {
+            return Ok(MilestoneSourceBundleStatus::Stale(
+                MilestoneSourceBundleStaleness {
+                    expected: expected.clone(),
+                    actual_milestone_bundle_id: None,
+                    actual_schema_version: None,
+                    actual_plan_hash: None,
+                    reason: "source requirements run no longer exists".to_owned(),
+                },
+            ));
+        }
+        Err(error) => return Err(error),
+    };
+
+    if run.status != RequirementsStatus::Completed
+        || run.output_kind != RequirementsOutputKind::MilestoneBundle
+    {
+        return Ok(MilestoneSourceBundleStatus::Stale(
+            MilestoneSourceBundleStaleness {
+                expected: expected.clone(),
+                actual_milestone_bundle_id: run.latest_milestone_bundle_id.clone(),
+                actual_schema_version: run
+                    .milestone_bundle
+                    .as_ref()
+                    .map(|bundle| bundle.schema_version),
+                actual_plan_hash: run
+                    .milestone_bundle
+                    .as_ref()
+                    .and_then(|bundle| render_plan_json(bundle).ok())
+                    .map(|raw| hash_text(&raw)),
+                reason: format!(
+                    "source requirements run is '{}' with '{}' output",
+                    run.status, run.output_kind
+                ),
+            },
+        ));
+    }
+
+    if !run
+        .committed_stages
+        .contains_key(FullModeStage::MilestoneBundle.as_str())
+    {
+        return Ok(MilestoneSourceBundleStatus::Stale(
+            MilestoneSourceBundleStaleness {
+                expected: expected.clone(),
+                actual_milestone_bundle_id: run.latest_milestone_bundle_id.clone(),
+                actual_schema_version: run
+                    .milestone_bundle
+                    .as_ref()
+                    .map(|bundle| bundle.schema_version),
+                actual_plan_hash: run
+                    .milestone_bundle
+                    .as_ref()
+                    .and_then(|bundle| render_plan_json(bundle).ok())
+                    .map(|raw| hash_text(&raw)),
+                reason: "source requirements run no longer has a committed milestone bundle stage"
+                    .to_owned(),
+            },
+        ));
+    }
+
+    let actual_bundle_id = run.latest_milestone_bundle_id.clone();
+    if actual_bundle_id.as_deref() != Some(expected.milestone_bundle_id.as_str()) {
+        return Ok(MilestoneSourceBundleStatus::Stale(
+            MilestoneSourceBundleStaleness {
+                expected: expected.clone(),
+                actual_milestone_bundle_id: actual_bundle_id,
+                actual_schema_version: run
+                    .milestone_bundle
+                    .as_ref()
+                    .map(|bundle| bundle.schema_version),
+                actual_plan_hash: run
+                    .milestone_bundle
+                    .as_ref()
+                    .and_then(|bundle| render_plan_json(bundle).ok())
+                    .map(|raw| hash_text(&raw)),
+                reason: "source requirements run now points at a different milestone bundle"
+                    .to_owned(),
+            },
+        ));
+    }
+
+    let current_bundle = match requirements_store.read_payload(
+        base_dir,
+        &expected.requirements_run_id,
+        &expected.milestone_bundle_id,
+    ) {
+        Ok(payload_json) => {
+            serde_json::from_value::<MilestoneBundle>(payload_json).map_err(|error| {
+                AppError::CorruptRecord {
+                    file: format!(
+                        "requirements/{}/payloads/{}",
+                        expected.requirements_run_id, expected.milestone_bundle_id
+                    ),
+                    details: format!("failed to parse milestone bundle payload: {error}"),
+                }
+            })?
+        }
+        Err(error) => {
+            if let Some(bundle) = run.milestone_bundle.clone() {
+                bundle
+            } else {
+                return Ok(MilestoneSourceBundleStatus::Stale(
+                    MilestoneSourceBundleStaleness {
+                        expected: expected.clone(),
+                        actual_milestone_bundle_id: actual_bundle_id,
+                        actual_schema_version: None,
+                        actual_plan_hash: None,
+                        reason: format!(
+                            "source milestone bundle payload could not be loaded: {error}"
+                        ),
+                    },
+                ));
+            }
+        }
+    };
+    let current_plan_json = render_plan_json(&current_bundle).map_err(AppError::SerdeJson)?;
+    let current_plan_hash = hash_text(&current_plan_json);
+
+    if current_bundle.schema_version != expected.schema_version
+        || current_plan_hash != expected.plan_hash
+    {
+        return Ok(MilestoneSourceBundleStatus::Stale(
+            MilestoneSourceBundleStaleness {
+                expected: expected.clone(),
+                actual_milestone_bundle_id: actual_bundle_id,
+                actual_schema_version: Some(current_bundle.schema_version),
+                actual_plan_hash: Some(current_plan_hash),
+                reason: "source milestone bundle content no longer matches the materialized plan"
+                    .to_owned(),
+            },
+        ));
+    }
+
+    Ok(MilestoneSourceBundleStatus::Fresh)
+}
+
+pub fn validate_milestone_source_bundle_fresh(
+    requirements_store: &(impl RequirementsStorePort + ?Sized),
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    snapshot: &MilestoneSnapshot,
+) -> AppResult<()> {
+    match detect_milestone_source_bundle_status(requirements_store, base_dir, snapshot)? {
+        MilestoneSourceBundleStatus::Fresh => Ok(()),
+        MilestoneSourceBundleStatus::Stale(staleness) => Err(staleness.into_error(milestone_id)),
+    }
+}
+
 fn load_plan_bundle_for_lineage(
     plan_store: &(impl MilestonePlanPort + ?Sized),
     base_dir: &Path,
@@ -3833,7 +4100,9 @@ fn shared_plan_hash_for_runs(runs: &[TaskRunEntry]) -> Result<Option<&str>, ()> 
 )]
 pub fn read_bead_lineage(
     store: &(impl MilestoneStorePort + ?Sized),
+    snapshot_store: &(impl MilestoneSnapshotPort + ?Sized),
     plan_store: &(impl MilestonePlanPort + ?Sized),
+    requirements_store: &(impl RequirementsStorePort + ?Sized),
     base_dir: &Path,
     milestone_id: &MilestoneId,
     bead_id: &str,
@@ -3841,7 +4110,9 @@ pub fn read_bead_lineage(
 ) -> AppResult<BeadLineageView> {
     read_bead_lineage_with_task_source(
         store,
+        snapshot_store,
         plan_store,
+        requirements_store,
         base_dir,
         milestone_id,
         bead_id,
@@ -3852,7 +4123,9 @@ pub fn read_bead_lineage(
 
 pub(crate) fn read_bead_lineage_with_task_source(
     store: &(impl MilestoneStorePort + ?Sized),
+    snapshot_store: &(impl MilestoneSnapshotPort + ?Sized),
     plan_store: &(impl MilestonePlanPort + ?Sized),
+    requirements_store: &(impl RequirementsStorePort + ?Sized),
     base_dir: &Path,
     milestone_id: &MilestoneId,
     bead_id: &str,
@@ -3866,6 +4139,8 @@ pub(crate) fn read_bead_lineage_with_task_source(
     }
 
     let milestone = store.read_milestone_record(base_dir, milestone_id)?;
+    let snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+    validate_milestone_source_bundle_fresh(requirements_store, base_dir, milestone_id, &snapshot)?;
     let current_plan = load_plan_bundle_for_lineage(plan_store, base_dir, milestone_id)?;
     let current_plan = current_plan
         .as_ref()
@@ -3918,7 +4193,9 @@ pub fn active_task_runs_for_bead(
 /// Read all execution attempts for a bead, including retries and durations.
 pub fn bead_execution_history(
     store: &impl MilestoneStorePort,
+    snapshot_store: &impl MilestoneSnapshotPort,
     plan_store: &impl MilestonePlanPort,
+    requirements_store: &impl RequirementsStorePort,
     project_store: &impl ProjectStorePort,
     lineage_store: &impl TaskRunLineagePort,
     base_dir: &Path,
@@ -3928,6 +4205,13 @@ pub fn bead_execution_history(
     let runs = find_runs_for_bead(lineage_store, base_dir, milestone_id, bead_id)?;
     let lineage = if runs.is_empty() {
         let milestone = store.read_milestone_record(base_dir, milestone_id)?;
+        let snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        validate_milestone_source_bundle_fresh(
+            requirements_store,
+            base_dir,
+            milestone_id,
+            &snapshot,
+        )?;
         match load_plan_bundle_for_lineage(plan_store, base_dir, milestone_id)? {
             Some((bundle, current_plan_hash)) => {
                 let task_source = find_matching_task_source_for_bead(
@@ -3953,7 +4237,9 @@ pub fn bead_execution_history(
                 )?;
                 read_bead_lineage_with_task_source(
                     store,
+                    snapshot_store,
                     plan_store,
+                    requirements_store,
                     base_dir,
                     milestone_id,
                     bead_id,
@@ -4062,12 +4348,16 @@ fn task_source_has_recorded_plan_location(task_source: &TaskSource) -> bool {
 #[tracing::instrument(skip_all, level = "debug", fields(milestone_id = %milestone_id))]
 pub fn list_tasks_for_milestone(
     store: &impl MilestoneStorePort,
+    snapshot_store: &impl MilestoneSnapshotPort,
     plan_store: &impl MilestonePlanPort,
+    requirements_store: &impl RequirementsStorePort,
     project_store: &impl ProjectStorePort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<MilestoneTaskListView> {
     let milestone = store.read_milestone_record(base_dir, milestone_id)?;
+    let snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+    validate_milestone_source_bundle_fresh(requirements_store, base_dir, milestone_id, &snapshot)?;
     let current_plan = load_plan_bundle_for_lineage(plan_store, base_dir, milestone_id)?;
 
     let mut tasks = Vec::new();
@@ -4971,10 +5261,14 @@ pub fn record_beads_exported_event(
 
 pub(crate) fn load_runtime_bead_membership_refs(
     plan_store: &(impl MilestonePlanPort + ?Sized),
+    snapshot_store: &(impl MilestoneSnapshotPort + ?Sized),
     journal_store: &impl MilestoneJournalPort,
+    requirements_store: &(impl RequirementsStorePort + ?Sized),
     base_dir: &Path,
     milestone_id: &MilestoneId,
 ) -> AppResult<HashSet<String>> {
+    let snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+    validate_milestone_source_bundle_fresh(requirements_store, base_dir, milestone_id, &snapshot)?;
     let (bundle, plan_hash) = load_plan_bundle(plan_store, base_dir, milestone_id)?;
     let mut refs = planned_bead_membership_refs(&bundle)
         .map(|refs| refs.into_iter().collect::<HashSet<_>>())
@@ -5965,7 +6259,7 @@ mod tests {
     use crate::adapters::br_process::{BrError, BrOutput, ProcessRunner};
     use crate::adapters::fs::{
         FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
-        FsPlannedElsewhereMappingStore, FsProjectStore, FsTaskRunLineageStore,
+        FsPlannedElsewhereMappingStore, FsProjectStore, FsRequirementsStore, FsTaskRunLineageStore,
     };
     use crate::contexts::milestone_record::model::render_completion_journal_details;
     use crate::contexts::project_run_record::model::{
@@ -5973,6 +6267,10 @@ mod tests {
         TaskOrigin, TaskSource,
     };
     use crate::contexts::project_run_record::service::ProjectStorePort;
+    use crate::contexts::requirements_drafting::model::{
+        CommittedStageEntry, FullModeStage, RequirementsRun,
+    };
+    use crate::contexts::requirements_drafting::service::RequirementsStorePort;
     use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::test_support::br::{MockBrAdapter, MockBrResponse};
     use crate::test_support::logging::log_capture;
@@ -6560,6 +6858,43 @@ mod tests {
             default_flow: crate::shared::domain::FlowPreset::Minimal,
             agents_guidance: None,
         }
+    }
+
+    fn write_completed_milestone_requirements_run(
+        base: &Path,
+        run_id: &str,
+        bundle_id: &str,
+        bundle: &MilestoneBundle,
+        now: DateTime<Utc>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let store = FsRequirementsStore;
+        store.create_run_dir(base, run_id)?;
+        store.write_payload(base, run_id, bundle_id, &serde_json::to_value(bundle)?)?;
+        let mut run =
+            RequirementsRun::new_milestone(run_id.to_owned(), "Plan the milestone".to_owned(), now);
+        run.status = RequirementsStatus::Completed;
+        run.latest_milestone_bundle_id = Some(bundle_id.to_owned());
+        run.milestone_bundle = Some(bundle.clone());
+        run.current_stage = Some(FullModeStage::MilestoneBundle);
+        run.committed_stages.insert(
+            FullModeStage::MilestoneBundle.as_str().to_owned(),
+            CommittedStageEntry {
+                payload_id: bundle_id.to_owned(),
+                artifact_id: format!("{bundle_id}-artifact"),
+                cache_key: None,
+            },
+        );
+        run.status_summary = "completed: milestone bundle".to_owned();
+        store.write_run(base, run_id, &run)?;
+        Ok(())
+    }
+
+    fn materialized_source(
+        run_id: &str,
+        bundle_id: &str,
+        bundle: &MilestoneBundle,
+    ) -> AppResult<MaterializeBundleSource> {
+        MaterializeBundleSource::from_bundle(run_id, bundle_id, bundle)
     }
 
     fn create_milestone_with_plan(
@@ -7620,6 +7955,306 @@ mod tests {
         assert_eq!(refreshed.description, "Updated milestone summary.");
         let loaded = load_milestone(&store, base, &initial.id)?;
         assert_eq!(loaded.description, "Updated milestone summary.");
+        Ok(())
+    }
+
+    #[test]
+    fn materialized_requirements_bundle_source_is_fresh_without_reanswer(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc.with_ymd_and_hms(2026, 4, 1, 10, 0, 0).unwrap();
+
+        let bundle = sample_bundle("materialize-fresh-source", "Materialize Fresh Source");
+        write_completed_milestone_requirements_run(base, "req-fresh", "bundle-v1", &bundle, now)?;
+        let record = materialize_bundle_with_source(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &bundle,
+            Some(materialized_source("req-fresh", "bundle-v1", &bundle)?),
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let snapshot = FsMilestoneSnapshotStore.read_snapshot(base, &record.id)?;
+        assert_eq!(
+            detect_milestone_source_bundle_status(&FsRequirementsStore, base, &snapshot)?,
+            MilestoneSourceBundleStatus::Fresh
+        );
+        validate_milestone_source_bundle_fresh(&FsRequirementsStore, base, &record.id, &snapshot)?;
+        Ok(())
+    }
+
+    #[test]
+    fn materialized_requirements_bundle_source_is_stale_after_reanswer_rebuild(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc.with_ymd_and_hms(2026, 4, 1, 10, 0, 0).unwrap();
+
+        let bundle_v1 = sample_bundle("materialize-stale-source", "Materialize Stale Source");
+        write_completed_milestone_requirements_run(
+            base,
+            "req-stale",
+            "bundle-v1",
+            &bundle_v1,
+            now,
+        )?;
+        let record = materialize_bundle_with_source(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &bundle_v1,
+            Some(materialized_source("req-stale", "bundle-v1", &bundle_v1)?),
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let mut bundle_v2 = bundle_v1.clone();
+        bundle_v2.executive_summary = "Updated test plan after re-answer.".to_owned();
+        bundle_v2.goals.push("New answer-dependent goal".to_owned());
+        write_completed_milestone_requirements_run(
+            base,
+            "req-stale",
+            "bundle-v2",
+            &bundle_v2,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let snapshot = FsMilestoneSnapshotStore.read_snapshot(base, &record.id)?;
+        let status = detect_milestone_source_bundle_status(&FsRequirementsStore, base, &snapshot)?;
+        let staleness = match status {
+            MilestoneSourceBundleStatus::Stale(staleness) => staleness,
+            MilestoneSourceBundleStatus::Fresh => panic!("expected stale source bundle"),
+        };
+        assert_eq!(staleness.expected.requirements_run_id, "req-stale");
+        assert_eq!(staleness.expected.milestone_bundle_id, "bundle-v1");
+        assert_eq!(
+            staleness.actual_milestone_bundle_id.as_deref(),
+            Some("bundle-v2")
+        );
+        let error = validate_milestone_source_bundle_fresh(
+            &FsRequirementsStore,
+            base,
+            &record.id,
+            &snapshot,
+        )
+        .expect_err("stale materialized source should be rejected");
+        assert!(matches!(error, AppError::StaleMilestonePlan { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn list_tasks_for_milestone_rejects_stale_materialized_requirements_source(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc.with_ymd_and_hms(2026, 4, 1, 10, 30, 0).unwrap();
+
+        let bundle_v1 = sample_bundle("task-list-stale-source", "Task List Stale Source");
+        write_completed_milestone_requirements_run(
+            base,
+            "req-task-list-stale",
+            "bundle-v1",
+            &bundle_v1,
+            now,
+        )?;
+        let record = materialize_bundle_with_source(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &bundle_v1,
+            Some(materialized_source(
+                "req-task-list-stale",
+                "bundle-v1",
+                &bundle_v1,
+            )?),
+            now + chrono::Duration::seconds(1),
+        )?;
+        let plan_hash = hash_text(&FsMilestonePlanStore.read_plan_json(base, &record.id)?);
+
+        crate::contexts::project_run_record::service::create_project(
+            &crate::adapters::fs::FsProjectStore,
+            &crate::adapters::fs::FsJournalStore,
+            base,
+            crate::contexts::project_run_record::service::CreateProjectInput {
+                id: crate::shared::domain::ProjectId::new("task-stale-source")?,
+                name: "Task stale source".to_owned(),
+                flow: crate::shared::domain::FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now + chrono::Duration::seconds(2),
+                task_source: Some(crate::contexts::project_run_record::model::TaskSource {
+                    milestone_id: record.id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: crate::contexts::project_run_record::model::TaskOrigin::Milestone,
+                    plan_hash: Some(plan_hash),
+                    plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
+                }),
+            },
+        )?;
+
+        let mut bundle_v2 = bundle_v1.clone();
+        bundle_v2.executive_summary = "Updated after re-answer.".to_owned();
+        bundle_v2.goals.push("New answer-dependent goal".to_owned());
+        write_completed_milestone_requirements_run(
+            base,
+            "req-task-list-stale",
+            "bundle-v2",
+            &bundle_v2,
+            now + chrono::Duration::seconds(3),
+        )?;
+
+        let error = list_tasks_for_milestone(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestonePlanStore,
+            &FsRequirementsStore,
+            &crate::adapters::fs::FsProjectStore,
+            base,
+            &record.id,
+        )
+        .expect_err("stale materialized requirements source should block task list rendering");
+
+        assert!(matches!(error, AppError::StaleMilestonePlan { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn list_tasks_for_milestone_accepts_fresh_materialized_requirements_source(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc.with_ymd_and_hms(2026, 4, 1, 10, 45, 0).unwrap();
+
+        let bundle = sample_bundle("task-list-fresh-source", "Task List Fresh Source");
+        write_completed_milestone_requirements_run(
+            base,
+            "req-task-list-fresh",
+            "bundle-v1",
+            &bundle,
+            now,
+        )?;
+        let record = materialize_bundle_with_source(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &bundle,
+            Some(materialized_source(
+                "req-task-list-fresh",
+                "bundle-v1",
+                &bundle,
+            )?),
+            now + chrono::Duration::seconds(1),
+        )?;
+        let plan_hash = hash_text(&FsMilestonePlanStore.read_plan_json(base, &record.id)?);
+
+        crate::contexts::project_run_record::service::create_project(
+            &crate::adapters::fs::FsProjectStore,
+            &crate::adapters::fs::FsJournalStore,
+            base,
+            crate::contexts::project_run_record::service::CreateProjectInput {
+                id: crate::shared::domain::ProjectId::new("task-fresh-source")?,
+                name: "Task fresh source".to_owned(),
+                flow: crate::shared::domain::FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt".to_owned(),
+                prompt_hash: "hash".to_owned(),
+                created_at: now + chrono::Duration::seconds(2),
+                task_source: Some(crate::contexts::project_run_record::model::TaskSource {
+                    milestone_id: record.id.to_string(),
+                    bead_id: "bead-1".to_owned(),
+                    parent_epic_id: None,
+                    origin: crate::contexts::project_run_record::model::TaskOrigin::Milestone,
+                    plan_hash: Some(plan_hash),
+                    plan_version: Some(1),
+                    plan_workstream_index: None,
+                    plan_bead_index: None,
+                }),
+            },
+        )?;
+
+        let listing = list_tasks_for_milestone(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestonePlanStore,
+            &FsRequirementsStore,
+            &crate::adapters::fs::FsProjectStore,
+            base,
+            &record.id,
+        )?;
+
+        assert_eq!(listing.tasks.len(), 1);
+        assert_eq!(listing.tasks[0].project_id, "task-fresh-source");
+        assert_eq!(
+            listing.tasks[0].bead_title.as_deref(),
+            Some("Implement feature")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn materialized_requirements_bundle_source_is_stale_when_stage_was_invalidated(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let now = Utc.with_ymd_and_hms(2026, 4, 1, 10, 0, 0).unwrap();
+
+        let bundle = sample_bundle("materialize-invalidated-source", "Invalidated Source");
+        write_completed_milestone_requirements_run(
+            base,
+            "req-invalidated",
+            "bundle-v1",
+            &bundle,
+            now,
+        )?;
+        let record = materialize_bundle_with_source(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base,
+            &bundle,
+            Some(materialized_source(
+                "req-invalidated",
+                "bundle-v1",
+                &bundle,
+            )?),
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let store = FsRequirementsStore;
+        let mut run = store.read_run(base, "req-invalidated")?;
+        run.committed_stages
+            .remove(FullModeStage::MilestoneBundle.as_str());
+        store.write_run(base, "req-invalidated", &run)?;
+
+        let snapshot = FsMilestoneSnapshotStore.read_snapshot(base, &record.id)?;
+        let status = detect_milestone_source_bundle_status(&FsRequirementsStore, base, &snapshot)?;
+        let staleness = match status {
+            MilestoneSourceBundleStatus::Stale(staleness) => staleness,
+            MilestoneSourceBundleStatus::Fresh => panic!("expected invalidated source to be stale"),
+        };
+        assert_eq!(
+            staleness.reason,
+            "source requirements run no longer has a committed milestone bundle stage"
+        );
         Ok(())
     }
 
@@ -12424,7 +13059,9 @@ mod tests {
 
         let history = bead_execution_history(
             &store,
+            &snapshot_store,
             &plan_store,
+            &FsRequirementsStore,
             &FsProjectStore,
             &lineage_store,
             base,
@@ -17722,7 +18359,9 @@ proposal_threshold = 2
 
         let history = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -17827,7 +18466,9 @@ proposal_threshold = 2
 
         let history = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -17919,7 +18560,9 @@ proposal_threshold = 2
 
         let history = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -17988,7 +18631,9 @@ proposal_threshold = 2
 
         let short_history = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -17997,7 +18642,9 @@ proposal_threshold = 2
         )?;
         let qualified_history = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -18085,7 +18732,9 @@ proposal_threshold = 2
 
         let listing = list_tasks_for_milestone(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &crate::adapters::fs::FsProjectStore,
             base,
             &record.id,
@@ -18173,7 +18822,9 @@ proposal_threshold = 2
 
         let listing = list_tasks_for_milestone(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &crate::adapters::fs::FsProjectStore,
             base,
             &record.id,
@@ -18238,7 +18889,9 @@ proposal_threshold = 2
 
         let listing = list_tasks_for_milestone(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &crate::adapters::fs::FsProjectStore,
             base,
             &record.id,
@@ -18283,7 +18936,9 @@ proposal_threshold = 2
 
         let lineage = read_bead_lineage(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &record.id,
             "bead-1",
@@ -18331,7 +18986,9 @@ proposal_threshold = 2
 
         let lineage = read_bead_lineage(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &record.id,
             "bead-1",
@@ -18394,7 +19051,9 @@ proposal_threshold = 2
 
         let lineage = read_bead_lineage_with_task_source(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &record.id,
             "api-1",
@@ -18433,7 +19092,9 @@ proposal_threshold = 2
 
         let error = read_bead_lineage(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &record.id,
             "bead-missing",
@@ -18474,7 +19135,9 @@ proposal_threshold = 2
 
         let error = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -18555,7 +19218,9 @@ proposal_threshold = 2
 
         let history = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -18653,7 +19318,9 @@ proposal_threshold = 2
 
         let history = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -18697,9 +19364,11 @@ proposal_threshold = 2
 
         let error = read_bead_lineage(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FailingPlanReadStore {
                 error_kind: std::io::ErrorKind::PermissionDenied,
             },
+            &FsRequirementsStore,
             base,
             &record.id,
             "bead-1",
@@ -18736,9 +19405,11 @@ proposal_threshold = 2
 
         let error = bead_execution_history(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FailingPlanReadStore {
                 error_kind: std::io::ErrorKind::PermissionDenied,
             },
+            &FsRequirementsStore,
             &FsProjectStore,
             &FsTaskRunLineageStore,
             base,
@@ -18776,9 +19447,11 @@ proposal_threshold = 2
 
         let error = list_tasks_for_milestone(
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FailingPlanReadStore {
                 error_kind: std::io::ErrorKind::PermissionDenied,
             },
+            &FsRequirementsStore,
             &crate::adapters::fs::FsProjectStore,
             base,
             &record.id,
@@ -21359,7 +22032,9 @@ proposal_threshold = 2
 
         let refs = load_runtime_bead_membership_refs(
             &FsMilestonePlanStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
+            &FsRequirementsStore,
             base,
             &milestone.id,
         )?;

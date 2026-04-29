@@ -1600,15 +1600,29 @@ where
                         run_id,
                     ) {
                         Ok(handoff) => {
-                            let materialize_result = milestone_service::materialize_bundle(
-                                &FsMilestoneStore,
-                                &FsMilestoneSnapshotStore,
-                                &FsMilestoneJournalStore,
-                                &FsMilestonePlanStore,
-                                workspace_dir,
-                                &handoff.bundle,
-                                Utc::now(),
-                            );
+                            let materialize_result = handoff
+                                .milestone_bundle_id
+                                .clone()
+                                .map(|milestone_bundle_id| {
+                                    milestone_service::MaterializeBundleSource::from_bundle(
+                                        handoff.requirements_run_id.clone(),
+                                        milestone_bundle_id,
+                                        &handoff.bundle,
+                                    )
+                                })
+                                .transpose()
+                                .and_then(|source| {
+                                    milestone_service::materialize_bundle_with_source(
+                                        &FsMilestoneStore,
+                                        &FsMilestoneSnapshotStore,
+                                        &FsMilestoneJournalStore,
+                                        &FsMilestonePlanStore,
+                                        workspace_dir,
+                                        &handoff.bundle,
+                                        source,
+                                        Utc::now(),
+                                    )
+                                });
                             if let Err(e) = materialize_result {
                                 if DaemonTaskService::mark_failed(
                                     self.store,
@@ -3415,15 +3429,30 @@ where
                         }
                     };
 
-                    if let Err(e) = milestone_service::materialize_bundle(
-                        &FsMilestoneStore,
-                        &FsMilestoneSnapshotStore,
-                        &FsMilestoneJournalStore,
-                        &FsMilestonePlanStore,
-                        workspace_dir,
-                        &handoff.bundle,
-                        Utc::now(),
-                    ) {
+                    if let Err(e) = handoff
+                        .milestone_bundle_id
+                        .clone()
+                        .map(|milestone_bundle_id| {
+                            milestone_service::MaterializeBundleSource::from_bundle(
+                                handoff.requirements_run_id.clone(),
+                                milestone_bundle_id,
+                                &handoff.bundle,
+                            )
+                        })
+                        .transpose()
+                        .and_then(|source| {
+                            milestone_service::materialize_bundle_with_source(
+                                &FsMilestoneStore,
+                                &FsMilestoneSnapshotStore,
+                                &FsMilestoneJournalStore,
+                                &FsMilestonePlanStore,
+                                workspace_dir,
+                                &handoff.bundle,
+                                source,
+                                Utc::now(),
+                            )
+                        })
+                    {
                         let _ = DaemonTaskService::mark_failed(
                             self.store,
                             base_dir,

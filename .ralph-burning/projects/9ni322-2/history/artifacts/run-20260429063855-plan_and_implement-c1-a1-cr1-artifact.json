@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429063855-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T10:50:10.407260503Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented milestone source-bundle lineage and staleness detection. Materialized milestones now persist the originating requirements run, milestone bundle id, schema version, and source plan hash; downstream milestone plan inspection, bead export, create-from-bead, daemon materialization, and requirements handoff paths validate that the source bundle is still current before using derived artifacts. Existing coarse question-round invalidation was left unchanged, and follow-up bead ralph-burning-epnn tracks precise per-question invalidation.\",\"outstanding_risks\":[],\"steps\":[{\"order\":1,\"status\":\"completed\",\"description\":\"Inspected the requirements invalidation path, milestone materialization path, CLI consumers, and existing tests to locate the lineage gap.\"},{\"order\":2,\"status\":\"completed\",\"description\":\"Added source_requirements_bundle metadata to MilestoneSnapshot and wired MaterializeBundleSource through requirements-to-milestone materialization paths.\"},{\"order\":3\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

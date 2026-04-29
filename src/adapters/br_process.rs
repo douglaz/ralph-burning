@@ -2133,9 +2133,15 @@ mod tests {
             .filter(|path| path.exists())
             .or_else(|| {
                 std::env::var_os("PATH").and_then(|paths| {
-                    std::env::split_paths(&paths)
-                        .map(|dir| dir.join("sh"))
-                        .find(|path| path.exists())
+                    for dir in std::env::split_paths(&paths) {
+                        for shell in ["sh", "bash"] {
+                            let path = dir.join(shell);
+                            if path.exists() {
+                                return Some(path);
+                            }
+                        }
+                    }
+                    None
                 })
             })
             .unwrap_or_else(|| PathBuf::from("/bin/sh"));

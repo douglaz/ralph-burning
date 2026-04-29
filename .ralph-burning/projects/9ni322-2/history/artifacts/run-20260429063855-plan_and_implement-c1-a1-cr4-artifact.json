@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260429063855-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T13:42:23.225499503Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Completed the pending remediation for Bead 9ni.3.2.2. Milestone show/status/action error mapping now preserves AppError::StaleMilestonePlan unchanged so callers retain structured source run and bundle fields. Milestone controller resume paths now validate the materialized milestone source requirements bundle before completion/execution decisions in both CLI milestone and run controller runtimes, and prepare_milestone_controller_for_execution preserves the structured stale-plan error instead of wrapping it. Added regressions for stale error mapper preservation and stale source rejection before controller resume completion. Verified the existing follow-up bead ralph-burning-epnn remains present for deferred precise per-question invalidation.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Inspected the pending amendment sites in src/cli/milestone.rs and src/cli/run.rs and confirmed the stale-plan propagation and controller resume bypasses were the remaining scope.\",\"o\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 4
+}

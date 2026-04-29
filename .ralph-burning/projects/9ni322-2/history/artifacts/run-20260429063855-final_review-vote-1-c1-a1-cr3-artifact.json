@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429063855-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T12:57:26.704211518Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth amendments identify real stale-plan handling defects that can hide structured errors or allow stale materialized milestone state to drive controller decisions.\n\n## Votes\n\n- `fr-3-1ed8576d`: Accept\n  The claim is correct: load_live_plan_bundle can return AppError::StaleMilestonePlan, but map_inspection_error and map_action_error only preserve MilestoneNotFound and MilestoneOperationFailed, wrapping all other variants. That destroys the stale-plan fields callers may need to match on. Passing StaleMilestonePlan through unchanged is safer and consistent with other paths that already preserve this variant.\n- `fr-3-34dd104d`: Accept\n  The resume path can make decisions from snapshot progress before any stale source-bundle validation occurs. all_beads_closed in both controller runtimes reads only the milestone snapshot, and resume_transition_request uses that to transition Idle or Selecting controllers to Completed before has_ready_beads or plan membership loading would validate freshness. Adding freshness validation before resume/completion decisions prevents stale requirements-derived plans from being silently completed or used for execution.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

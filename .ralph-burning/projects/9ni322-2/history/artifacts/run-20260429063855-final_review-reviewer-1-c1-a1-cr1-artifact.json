@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429063855-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T10:56:34.885364119Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound one correctness gap: several plan-derived lineage/task views still read the materialized plan without source-bundle freshness validation. Focused staleness tests passed under `nix develop -c cargo test --features test-stub materialized -- --nocapture`; plain `cargo` was unavailable outside nix and `br` was not installed.\n\n## Amendments\n\n1. Staleness validation is still bypassed by plan-derived lineage/task views. `src/contexts/milestone_record/service.rs:4135` reads the current plan via `load_plan_bundle_for_lineage()` without checking `snapshot.source_requirements_bundle`, and the same unvalidated path feeds `bead_execution_history()` at `src/contexts/milestone_record/service.rs:4198` and `list_tasks_for_milestone()` at `src/contexts/milestone_record/service.rs:4338`. CLI/read-model surfaces such as `milestone tasks` (`src/cli/milestone.rs:854`), `project show` (`src/contexts/project_run_record/service.rs:1501`), and run status labels (`src/cli/run.rs:3013`) can therefore continue rendering old bead titles/acceptance criteria after the source requirements bundle has been re-answered. This violates the bead requirement that plan renderers surface a structured stale result instead of silently using stale artifacts. Wire `RequirementsStorePort` plus the milestone snapshot into these lineage/task loaders, or return an explicit stale status, and add a regression covering a stale materialized source through at least one of these read-model paths.\n   Classification: fix_current_bead\n   Rationale: The core export/create/show paths now check staleness, but these remaining plan-rendering surfaces still consume the stale plan directly, leaving part of the requested downstream invalidation contract unenforced.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

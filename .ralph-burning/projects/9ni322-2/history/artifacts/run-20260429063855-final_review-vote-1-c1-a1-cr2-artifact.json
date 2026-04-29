@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260429063855-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T12:01:09.906104320Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth amendments identify real freshness/provenance defects in the current paths and should be accepted.\n\n## Votes\n\n- `fr-2-7c74f7e9`: Accept\n  The post-completion CLI and daemon reconciliation paths call select_next_milestone_bead/select_next_milestone_bead_from_recommendation directly, and those helpers only load plan/journal membership via load_runtime_bead_membership_refs. The next/run entrypoints validate source freshness before reaching this code, but these continuation paths bypass that guard, so a requirements re-answer can drive selection from stale plan.json. Moving the freshness check into the shared selection membership path or adding the required stores to the selection APIs is technically justified.\n- `fr-2-215dc32e`: Accept\n  extract_milestone_bundle_handoff can use the embedded bundle after a payload parse/validation failure while still returning run.latest_milestone_bundle_id. Materialization then records that payload id as the source for a plan derived from different embedded content, and later freshness validation reads/parses the payload behind that id, producing a corrupt or stale source outcome. The handoff should preserve whether the payload was actually authoritative, and fallback materialization should avoid persisting a misleading source id or repair it with matching source data.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

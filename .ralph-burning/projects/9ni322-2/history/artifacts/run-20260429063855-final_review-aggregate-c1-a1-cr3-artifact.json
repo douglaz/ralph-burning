@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260429063855-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429063855-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T12:57:26.737053173Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-1ed8576d`\n- `fr-3-34dd104d`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-1ed8576d`\n\n**Classification:** fix_current_bead\n\n`src/cli/milestone.rs:1881-1888` routes plan-inspection failures through `map_inspection_error`, and `src/cli/milestone.rs:2120-2127` wraps every non-milestone error into `MilestoneOperationFailed`. That includes the new `AppError::StaleMilestonePlan` raised by `validate_milestone_source_bundle_fresh` at `src/cli/milestone.rs:1992-1997`, so `milestone show/status` lose the structured staleness variant and callers can no longer match on the source run/bundle fields. The action path has the same issue via `ensure_execution_plan_available` at `src/cli/milestone.rs:1826-1833` and `map_action_error` at `src/cli/milestone.rs:2131-2138`. Pass `AppError::StaleMilestonePlan { .. }` through unchanged so downstream loads propagate structured staleness as required.\n\n### `fr-3-34dd104d`\n\n**Classification:** fix_current_bead\n\nThe milestone controller resume path used from bead task execution can still bypass source-bundle freshness checks. `prepare_milestone_controller_for_execution` calls `resume_controller` directly at `src/cli/run.rs:1452-1459`, but the `ProjectMilestoneControllerRuntime::all_beads_closed` implementation at `src/cli/run.rs:1418-1433` only reads snapshot progress and never calls `validate_milestone_source_bundle_fresh`; the duplicate command runtime at `src/cli/milestone.rs:1712-1727` has the same blind spot. `resume_transition_request` then uses that result at `src/contexts/milestone_record/controller.rs:1035` and can transition Idle/Selecting controllers to Completed at `src/contexts/milestone_record/controller.rs:1052-1067` before any plan membership load triggers the new stale check. Add a source freshness validation before controller resume/completion decisions so a re-answered requirements bundle cannot leave the old materialized milestone silently marked complete or executable.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

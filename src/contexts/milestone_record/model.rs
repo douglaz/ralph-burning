@@ -177,6 +177,9 @@ pub struct MilestoneSnapshot {
     /// SHA-256 hash of the current plan.json content (if planned).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_hash: Option<String>,
+    /// Requirements run and bundle that produced the current materialized plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_requirements_bundle: Option<SourceRequirementsBundleRef>,
     /// Monotonically increasing plan version counter.
     pub plan_version: u32,
     /// Bead ID currently being executed (if any).
@@ -198,6 +201,7 @@ impl MilestoneSnapshot {
             status: MilestoneStatus::Planning,
             pending_requirements_run_id: None,
             plan_hash: None,
+            source_requirements_bundle: None,
             plan_version: 0,
             active_bead: None,
             pending_lineage_reset: None,
@@ -225,6 +229,14 @@ impl MilestoneSnapshot {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceRequirementsBundleRef {
+    pub requirements_run_id: String,
+    pub milestone_bundle_id: String,
+    pub schema_version: u32,
+    pub plan_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

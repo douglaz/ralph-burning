@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260429063855-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260429063855-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T12:01:09.930412950Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-7c74f7e9`\n- `fr-2-215dc32e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-7c74f7e9`\n\n**Classification:** fix_current_bead\n\nsrc/cli/run.rs:916 and src/contexts/automation_runtime/success_reconciliation.rs:366 call the bead-selection flow directly after milestone task completion. That flow reaches src/contexts/milestone_record/service.rs:5262 and reads plan.json via load_runtime_bead_membership_refs without validating source_requirements_bundle freshness. A requirements re-answer can therefore leave CLI/daemon reconciliation selecting and claiming the next bead from the stale materialized plan, bypassing the new guards added to milestone next/run entrypoints. Move the freshness check into the shared runtime plan-membership load path or require snapshot/requirements stores in select_next_milestone_bead/select_next_milestone_bead_from_recommendation, and add a stale-source regression for post-completion selection.\n\n### `fr-2-215dc32e`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/requirements_drafting/service.rs:2407-2430 falls back to the embedded bundle when the payload bundle is invalid, but still returns milestone_bundle_id from run.latest_milestone_bundle_id. The materializers then persist that id as the source at src/cli/project.rs:327-337 and src/cli/milestone.rs:383-393 even though the bundle used did not come from that payload. On the next downstream load, src/contexts/milestone_record/service.rs:3809-3823 tries to parse the invalid payload and reports a corrupt source, so a legacy handoff that extract_milestone_bundle_handoff explicitly accepts becomes immediately unusable after materialization. Track whether the authoritative payload was actually used, clear or repair the source id when falling back to embedded state, and add a regression that materializing an embedded-fallback handoff remains fresh.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

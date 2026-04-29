@@ -2382,8 +2382,9 @@ pub fn extract_milestone_bundle_handoff(
             })
     });
 
+    let payload_bundle_id = run.latest_milestone_bundle_id.clone();
     let payload_bundle =
-        run.latest_milestone_bundle_id
+        payload_bundle_id
             .as_deref()
             .map(|payload_id| -> AppResult<MilestoneBundle> {
                 let payload_json = store.read_payload(base_dir, run_id, payload_id)?;
@@ -2404,9 +2405,9 @@ pub fn extract_milestone_bundle_handoff(
                 Ok(payload_bundle)
             });
 
-    let bundle = match (payload_bundle, embedded_bundle) {
-        (Some(Ok(payload_bundle)), _) => payload_bundle,
-        (Some(Err(_)), Some(Ok(bundle))) => bundle,
+    let (bundle, milestone_bundle_id) = match (payload_bundle, embedded_bundle) {
+        (Some(Ok(payload_bundle)), _) => (payload_bundle, payload_bundle_id),
+        (Some(Err(_)), Some(Ok(bundle))) => (bundle, None),
         (Some(Err(payload_error)), Some(Err(embedded_error))) => {
             return Err(AppError::RequirementsHandoffFailed {
                 task_id: run_id.to_owned(),
@@ -2414,7 +2415,7 @@ pub fn extract_milestone_bundle_handoff(
             });
         }
         (Some(Err(payload_error)), None) => return Err(payload_error),
-        (None, Some(Ok(bundle))) => bundle,
+        (None, Some(Ok(bundle))) => (bundle, None),
         (None, Some(Err(error))) => return Err(error),
         (None, None) => {
             return Err(AppError::RequirementsHandoffFailed {
@@ -2427,6 +2428,7 @@ pub fn extract_milestone_bundle_handoff(
 
     Ok(MilestoneBundleHandoff {
         requirements_run_id: run_id.to_owned(),
+        milestone_bundle_id,
         bundle,
     })
 }
@@ -2447,6 +2449,7 @@ pub struct SeedHandoff {
 #[derive(Debug, Clone)]
 pub struct MilestoneBundleHandoff {
     pub requirements_run_id: String,
+    pub milestone_bundle_id: Option<String>,
     pub bundle: crate::contexts::milestone_record::bundle::MilestoneBundle,
 }
 

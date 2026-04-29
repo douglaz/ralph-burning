@@ -15691,6 +15691,7 @@ fn project_create_from_bead_rejects_legacy_failed_retry_without_task_source_even
 }
 
 #[test]
+#[cfg(feature = "test-stub")]
 fn project_create_from_bead_for_different_bead_preserves_run_start_active_bead_guard() {
     let temp_dir = initialize_workspace_fixture();
     write_milestone_fixture(temp_dir.path(), "ms-alpha");
@@ -15765,8 +15766,12 @@ fn project_create_from_bead_for_different_bead_preserves_run_start_active_bead_g
         "run start should still reject a different active bead"
     );
     let stderr = String::from_utf8_lossy(&start.stderr);
-    assert!(stderr
-        .contains("cannot start bead 'ms-alpha.bead-3': bead 'ms-alpha.bead-2' is already active"));
+    assert!(
+        stderr.contains(
+            "cannot start bead 'ms-alpha.bead-3': bead 'ms-alpha.bead-2' is already active"
+        ),
+        "stderr should report active bead guard, got: {stderr}"
+    );
 
     let task_runs =
         fs::read_to_string(milestone_root(temp_dir.path(), "ms-alpha").join("task-runs.ndjson"))

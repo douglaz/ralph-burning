@@ -380,16 +380,28 @@ async fn handle_plan(milestone_id: String) -> AppResult<()> {
         }
     };
 
+    let source = handoff
+        .milestone_bundle_id
+        .clone()
+        .map(|milestone_bundle_id| {
+            milestone_service::MaterializeBundleSource::from_bundle(
+                handoff.requirements_run_id.clone(),
+                milestone_bundle_id,
+                &handoff.bundle,
+            )
+        })
+        .transpose()?;
     let mut bundle = handoff.bundle;
     retarget_bundle(&mut bundle, &milestone_id, &record.name);
 
-    milestone_service::materialize_bundle(
+    milestone_service::materialize_bundle_with_source(
         &store,
         &snapshot_store,
         &journal_store,
         &plan_store,
         &current_dir,
         &bundle,
+        source,
         Utc::now(),
     )
     .map_err(|error| AppError::MilestoneOperationFailed {
@@ -419,10 +431,20 @@ async fn handle_export_beads(milestone_id: String) -> AppResult<()> {
     validate_workspace(&current_dir)?;
 
     let store = FsMilestoneStore;
+    let snapshot_store = FsMilestoneSnapshotStore;
     let journal_store = FsMilestoneJournalStore;
     let plan_store = FsMilestonePlanStore;
+    let requirements_store = FsRequirementsStore;
     let milestone_id = MilestoneId::new(milestone_id)?;
     load_existing_milestone(&store, &current_dir, &milestone_id)?;
+    let snapshot =
+        load_snapshot_for_action(&snapshot_store, &current_dir, &milestone_id, "export-beads")?;
+    milestone_service::validate_milestone_source_bundle_fresh(
+        &requirements_store,
+        &current_dir,
+        &milestone_id,
+        &snapshot,
+    )?;
     let (bundle, plan_hash) =
         milestone_service::load_plan_bundle(&plan_store, &current_dir, &milestone_id)?;
     let export_attempt = reserve_bead_export_attempt(&current_dir, &milestone_id, &plan_hash)?;
@@ -1632,7 +1654,9 @@ impl MilestoneCommandControllerRuntime<'_> {
     fn planned_bead_membership_refs(&self) -> AppResult<std::collections::HashSet<String>> {
         milestone_service::load_runtime_bead_membership_refs(
             &FsMilestonePlanStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestoneJournalStore,
+            &crate::adapters::fs::FsRequirementsStore,
             self.base_dir,
             self.milestone_id,
         )
@@ -1690,6 +1714,12 @@ impl MilestoneControllerResumePort for MilestoneCommandControllerRuntime<'_> {
             &FsMilestoneSnapshotStore,
             self.base_dir,
             self.milestone_id,
+        )?;
+        milestone_service::validate_milestone_source_bundle_fresh(
+            &FsRequirementsStore,
+            self.base_dir,
+            self.milestone_id,
+            &snapshot,
         )?;
         let closed_beads = snapshot
             .progress
@@ -1854,8 +1884,14 @@ fn load_inspection_state(
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
         let snapshot =
             load_snapshot_for_action(snapshot_store, base_dir, milestone_id, "inspection")?;
-        let plan = load_live_plan_bundle(plan_store, base_dir, milestone_id, &snapshot)
-            .map_err(|error| map_inspection_error(milestone_id, error))?;
+        let plan = load_live_plan_bundle(
+            plan_store,
+            requirements_store,
+            base_dir,
+            milestone_id,
+            &snapshot,
+        )
+        .map_err(|error| map_inspection_error(milestone_id, error))?;
         let (display_status, pending_requirements) =
             load_pending_requirements_view(requirements_store, base_dir, milestone_id, &snapshot)
                 .map_err(|error| map_inspection_error(milestone_id, error))?;
@@ -1920,6 +1956,7 @@ fn load_pending_requirements_view(
 
 fn load_live_plan_bundle(
     plan_store: &impl MilestonePlanPort,
+    requirements_store: &impl RequirementsStorePort,
     base_dir: &std::path::Path,
     milestone_id: &MilestoneId,
     snapshot: &MilestoneSnapshot,
@@ -1957,6 +1994,12 @@ fn load_live_plan_bundle(
                 snapshot.plan_hash.as_deref(),
                 snapshot.plan_version,
                 &plan_hash,
+            )?;
+            milestone_service::validate_milestone_source_bundle_fresh(
+                requirements_store,
+                base_dir,
+                milestone_id,
+                snapshot,
             )?;
 
             Ok(Some(LoadedMilestoneBundle { bundle }))
@@ -2027,7 +2070,9 @@ fn load_bead_execution_history(
 ) -> AppResult<BeadExecutionHistoryView> {
     milestone_service::bead_execution_history(
         &FsMilestoneStore,
+        &FsMilestoneSnapshotStore,
         &FsMilestonePlanStore,
+        &FsRequirementsStore,
         &FsProjectStore,
         &FsTaskRunLineageStore,
         base_dir,
@@ -2042,7 +2087,9 @@ fn load_milestone_task_list(
 ) -> AppResult<MilestoneTaskListView> {
     milestone_service::list_tasks_for_milestone(
         &FsMilestoneStore,
+        &FsMilestoneSnapshotStore,
         &FsMilestonePlanStore,
+        &FsRequirementsStore,
         &FsProjectStore,
         base_dir,
         milestone_id,
@@ -2078,7 +2125,9 @@ fn load_snapshot_for_action(
 
 fn map_inspection_error(milestone_id: &MilestoneId, error: AppError) -> AppError {
     match error {
-        AppError::MilestoneNotFound { .. } | AppError::MilestoneOperationFailed { .. } => error,
+        AppError::MilestoneNotFound { .. }
+        | AppError::MilestoneOperationFailed { .. }
+        | AppError::StaleMilestonePlan { .. } => error,
         other => AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: "inspection".to_owned(),
@@ -2089,7 +2138,9 @@ fn map_inspection_error(milestone_id: &MilestoneId, error: AppError) -> AppError
 
 fn map_action_error(milestone_id: &MilestoneId, action: &str, error: AppError) -> AppError {
     match error {
-        AppError::MilestoneNotFound { .. } | AppError::MilestoneOperationFailed { .. } => error,
+        AppError::MilestoneNotFound { .. }
+        | AppError::MilestoneOperationFailed { .. }
+        | AppError::StaleMilestonePlan { .. } => error,
         other => AppError::MilestoneOperationFailed {
             milestone_id: milestone_id.to_string(),
             action: action.to_owned(),
@@ -2582,9 +2633,10 @@ fn map_create_error(milestone_id: &str, error: AppError) -> AppError {
 mod tests {
     use super::{
         default_planning_idea, derive_milestone_id, inspect_next_milestone_action,
-        load_bead_execution_history, load_milestone_task_list, read_bead_export_attempt,
-        reserve_bead_export_attempt, reserve_pending_requirements_run, retarget_bundle,
-        write_bead_export_attempt, MilestoneCommandControllerRuntime, PendingBeadExportAttempt,
+        load_bead_execution_history, load_milestone_task_list, map_action_error,
+        map_inspection_error, read_bead_export_attempt, reserve_bead_export_attempt,
+        reserve_pending_requirements_run, retarget_bundle, write_bead_export_attempt,
+        MilestoneCommandControllerRuntime, PendingBeadExportAttempt,
         PendingRequirementsRunReservation, PENDING_REQUIREMENTS_START_PREFIX,
     };
     use chrono::{TimeZone, Utc};
@@ -2789,6 +2841,34 @@ mod tests {
             bundle.workstreams[0].beads[0].depends_on,
             vec!["ms-alpha.bead-0"]
         );
+    }
+
+    #[test]
+    fn milestone_error_mappers_preserve_structured_stale_plan_errors() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let stale_error = AppError::StaleMilestonePlan {
+            milestone_id: milestone_id.to_string(),
+            requirements_run_id: "req-alpha".to_owned(),
+            milestone_bundle_id: "bundle-v1".to_owned(),
+            details: "source milestone bundle was invalidated".to_owned(),
+        };
+
+        assert!(matches!(
+            map_inspection_error(&milestone_id, stale_error),
+            AppError::StaleMilestonePlan { .. }
+        ));
+
+        let stale_error = AppError::StaleMilestonePlan {
+            milestone_id: milestone_id.to_string(),
+            requirements_run_id: "req-alpha".to_owned(),
+            milestone_bundle_id: "bundle-v1".to_owned(),
+            details: "source milestone bundle was invalidated".to_owned(),
+        };
+
+        assert!(matches!(
+            map_action_error(&milestone_id, "run", stale_error),
+            AppError::StaleMilestonePlan { .. }
+        ));
     }
 
     #[test]
