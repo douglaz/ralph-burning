@@ -3333,6 +3333,39 @@ fn errno_to_io_error(errno: nix::errno::Errno) -> AppError {
 
 pub struct FsMilestoneStore;
 
+#[cfg(feature = "test-stub")]
+fn fs_milestone_create_atomic_calls() -> &'static Mutex<std::collections::BTreeMap<PathBuf, usize>>
+{
+    static CALLS: OnceLock<Mutex<std::collections::BTreeMap<PathBuf, usize>>> = OnceLock::new();
+    CALLS.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()))
+}
+
+#[cfg(feature = "test-stub")]
+impl FsMilestoneStore {
+    pub fn reset_create_milestone_atomic_call_count(base_dir: &Path) {
+        let mut calls = fs_milestone_create_atomic_calls()
+            .lock()
+            .expect("milestone create call counter lock poisoned");
+        calls.remove(base_dir);
+    }
+
+    pub fn create_milestone_atomic_call_count(base_dir: &Path) -> usize {
+        let calls = fs_milestone_create_atomic_calls()
+            .lock()
+            .expect("milestone create call counter lock poisoned");
+        calls.get(base_dir).copied().unwrap_or(0)
+    }
+}
+
+#[cfg(not(feature = "test-stub"))]
+impl FsMilestoneStore {
+    pub fn reset_create_milestone_atomic_call_count(_base_dir: &Path) {}
+
+    pub fn create_milestone_atomic_call_count(_base_dir: &Path) -> usize {
+        0
+    }
+}
+
 impl MilestoneStorePort for FsMilestoneStore {
     fn milestone_exists(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<bool> {
         let root = FileSystem::milestone_root(base_dir, milestone_id);
@@ -3417,6 +3450,14 @@ impl MilestoneStorePort for FsMilestoneStore {
         snapshot: &MilestoneSnapshot,
         initial_journal_line: &str,
     ) -> AppResult<()> {
+        #[cfg(feature = "test-stub")]
+        {
+            let mut calls = fs_milestone_create_atomic_calls()
+                .lock()
+                .expect("milestone create call counter lock poisoned");
+            *calls.entry(base_dir.to_path_buf()).or_insert(0) += 1;
+        }
+
         let root = FileSystem::milestone_root(base_dir, &record.id);
         if root.exists() {
             return Err(AppError::DuplicateProject {

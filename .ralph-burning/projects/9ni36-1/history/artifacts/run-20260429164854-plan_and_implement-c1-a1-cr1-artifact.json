@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429164854-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429164854-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T18:25:42.140857343Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Added legacy-mode regression coverage for quick requirements, project-seed full requirements completion, project bootstrap, and manual project create-from-requirements flows. The tests assert completed project-seed handoffs stay plain, do not embed or persist milestone bundles, do not set active milestone state, do not persist source_requirements_bundle metadata, and do not call FsMilestoneStore::create_milestone_atomic where the in-process store can be counted. Added a test-stub-only call counter on FsMilestoneStore::create_milestone_atomic to make the no-auto-materialization assertions load-bearing.\",\"outstanding_risks\":[\"br lint could not be run because br is not installed in PATH or the nix dev shell; .beads/issues.jsonl was already modified in this stage, so bead lint remains unverified.\",\"The untracked .ralph-burning/projects/9ni36-1/ orchestration state remains untouched and excluded from review scope.\"],\"steps\":[{\"description\":\"Inventoried existing requiremen\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}
