@@ -4623,11 +4623,7 @@ impl PayloadArtifactWritePort for LeakingPayloadArtifactWriteStore {
 /// When write_payload_artifact_pair fails but leaks a canonical payload file,
 /// the engine's defense-in-depth cleanup must remove it so no orphaned durable
 /// history is visible after the run is failed.
-// TODO(panel-dispatch): Update for panel supporting record cleanup.
-// Panel dispatch writes supporting records before the primary; the leaking
-// store fails on the first write but supporting records may persist.
 #[tokio::test]
-#[ignore = "needs update for panel dispatch supporting record cleanup"]
 async fn leaked_payload_cleanup_on_write_failure() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

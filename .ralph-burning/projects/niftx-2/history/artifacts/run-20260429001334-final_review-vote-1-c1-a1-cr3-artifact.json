@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429001334-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429001334-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T04:45:20.513828317Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nThe proposed amendment identifies a real test-harness robustness bug: timeout failure in the child wait helper can leak long-lived spawned processes.\n\n## Votes\n\n- `fr-3-2d1e3acd`: Accept\n  `wait_for_child_exit` panics on deadline expiry without killing or reaping the `Child`, and `Child` drop does not terminate the subprocess. The affected signal tests spawn shell loops intended to be stopped by the code under test, so a regression can leave those loops alive after a panic and contaminate the rest of the test or CI job. Adding cleanup on the timeout path or an RAII guard is correct and improves test isolation without weakening the assertion.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

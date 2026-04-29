@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260429001334-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260429001334-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T03:30:12.867577992Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-56c8025a`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-56c8025a`\n\n**Classification:** fix_current_bead\n\nThe two newly unignored `run stop` signal tests still have a startup race. In `tests/cli.rs:10558` and `tests/cli.rs:10878`, the bash helper is considered ready immediately after `spawn()`, but `run stop` can send SIGTERM before the shell has executed `trap '' TERM` or `trap 'rm -f \"$RALPH_PID_FILE\"; exit 0' TERM`. If that happens, the SIGKILL test may exit on SIGTERM instead of requiring SIGKILL, and the handoff test may not remove `run.pid`, reintroducing the exact CI flake this bead is meant to eliminate. Add an explicit ready-file handshake after installing each trap and wait for that file before invoking `run stop`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

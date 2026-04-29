@@ -532,8 +532,8 @@ fn persist_supporting_record(
     };
 
     let artifact_record = ArtifactRecord {
-        artifact_id,
-        payload_id,
+        artifact_id: artifact_id.clone(),
+        payload_id: payload_id.clone(),
         stage_id,
         created_at: now,
         content: artifact_content.to_owned(),
@@ -542,12 +542,22 @@ fn persist_supporting_record(
         completion_round: cursor.completion_round,
     };
 
-    artifact_write.write_payload_artifact_pair(
+    if let Err(error) = artifact_write.write_payload_artifact_pair(
         base_dir,
         project_id,
         &payload_record,
         &artifact_record,
-    )
+    ) {
+        let _ = artifact_write.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            &payload_id,
+            &artifact_id,
+        );
+        return Err(error);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
