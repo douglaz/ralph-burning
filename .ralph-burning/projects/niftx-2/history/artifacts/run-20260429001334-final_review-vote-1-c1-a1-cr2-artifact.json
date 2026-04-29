@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429001334-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260429001334-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T03:30:12.835611174Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nThe amendment identifies a real race in the signal-handling tests and proposes an appropriate deterministic readiness handshake.\n\n## Votes\n\n- `fr-2-56c8025a`: Accept\n  `Command::spawn()` only guarantees that the bash process has been started, not that its `trap` command has run. Both tests can therefore call `run stop` while the helper still has the default SIGTERM disposition, which can make the SIGKILL expectation or pid-file handoff behavior nondeterministic. A ready-file written after trap installation and awaited before invoking `run stop` is a correct, maintainable fix for the flake.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429001334-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429001334-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T02:26:31.214814794Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against e622cfc72021b00f85d302f25318d0b1faf7dcd4 and ignored live `.ralph-burning/projects/niftx-2` state. Targeted affected tests run via `nix develop -c cargo test --features test-stub --locked ...` passed, but one remaining pid-file race needs amendment.\n\n## Amendments\n\n1. src/cli/run.rs:11416 and src/cli/run.rs:11424 still leave `kill_tracked_descendant_processes_survives_parent_exit` racing the pid-file writer. The loop exits as soon as the file exists/readable, then parses once; shell redirection can briefly create an empty file before `echo $$` writes the PID, so the unignored test can still panic before writing `release-parent` and leave helper processes behind. Keep polling until the file contents parse as a valid PID before continuing.\n   Classification: fix_current_bead\n   Rationale: This bead is specifically about stabilizing formerly ignored flaky tests; this keeps one of the target tests vulnerable to the same class of pid-file timing race.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

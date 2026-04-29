@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429001334-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429001334-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T04:30:13.579651679Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Resolved the pending run-stop startup race by adding an explicit ready-file handshake for both affected bash orchestrators in tests/cli.rs. The implementation adds a bounded wait_for_file helper, has the SIGKILL cleanup helper write its ready marker only after installing trap '' TERM, and has the SIGTERM handoff helper write RALPH_READY_FILE only after installing the trap that removes run.pid. run stop is now invoked only after the helper process has installed the relevant signal trap, so SIGTERM cannot arrive during shell startup and bypass the intended test behavior.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Inspected the pending amendment against tests/cli.rs and confirmed the two run stop tests needed explicit readiness synchronization after trap installation.\",\"order\":0,\"status\":\"completed\"},{\"description\":\"Added a bounded wait_for_file polling helper for non-PID readiness markers in tests/cli.rs.\",\"order\":1,\"status\":\"completed\"},{\"description\":\"Updated r\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

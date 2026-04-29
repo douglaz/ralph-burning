@@ -1,0 +1,7 @@
+id = "niftx-2"
+name = "ftx flaky tests v2"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "30e0fbfb315852bf0b1cf051a5b8fd56e01d7bd5ab1c4e17bd48b5be4299cf5e"
+created_at = "2026-04-29T00:13:34.658260631Z"
+status_summary = "created"

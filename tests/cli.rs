@@ -302,18 +302,49 @@ fn legacy_backend_process_record_json(
 
 fn wait_for_pid_file(path: &std::path::Path, what: &str) -> u32 {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while !path.exists() || fs::read_to_string(path).is_err() {
+    loop {
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Ok(pid) = raw.trim().parse::<u32>() {
+                return pid;
+            }
+        }
         assert!(
             std::time::Instant::now() < deadline,
             "{what} pid file was never written"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
-    fs::read_to_string(path)
-        .expect("read pid file")
-        .trim()
-        .parse::<u32>()
-        .expect("parse pid")
+}
+
+fn wait_for_file(path: &std::path::Path, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if path.exists() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what} file was never written"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+fn wait_for_child_exit(child: &mut std::process::Child, what: &str) -> std::process::ExitStatus {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().expect("poll child status") {
+            return status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let kill_result = child.kill();
+            let wait_result = child.wait();
+            panic!(
+                "{what} did not exit before deadline; attempted cleanup with kill={kill_result:?}, wait={wait_result:?}"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 fn pid_is_alive(pid: u32) -> bool {
@@ -2049,6 +2080,8 @@ fn milestone_run_executes_single_bead_milestone_and_reuses_active_selection() {
 }
 
 #[test]
+// Ignored until the milestone membership mock reflects the export-beads
+// validation path, which no longer exercises the original failure surface.
 #[ignore = "membership validation path changed after export-beads feature; needs mock update"]
 fn milestone_run_membership_errors_use_run_action_label() {
     let temp_dir = initialize_workspace_fixture();
@@ -10224,10 +10257,12 @@ fn run_stop_sigkill_terminates_orphaned_backend_process_group_after_leader_exit(
 
     let backend_group_pid_path = temp_dir.path().join("backend-group-leader.pid");
     let backend_orphan_pid_path = temp_dir.path().join("backend-orphan.pid");
+    let leader_release_path = temp_dir.path().join("backend-group-leader.release");
     let orchestrator_script = format!(
-        "trap '' TERM; setsid sh -c 'echo $$ > \"{leader}\"; sh -c '\\''echo $$ > \"{orphan}\"; exec sleep 60'\\'' & while [ ! -s \"{orphan}\" ]; do sleep 0.05; done; exit 0' & while [ ! -s \"{leader}\" ] || [ ! -s \"{orphan}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
+        "trap '' TERM; setsid sh -c 'echo $$ > \"{leader}\"; sh -c '\\''echo $$ > \"{orphan}\"; exec sleep 60'\\'' & while [ ! -s \"{orphan}\" ]; do sleep 0.05; done; while [ ! -e \"{release}\" ]; do sleep 0.05; done; exit 0' & while [ ! -s \"{leader}\" ] || [ ! -s \"{orphan}\" ]; do sleep 0.05; done; while :; do sleep 1; done",
         leader = backend_group_pid_path.display(),
         orphan = backend_orphan_pid_path.display(),
+        release = leader_release_path.display(),
     );
     let mut orchestrator = Command::new("bash")
         .args(["-lc", &orchestrator_script])
@@ -10258,6 +10293,7 @@ fn run_stop_sigkill_terminates_orphaned_backend_process_group_after_leader_exit(
     )
     .expect("write backend process record");
 
+    fs::write(&leader_release_path, b"").expect("write backend group leader release file");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     while pid_is_alive(backend_group_pid) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(25));
@@ -10516,7 +10552,6 @@ fn run_stop_recovers_stale_running_with_dead_legacy_backend_record() {
 }
 
 #[test]
-#[ignore = "flaky in CI: signal timing race; tracked as rlm.4 follow-up"]
 fn run_stop_sigkill_finalizes_snapshot_even_when_backend_cleanup_fails() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -10540,13 +10575,22 @@ fn run_stop_sigkill_finalizes_snapshot_even_when_backend_cleanup_fails() {
     )
     .expect("write running snapshot");
 
+    let orchestrator_ready_path = temp_dir.path().join("sigkill-orchestrator-ready");
+    let orchestrator_script = format!(
+        "trap '' TERM; : > \"{}\"; while :; do sleep 1; done",
+        orchestrator_ready_path.display()
+    );
     let mut orchestrator = Command::new("bash")
-        .args(["-lc", "trap '' TERM; while :; do sleep 1; done"])
+        .args(["-lc", &orchestrator_script])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn orchestrator");
     let orchestrator_pid = orchestrator.id();
+    wait_for_file(
+        &orchestrator_ready_path,
+        "SIGKILL cleanup orchestrator ready",
+    );
 
     fs::write(
         backend_processes_path(temp_dir.path(), "alpha"),
@@ -10584,7 +10628,8 @@ fn run_stop_sigkill_finalizes_snapshot_even_when_backend_cleanup_fails() {
         "stop failure should surface the backend cleanup error after killing the orchestrator: {stderr}"
     );
 
-    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
+    let orchestrator_status =
+        wait_for_child_exit(&mut orchestrator, "SIGKILL cleanup orchestrator");
     assert!(
         !orchestrator_status.success(),
         "orchestrator should not exit successfully after forced stop: {orchestrator_status:?}"
@@ -10835,7 +10880,6 @@ fn run_stop_recovers_stale_running_when_persisted_backend_leader_already_exited(
 }
 
 #[test]
-#[ignore = "flaky in CI: signal timing race; tracked as rlm.4 follow-up"]
 fn run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -10860,16 +10904,22 @@ fn run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid() {
     .expect("write running snapshot");
 
     let pid_path = project_root(temp_dir.path(), "alpha").join("run.pid");
+    let orchestrator_ready_path = temp_dir.path().join("sigterm-handoff-orchestrator-ready");
     let mut orchestrator = Command::new("bash")
         .args([
             "-lc",
-            "trap 'rm -f \"$RALPH_PID_FILE\"; exit 0' TERM; while :; do sleep 1; done",
+            "trap 'rm -f \"$RALPH_PID_FILE\"; exit 0' TERM; : > \"$RALPH_READY_FILE\"; while :; do sleep 1; done",
         ])
         .env("RALPH_PID_FILE", &pid_path)
+        .env("RALPH_READY_FILE", &orchestrator_ready_path)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn orchestrator");
+    wait_for_file(
+        &orchestrator_ready_path,
+        "SIGTERM handoff orchestrator ready",
+    );
 
     fs::write(
         &pid_path,
@@ -10909,6 +10959,8 @@ fn run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid() {
         .current_dir(temp_dir.path())
         .output()
         .expect("run stop");
+    let orchestrator_status =
+        wait_for_child_exit(&mut orchestrator, "SIGTERM handoff orchestrator");
 
     assert!(output.status.success(), "{output:?}");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -10937,7 +10989,6 @@ fn run_stop_reconciles_running_snapshot_after_sigterm_handoff_removes_pid() {
         "recovery lease cleanup should release the writer lock after stop"
     );
 
-    let orchestrator_status = orchestrator.wait().expect("wait for orchestrator");
     assert!(
         orchestrator_status.success(),
         "SIGTERM handoff orchestrator should exit cleanly after removing run.pid: {orchestrator_status:?}"

@@ -4673,6 +4673,13 @@ where
                     Some(lease_id.as_str()),
                     &task.task_id,
                 )?;
+                match self.store.read_lease(base_dir, lease_id) {
+                    Ok(_) => {}
+                    Err(error) if worktree_lease_record_is_missing(&error) => {
+                        return self.clear_orphaned_task_lease_reference(base_dir, repo_root, task);
+                    }
+                    Err(error) => return Err(error),
+                }
                 if cleanup_detached_project_writer_owner(
                     self.store,
                     self.worktree,
@@ -6642,6 +6649,8 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread", start_paused = true)]
+    // Ignored until the helper owns an explicit startup handshake for the
+    // tracked backend pid file under paused Tokio time.
     #[ignore = "flaky in CI: backend pid file race; tracked as ftx"]
     async fn finish_cancelled_dispatch_cleans_tracked_backend_processes_before_returning() {
         let temp = tempdir().expect("tempdir");
@@ -6829,6 +6838,8 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread", start_paused = true)]
+    // Ignored until the helper owns an explicit startup handshake for the
+    // tracked backend pid file under paused Tokio time.
     #[ignore = "flaky in CI: backend pid file race; tracked as ftx"]
     async fn finish_cancelled_dispatch_recovers_by_attempt_without_run_pid_and_cleans_backends() {
         let temp = tempdir().expect("tempdir");
@@ -7887,7 +7898,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "requires real worktree for lease cleanup; partial cleanup path needs test fixture update"]
     async fn process_cycle_multi_repo_repairs_orphaned_lease_reference_after_metadata_failure() {
         let temp = tempdir().expect("tempdir");
         let data_dir = temp.path().join("data");
@@ -8027,7 +8037,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "requires real worktree for lease cleanup; partial cleanup path needs test fixture update"]
     async fn process_cycle_multi_repo_reclaims_dead_daemon_pid_record_during_orphaned_repair() {
         let temp = tempdir().expect("tempdir");
         let data_dir = temp.path().join("data");
@@ -8310,7 +8319,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "requires real worktree for lease cleanup; partial cleanup path needs test fixture update"]
     async fn process_cycle_multi_repo_quarantines_corrupt_terminal_lease_records() {
         let temp = tempdir().expect("tempdir");
         let data_dir = temp.path().join("data");

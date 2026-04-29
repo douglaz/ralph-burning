@@ -11395,14 +11395,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    #[ignore = "flaky in CI: process spawn race condition"]
     fn kill_tracked_descendant_processes_survives_parent_exit() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let child_pid_path = temp_dir.path().join("descendant.pid");
+        let release_parent_path = temp_dir.path().join("release-parent");
         let script = format!(
-            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done",
+            "setsid sh -c 'echo $$ > \"{}\"; exec sleep 60' & while [ ! -s \"{}\" ]; do sleep 0.05; done; while [ ! -e \"{}\" ]; do sleep 0.05; done",
             child_pid_path.display(),
             child_pid_path.display(),
+            release_parent_path.display(),
         );
         let mut parent = std::process::Command::new("bash")
             .args(["-lc", &script])
@@ -11413,25 +11414,37 @@ mod tests {
         let parent_pid = parent.id();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !child_pid_path.exists() || std::fs::read_to_string(&child_pid_path).is_err() {
+        let child_pid = loop {
+            if let Ok(contents) = std::fs::read_to_string(&child_pid_path) {
+                if let Ok(pid) = contents.trim().parse::<u32>() {
+                    break pid;
+                }
+            }
             assert!(
                 std::time::Instant::now() < deadline,
-                "descendant pid file was never written"
+                "descendant pid file was never written with a valid pid"
             );
             std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        let child_pid = std::fs::read_to_string(&child_pid_path)
-            .expect("read child pid")
-            .trim()
-            .parse::<u32>()
-            .expect("parse child pid");
+        };
         assert!(
             FileSystem::is_pid_running_unchecked(child_pid),
             "descendant should be alive before cleanup"
         );
 
-        let tracked = super::snapshot_descendant_processes(parent_pid)
-            .expect("capture descendant processes before parent exit");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let tracked = loop {
+            let tracked = super::snapshot_descendant_processes(parent_pid)
+                .expect("capture descendant processes before parent exit");
+            if tracked.iter().any(|process| process.pid == child_pid) {
+                break tracked;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "descendant process never appeared under the parent before release"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        };
+        std::fs::write(&release_parent_path, b"release").expect("release parent helper");
         let status = parent.wait().expect("wait for parent");
         assert!(
             status.success(),

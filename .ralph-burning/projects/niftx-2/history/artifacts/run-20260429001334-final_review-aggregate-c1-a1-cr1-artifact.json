@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260429001334-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429001334-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T02:26:45.821380215Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-79423275`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-79423275`\n\n**Classification:** fix_current_bead\n\nsrc/cli/run.rs:11416 and src/cli/run.rs:11424 still leave `kill_tracked_descendant_processes_survives_parent_exit` racing the pid-file writer. The loop exits as soon as the file exists/readable, then parses once; shell redirection can briefly create an empty file before `echo $$` writes the PID, so the unignored test can still panic before writing `release-parent` and leave helper processes behind. Keep polling until the file contents parse as a valid PID before continuing.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

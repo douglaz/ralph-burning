@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429001334-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260429001334-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T03:29:55.169037381Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against e622cfc72021b00f85d302f25318d0b1faf7dcd4, excluding `.ralph-burning/`. Targeted single runs of the seven unignored tests passed, but I found one remaining deterministic startup race in the signal-test fixtures.\n\n## Amendments\n\n1. The two newly unignored `run stop` signal tests still have a startup race. In `tests/cli.rs:10558` and `tests/cli.rs:10878`, the bash helper is considered ready immediately after `spawn()`, but `run stop` can send SIGTERM before the shell has executed `trap '' TERM` or `trap 'rm -f \"$RALPH_PID_FILE\"; exit 0' TERM`. If that happens, the SIGKILL test may exit on SIGTERM instead of requiring SIGKILL, and the handoff test may not remove `run.pid`, reintroducing the exact CI flake this bead is meant to eliminate. Add an explicit ready-file handshake after installing each trap and wait for that file before invoking `run stop`.\n   Classification: fix_current_bead\n   Rationale: The acceptance criteria require the unignored signal tests to be reliable; waiting for child exit after `run stop` does not prove the signal handler was installed before the signal was sent.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

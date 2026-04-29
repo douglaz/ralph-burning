@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429001334-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429001334-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T04:44:58.634547273Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against e622cfc72021b00f85d302f25318d0b1faf7dcd4, excluding .ralph-burning runtime state. `nix develop -c cargo test --features test-stub --locked`, `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --locked -- -D warnings`, and `nix build` passed. Found one low-severity test robustness issue.\n\n## Amendments\n\n1. tests/cli.rs:333-344: `wait_for_child_exit` times out by panicking while leaving the spawned child running. The newly unignored signal tests spawn long-lived shell loops, so a regression where `run stop` fails to terminate the orchestrator can leak that process into the rest of the CI job. Kill and reap the child before asserting on the timeout path, or use a guard that always terminates the helper process on failure.\n   Classification: fix_current_bead\n   Rationale: This is in scope for stabilizing the signal/process tests and prevents failed assertions from contaminating later tests with orphaned processes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}
