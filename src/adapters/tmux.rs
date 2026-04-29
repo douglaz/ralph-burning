@@ -967,10 +967,15 @@ fn build_wrapper_script(
     // while keeping the streams visible to anyone attaching to the tmux
     // session. That pattern relies on `tee` looping until EOF on the
     // FIFO. uutils-coreutils tee 0.8.0 (the default tee on NixOS and
-    // some other distros that ship uutils) reads the FIFO once and
-    // exits, closing its read end. The child's next write to the FIFO
-    // then gets SIGPIPE and the child exits 141 — which surfaced as the
-    // "codex exited with code 101" loop reported in issue #188.
+    // some other distros that ship uutils) closes its FIFO reader
+    // before the producer is finished — observed in practice as the
+    // FIFO returning EOF after a single read on the reporter's
+    // workspace; the public uutils tracker also has buffering-related
+    // deviations from GNU tee in the same release line. Either way,
+    // the producer's next write to the FIFO gets SIGPIPE and the child
+    // exits 141 — which surfaced as the "codex exited with code 101"
+    // loop reported in issue #188. See the PR body for the shell-only
+    // repro that does not involve ralph or codex.
     //
     // The fix is to drop the FIFO+tee dance entirely. We redirect the
     // child's stdout/stderr directly to files (load-bearing — ralph's
@@ -979,8 +984,20 @@ fn build_wrapper_script(
     // output to the tmux pty for `run attach` users. `tail -f` on a
     // regular growing file works correctly under both GNU and uutils
     // coreutils, so no FIFO is involved in the streaming path.
+    //
+    // On the cleanup path: after the child exits we sleep briefly so
+    // the inotify-backed tail can flush its final read before the
+    // post-wait `kill`. We deliberately do NOT pass `--pid="$child_pid"`
+    // because that flag is GNU-only — BSD tail (macOS, NetBSD) does
+    // not support it and would error out, leaving tmux-attach users
+    // with no streaming at all on those platforms. With inotify the
+    // grace is mostly idle (events fire on each child write); on
+    // polling-mode tails the grace may not cover a full polling
+    // cycle (~1s by default), so the final lines may be lost from
+    // the tmux pane. The captured stdout/stderr files are unaffected
+    // because the child writes them directly via shell redirection.
     Ok(format!(
-        "#!/usr/bin/env bash\nset +e\nset -m\ncd {cwd}\nrm -f {exit_status} {signal_pid}\ntrap 'rm -f {signal_pid}' EXIT\n: > {stdout}\n: > {stderr}\n(\n  printf '%s' \"$BASHPID\" > {signal_pid}\n  exec {command} < {stdin} > {stdout} 2> {stderr}\n) &\nchild_pid=$!\ntail -n +1 -f {stdout} 2>/dev/null &\ntail_stdout_pid=$!\ntail -n +1 -f {stderr} >&2 2>/dev/null &\ntail_stderr_pid=$!\nwait \"$child_pid\"\nstatus=$?\nkill \"$tail_stdout_pid\" \"$tail_stderr_pid\" 2>/dev/null\nwait \"$tail_stdout_pid\" 2>/dev/null\nwait \"$tail_stderr_pid\" 2>/dev/null\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
+        "#!/usr/bin/env bash\nset +e\nset -m\ncd {cwd}\nrm -f {exit_status} {signal_pid}\ntrap 'rm -f {signal_pid}' EXIT\n: > {stdout}\n: > {stderr}\n(\n  printf '%s' \"$BASHPID\" > {signal_pid}\n  exec {command} < {stdin} > {stdout} 2> {stderr}\n) &\nchild_pid=$!\ntail -n +1 -f {stdout} 2>/dev/null &\ntail_stdout_pid=$!\ntail -n +1 -f {stderr} >&2 2>/dev/null &\ntail_stderr_pid=$!\nwait \"$child_pid\"\nstatus=$?\nsleep 0.5\nkill \"$tail_stdout_pid\" \"$tail_stderr_pid\" 2>/dev/null\nwait \"$tail_stdout_pid\" 2>/dev/null\nwait \"$tail_stderr_pid\" 2>/dev/null\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
         cwd = shell_escape(&working_dir.to_string_lossy()),
         stdin = shell_escape(&stdin_path.to_string_lossy()),
         stdout = shell_escape(&stdout_path.to_string_lossy()),
@@ -1283,34 +1300,72 @@ exit 7
     }
 
     #[test]
-    fn wrapper_records_signal_pid_for_external_cancellation() {
+    fn wrapper_records_signal_pid_and_honors_external_termination() {
         // The signal_pid file is the load-bearing handle ralph uses to
         // SIGTERM/SIGKILL the child via `cancel()`. The fix must not
-        // regress that contract.
+        // regress that contract. We spawn a long-lived child, wait until
+        // signal_pid is written, signal that pid, and assert the wrapper
+        // exits with the SIGTERM-derived status.
+        use std::thread;
+        use std::time::{Duration, Instant};
+
         let dir = tempdir().expect("create temp dir");
-        let bin = dir.path().join("quick-fake");
+        let bin = dir.path().join("long-fake");
         write_executable(
             &bin,
             r#"#!/bin/sh
-echo "ok"
-exit 0
+echo "alive"
+# Sleep long enough that the test can read signal_pid and signal us.
+sleep 30
 "#,
         );
         let paths = WrapperPaths::new(dir.path());
         let wrapper = make_wrapper(dir.path(), &bin, &paths);
 
-        let output = Command::new("bash")
+        let mut child = Command::new("bash")
             .arg(&wrapper)
-            .output()
-            .expect("run wrapper");
-        assert_eq!(output.status.code(), Some(0));
+            .spawn()
+            .expect("spawn wrapper");
 
-        // signal_pid is removed by the wrapper's EXIT trap on a clean
-        // exit; what we can assert is that the child was actually
-        // recorded with a real pid via the exit_status path.
+        // Poll for signal_pid to appear and contain a positive PID. The
+        // wrapper writes it inside the child subshell after fork, so it
+        // takes a few ms after spawn.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let signal_pid: u32 = loop {
+            if let Ok(raw) = fs::read_to_string(&paths.signal_pid) {
+                if let Ok(pid) = raw.trim().parse::<u32>() {
+                    if pid > 0 {
+                        break pid;
+                    }
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "signal_pid file was never populated with a positive PID"
+            );
+            thread::sleep(Duration::from_millis(25));
+        };
+
+        // SIGTERM the recorded pid, then wait for the wrapper to exit.
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(signal_pid as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .expect("kill(SIGTERM) on signal_pid");
+
+        let status = child.wait().expect("wait for wrapper");
+        assert!(
+            !status.success(),
+            "wrapper must surface non-zero exit after the child is SIGTERM'd: {status:?}"
+        );
+
+        // The wrapper writes the child's exit status to exit_status. A
+        // SIGTERM'd child exits with status 128 + SIGTERM (15) = 143.
+        let recorded = fs::read_to_string(&paths.exit_status).expect("read exit-status");
         assert_eq!(
-            fs::read_to_string(&paths.exit_status).expect("read exit-status"),
-            "0"
+            recorded.trim(),
+            "143",
+            "exit_status must record 128+SIGTERM for SIGTERM'd child"
         );
     }
 }
