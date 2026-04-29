@@ -276,6 +276,62 @@ printf '%s\n' '{stdout_text}'
     );
 }
 
+/// Write a fake codex script that simulates real codex timing: sleep
+/// for `sleep_secs` (the wall-clock window where `gpt-5.5-high`
+/// reasoning happens between prompt-arrival and first tool call), then
+/// emit a chunk to stdout, sleep again, then write the last-message
+/// file and exit cleanly. This is the timing shape that issue #188's
+/// later regressions exercised — premature SIGTERM hits were observed
+/// at 12-17s into the wall clock, well before our short-script fakes
+/// would expose the race.
+///
+/// Tests using this helper should keep `sleep_secs` small (1-3) so
+/// CI doesn't get sluggish, while still exceeding the millisecond
+/// scale of every other fake.
+fn write_fake_codex_with_sleep(
+    bin_dir: &std::path::Path,
+    payload_file: &std::path::Path,
+    sleep_secs: u64,
+) {
+    let payload_path = payload_file.to_string_lossy();
+    write_executable(
+        &bin_dir.join("codex"),
+        &format!(
+            r#"#!/bin/sh
+echo "$@" > "$PWD/codex-args.txt"
+cat > "$PWD/codex-stdin.txt"
+msg_path=""
+next_is_msg=0
+for arg in "$@"; do
+    if [ "$next_is_msg" = "1" ]; then
+        msg_path="$arg"
+        next_is_msg=0
+    fi
+    if [ "$arg" = "--output-last-message" ]; then
+        next_is_msg=1
+    fi
+done
+# Phase 1: simulate model reasoning before any output.
+sleep {sleep_secs}
+# Phase 2: emit a partial stdout chunk (the kind of "first model
+# message" that triggered the issue #188 regressions). If ralph is
+# going to abort us mid-turn, this is when it would happen.
+printf 'codex\nthinking about the task...\n'
+# Phase 3: simulate post-message work — tool dispatch + waiting
+# for the tool output. Real codex blocks here for several seconds
+# while exec_command runs, before emitting more stdout.
+sleep {sleep_secs}
+# Phase 4: emit the final summary and write last-message file,
+# matching how real codex closes a turn.
+printf 'codex\nfinished editing src/foo.rs and ran cargo test.\n'
+if [ -n "$msg_path" ]; then
+    cp "{payload_path}" "$msg_path"
+fi
+"#
+        ),
+    );
+}
+
 /// Write a fake codex script that exits successfully without producing
 /// --output-last-message so the adapter exercises file-read error handling.
 fn write_fake_codex_without_last_message(bin_dir: &std::path::Path) {
@@ -3036,6 +3092,79 @@ async fn codex_planning_stage_does_not_pass_json_flag() {
     assert!(
         !args.iter().any(|a| a == "--json"),
         "Planning-family codex invocations must NOT pass --json; got: {args:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_execution_stage_does_not_sigterm_during_long_running_codex_turn() {
+    // Issue #188 follow-up regression check: after PRs #189/#193/#194/#195
+    // /#196/#197 each fixed a different mechanism, the reporter still hit
+    // codex being SIGTERM'd at 12-17s — exactly when codex first emits a
+    // model message and dispatches tool calls. The pattern: ralph treats
+    // some early observable codex output as "stage done" and tears codex
+    // down before the turn completes.
+    //
+    // Every prior fake-codex helper exits in milliseconds, so the race
+    // window never opened in tests. This regression test uses a fake
+    // codex that:
+    //   - sleeps for `sleep_secs` (model reasoning before any output)
+    //   - emits a partial stdout chunk (the kind of "first model message"
+    //     that would trigger a misfire)
+    //   - sleeps again (tool call in flight)
+    //   - emits the final summary and writes --output-last-message
+    //   - exits 0
+    //
+    // The assertion is: ralph waits for the fake's natural exit and
+    // returns a successful envelope. If something in ralph SIGTERMs the
+    // fake during either sleep, the fake's last-message file won't be
+    // written and ralph will fail with a transport error instead.
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = execution_stage_request_fixture(BackendFamily::Codex);
+
+    let last_message = "Edited src/foo.rs and ran cargo test; all green.";
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(&payload_file, last_message).expect("write last-message text");
+
+    // 2 seconds per phase = 4 seconds total. Tight enough for CI, long
+    // enough to expose any premature-cancellation race that would fire
+    // on the millisecond scale of the other fakes.
+    //
+    // The reporter saw aborts at 12-17s; if a future regression fires
+    // only past some longer threshold (e.g. async-runtime task expiry
+    // at 10s), this test won't catch it. Bump sleep_secs and the
+    // assertion threshold together if you suspect a longer-window bug.
+    write_fake_codex_with_sleep(bin_dir.path(), &payload_file, 2);
+
+    let adapter = ProcessBackendAdapter::new();
+    let started = std::time::Instant::now();
+    let envelope = adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke must succeed when codex runs to natural completion");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= std::time::Duration::from_secs(4),
+        "ralph must wait for codex's full turn (≥4s for a 2s+2s fake); \
+         elapsed only {}ms — something is terminating codex prematurely",
+        elapsed.as_millis()
+    );
+
+    assert_eq!(
+        envelope.parsed_payload["steps"][0]["status"], "completed",
+        "synthesized payload must report a completed step; got: {}",
+        envelope.parsed_payload
+    );
+    let change_summary = envelope.parsed_payload["change_summary"]
+        .as_str()
+        .expect("change_summary should be a string");
+    assert!(
+        change_summary.contains("cargo test"),
+        "change_summary should reflect codex's last-message text; got: \
+         {change_summary:?}"
     );
 }
 
