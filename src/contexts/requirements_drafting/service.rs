@@ -12,7 +12,10 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-use crate::adapters::fs::FileSystem;
+use crate::adapters::fs::{
+    FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
+    FsMilestoneStore,
+};
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -22,7 +25,11 @@ use crate::contexts::agent_execution::service::{
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::RawOutputPort;
 use crate::contexts::milestone_record::bundle::MilestoneBundle;
-use crate::contexts::workspace_governance::template_catalog;
+use crate::contexts::milestone_record::model::MilestoneId;
+use crate::contexts::milestone_record::service::{
+    self as milestone_service, MilestoneSnapshotPort, MilestoneStorePort,
+};
+use crate::contexts::workspace_governance::{self, template_catalog};
 use crate::shared::domain::{BackendPolicyRole, BackendRole, FlowPreset, ProjectId, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
@@ -1926,6 +1933,15 @@ where
             run,
         );
         let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+        seq += 1;
+
+        self.auto_materialize_completed_milestone_bundle(
+            base_dir,
+            run,
+            &milestone_bundle,
+            &payload_id,
+            seq,
+        );
 
         println!(
             "Requirements completed. Milestone bundle ready: {}",
@@ -1933,6 +1949,110 @@ where
         );
 
         Ok(())
+    }
+
+    fn auto_materialize_completed_milestone_bundle(
+        &self,
+        base_dir: &Path,
+        run: &RequirementsRun,
+        milestone_bundle: &MilestoneBundle,
+        milestone_bundle_id: &str,
+        seq: u64,
+    ) {
+        let materialize_result = (|| -> AppResult<_> {
+            let milestone_store = FsMilestoneStore;
+            let snapshot_store = FsMilestoneSnapshotStore;
+            let mut bundle = milestone_bundle.clone();
+            let pending_milestone_id = if let Some(record) = find_pending_requirements_milestone(
+                &milestone_store,
+                &snapshot_store,
+                base_dir,
+                &run.run_id,
+            )? {
+                milestone_service::retarget_bundle_for_milestone(
+                    &mut bundle,
+                    &record.id,
+                    &record.name,
+                );
+                Some(record.id)
+            } else {
+                None
+            };
+            let source = milestone_service::MaterializeBundleSource::from_bundle(
+                run.run_id.clone(),
+                milestone_bundle_id.to_owned(),
+                milestone_bundle,
+            )?;
+            let record = milestone_service::materialize_bundle_with_source(
+                &milestone_store,
+                &snapshot_store,
+                &FsMilestoneJournalStore,
+                &FsMilestonePlanStore,
+                base_dir,
+                &bundle,
+                Some(source),
+                Utc::now(),
+            )?;
+            if let Some(pending_milestone_id) = pending_milestone_id.as_ref() {
+                clear_pending_requirements_milestone(
+                    &snapshot_store,
+                    base_dir,
+                    pending_milestone_id,
+                    &run.run_id,
+                )?;
+            }
+            workspace_governance::set_active_milestone(base_dir, &record.id)?;
+            Ok(record)
+        })();
+
+        match materialize_result {
+            Ok(record) => {
+                tracing::info!(
+                    requirements_run_id = %run.run_id,
+                    milestone_bundle_id,
+                    milestone_id = %record.id,
+                    "auto-materialized milestone from completed requirements run"
+                );
+            }
+            Err(error) => {
+                let event = RequirementsJournalEvent {
+                    sequence: seq,
+                    timestamp: Utc::now(),
+                    event_type: RequirementsJournalEventType::AutoMilestoneMaterializationFailed,
+                    details: serde_json::json!({
+                        "run_id": run.run_id,
+                        "status": run.status,
+                        "status_summary": run.status_summary,
+                        "milestone_bundle_id": milestone_bundle_id,
+                        "bundle_identity_id": milestone_bundle.identity.id,
+                        "error": error.to_string(),
+                        "recovery_command": format!(
+                            "ralph-burning project create --from-requirements {}",
+                            run.run_id
+                        ),
+                    }),
+                };
+                if let Err(journal_error) =
+                    self.store
+                        .append_journal_event(base_dir, &run.run_id, &event)
+                {
+                    tracing::error!(
+                        requirements_run_id = %run.run_id,
+                        milestone_bundle_id,
+                        error = %error,
+                        journal_error = %journal_error,
+                        "failed to record auto-materialization failure in requirements journal"
+                    );
+                } else {
+                    tracing::error!(
+                        requirements_run_id = %run.run_id,
+                        milestone_bundle_id,
+                        error = %error,
+                        "auto-materialization failed after requirements completion"
+                    );
+                }
+            }
+        }
     }
 
     async fn generate_and_commit_seed(
@@ -2477,6 +2597,40 @@ fn requirements_run_root(base_dir: &Path, run_id: &str) -> std::path::PathBuf {
         .join(".ralph-burning")
         .join("requirements")
         .join(run_id)
+}
+
+fn find_pending_requirements_milestone(
+    store: &impl MilestoneStorePort,
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &Path,
+    run_id: &str,
+) -> AppResult<Option<crate::contexts::milestone_record::model::MilestoneRecord>> {
+    for milestone_id in store.list_milestone_ids(base_dir)? {
+        let snapshot = snapshot_store.read_snapshot(base_dir, &milestone_id)?;
+        if snapshot.pending_requirements_run_id.as_deref() == Some(run_id) {
+            return store
+                .read_milestone_record(base_dir, &milestone_id)
+                .map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn clear_pending_requirements_milestone(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    run_id: &str,
+) -> AppResult<()> {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        if snapshot.pending_requirements_run_id.as_deref() == Some(run_id) {
+            snapshot.pending_requirements_run_id = None;
+            snapshot.updated_at = Utc::now();
+            snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
+        }
+        Ok(())
+    })
 }
 
 fn journal_event(

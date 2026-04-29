@@ -432,6 +432,7 @@ pub enum RequirementsJournalEventType {
     DraftGenerated,
     ReviewCompleted,
     SeedGenerated,
+    AutoMilestoneMaterializationFailed,
     RunCompleted,
     RunFailed,
     // Slice 1: full-mode stage events

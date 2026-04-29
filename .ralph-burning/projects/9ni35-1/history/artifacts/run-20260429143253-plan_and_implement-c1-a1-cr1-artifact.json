@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429143253-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429143253-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T15:57:05.452542493Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented automatic milestone materialization when a milestone-mode requirements run completes its MilestoneBundle stage. The completion path now calls materialize_bundle_with_source(), sets the auto-created or updated milestone active, records structured AutoMilestoneMaterializationFailed journal events without rolling back completed requirements state, and leaves project-seed completion unchanged. Materialization is now source-idempotent by looking up existing milestones with the same requirements_run_id and milestone_bundle_id backlink and retargeting regenerated bundle content into the existing milestone rather than creating duplicates.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Inspected the requirements completion path, manual project create --from-requirements bridge, milestone materialization service, active milestone selection, and existing daemon/test behavior.\",\"order\":0,\"status\":\"completed\"},{\"description\":\"Added a requirements journal event type \n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}
