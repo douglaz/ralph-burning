@@ -422,12 +422,14 @@ impl PreparedCommand {
                             ));
                         }
                     };
-                    copy_codex_transcript_into_history(
-                        &request.project_root,
-                        &request.invocation_id,
-                        &output.stdout,
-                    )
-                    .await;
+                    // Transcript copying via `--json` was reverted to fix
+                    // codex's broken-pipe panic regression (see
+                    // `codex_new_session_args`). The forensic transcript
+                    // can be reintroduced by reading codex's own session
+                    // JSONL at `~/.codex/sessions/.../rollout-*.jsonl`,
+                    // which is independent of stdout streaming. Stdout
+                    // here is now a short human-readable summary, which
+                    // we don't need to copy as a transcript.
                     let payload = synthesize_codex_execution_payload(last_message_text.as_deref());
                     (payload, last_message_text)
                 } else {
@@ -1534,17 +1536,24 @@ impl ProcessBackendAdapter {
         if let Some(schema_path) = schema_path {
             args.push("--output-schema".to_owned());
             args.push(schema_path.to_string_lossy().into_owned());
-        } else {
-            // Issue #188 codex execution path: `--output-schema` is dropped
-            // so the schema-driven early-termination cannot trigger. Pair
-            // this with `--json` so stdout becomes a complete NDJSON event
-            // transcript (model messages, tool calls, tool results) — that
-            // stream is what we copy verbatim into history/transcripts as
-            // the forensic record. Without `--json`, codex emits a
-            // human-readable summary on stdout instead, which is not
-            // adequate as an event log.
-            args.push("--json".to_owned());
         }
+        // Note: PR #196 originally paired the schema-less Execution path
+        // with `--json` so stdout would be a complete NDJSON event
+        // transcript. That triggered a regression in codex 0.125.0:
+        // codex's `--json` mode panics on broken-pipe writes to stdout
+        // (`failed printing to stdout: Broken pipe (os error 32)`),
+        // reproducible without ralph by piping through `head -n 1`.
+        // The panic is in codex's stdio handler, not in ralph; codex
+        // CLI 0.125.0 doesn't install a SIGPIPE handler the way
+        // well-behaved tools do.
+        //
+        // We can't fix codex from here, so we just don't use `--json`.
+        // Codex still emits a human-readable summary on stdout and
+        // populates `--output-last-message`; the synthesizer (PR #196)
+        // works with either. The forensic transcript can be reintroduced
+        // later by reading codex's session JSONL file from
+        // `~/.codex/sessions/.../rollout-*.jsonl` post-exit, which is
+        // independent of stdout streaming.
         args.extend([
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
@@ -1581,10 +1590,9 @@ impl ProcessBackendAdapter {
         if let Some(schema_path) = schema_path {
             args.push("--output-schema".to_owned());
             args.push(schema_path.to_string_lossy().into_owned());
-        } else {
-            // See `codex_new_session_args` for the `--json` rationale.
-            args.push("--json".to_owned());
         }
+        // See `codex_new_session_args` for why `--json` is intentionally
+        // omitted on the schema-less execution path.
         args.extend([
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
@@ -2101,43 +2109,6 @@ fn synthesize_codex_execution_payload(last_message_text: Option<&str>) -> Value 
         "validation_evidence": [],
         "outstanding_risks": [],
     })
-}
-
-/// Copy the codex stdout NDJSON event transcript verbatim into
-/// `<project_root>/history/transcripts/codex-<invocation_id>.jsonl` so the
-/// run history is self-contained for forensics.
-///
-/// This is invoked only on the codex Execution synth path, which passes
-/// `--json` to codex (see `codex_new_session_args`). With `--json`, codex
-/// emits one JSON event per stdout line covering model messages, tool
-/// calls, and tool results — the same forensic content as the codex
-/// session rollout file at `~/.codex/sessions/...rollout-*.jsonl`, but
-/// captured directly from the child process so we don't have to discover
-/// the rollout path. Best-effort: failures are logged but do not fail the
-/// invocation.
-async fn copy_codex_transcript_into_history(
-    project_root: &Path,
-    invocation_id: &str,
-    stdout: &[u8],
-) {
-    let dir = project_root.join("history/transcripts");
-    if let Err(error) = tokio::fs::create_dir_all(&dir).await {
-        tracing::warn!(
-            invocation_id,
-            error = %error,
-            "failed to create history/transcripts directory; skipping codex transcript copy"
-        );
-        return;
-    }
-    let path = dir.join(format!("codex-{invocation_id}.jsonl"));
-    if let Err(error) = tokio::fs::write(&path, stdout).await {
-        tracing::warn!(
-            invocation_id,
-            path = %path.display(),
-            error = %error,
-            "failed to write codex transcript into history"
-        );
-    }
 }
 
 fn codex_raw_transcript(stdout: &str, last_message: Option<&str>) -> String {

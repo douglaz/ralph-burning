@@ -2975,13 +2975,17 @@ async fn codex_execution_stage_args_do_not_include_output_schema() {
         "codex Execution-family invocations should still pass \
          --output-last-message; got: {args:?}"
     );
-    // With --output-schema dropped, codex must be invoked with --json so
-    // stdout becomes a complete NDJSON event transcript that we can
-    // preserve verbatim into history/transcripts (issue #188 amendment).
+    // PR #196 originally added --json to capture an NDJSON event
+    // transcript from stdout, but codex 0.125.0 panics on broken-pipe
+    // writes in --json mode (`failed printing to stdout: Broken pipe`),
+    // reproducible with `head -n 1`. We can't fix codex from here, so
+    // we don't pass --json. Forensic transcripts can be reintroduced via
+    // codex's own session JSONL at `~/.codex/sessions/.../rollout-*.jsonl`,
+    // which is independent of stdout streaming.
     assert!(
-        args.iter().any(|a| a == "--json"),
-        "codex Execution-family invocations must pass --json so stdout is a \
-         complete event transcript; got: {args:?}"
+        !args.iter().any(|a| a == "--json"),
+        "codex Execution-family invocations must NOT pass --json (avoids \
+         the codex 0.125.0 broken-pipe panic regression); got: {args:?}"
     );
 
     // The schema temp file should never have been written for the
@@ -2999,10 +3003,10 @@ async fn codex_execution_stage_args_do_not_include_output_schema() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn codex_planning_stage_does_not_pass_json_flag() {
-    // The --json flag is reserved for the codex Execution synth path
-    // (which has no --output-schema). Planning/Validation stages still
-    // use --output-schema and must NOT receive --json — adding it would
-    // break the existing single-value stdout fallback path.
+    // No codex invocation passes --json after the broken-pipe regression
+    // fix; Planning still passes --output-schema (matches its structured-
+    // output expectation). Asserting --json is absent on Planning is a
+    // sanity check that the schema-bearing path is unaffected.
     let bin_dir = tempdir().expect("create bin dir");
     let _env_lock = lock_path_mutex();
     let _path_guard = PathGuard::prepend(bin_dir.path());
@@ -3031,13 +3035,18 @@ async fn codex_planning_stage_does_not_pass_json_flag() {
     );
     assert!(
         !args.iter().any(|a| a == "--json"),
-        "Planning-family codex invocations must NOT pass --json (only the \
-         issue #188 Execution synth path uses --json); got: {args:?}"
+        "Planning-family codex invocations must NOT pass --json; got: {args:?}"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn codex_execution_stage_synthesizes_payload_and_copies_transcript() {
+async fn codex_execution_stage_synthesizes_payload() {
+    // Verifies the issue #188 synth path: ralph constructs an
+    // ExecutionPayload from codex's last-message text rather than asking
+    // codex for structured output. The transcript-copying assertion was
+    // removed when we dropped --json (codex 0.125.0 panics on broken
+    // pipe in --json mode); transcript capture via codex's session JSONL
+    // file is tracked as a follow-up.
     let bin_dir = tempdir().expect("create bin dir");
     let _env_lock = lock_path_mutex();
     let _path_guard = PathGuard::prepend(bin_dir.path());
@@ -3047,9 +3056,7 @@ async fn codex_execution_stage_synthesizes_payload_and_copies_transcript() {
     let last_message = "Edited src/foo.rs and added tests; cargo test passed.";
     let payload_file = request.working_dir.join("codex-payload.json");
     fs::write(&payload_file, last_message).expect("write last-message text");
-    let stdout_text = "{\"type\":\"event\",\"name\":\"exec_command\",\"exit_code\":0}\n\
-{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":42}}";
-    write_fake_codex_with_stdout(bin_dir.path(), &payload_file, stdout_text);
+    write_fake_codex(bin_dir.path(), &payload_file);
 
     let adapter = ProcessBackendAdapter::new();
     let envelope = adapter
@@ -3081,40 +3088,6 @@ async fn codex_execution_stage_synthesizes_payload_and_copies_transcript() {
         0,
         "synthesized payload validation_evidence should be empty (the \
          git diff is the load-bearing record)"
-    );
-
-    // Transcript copied verbatim to history/transcripts. With --json,
-    // stdout is a complete NDJSON event transcript: each non-blank line
-    // must parse as a JSON object so the file is genuinely usable as a
-    // forensic event log (rather than being a human-readable summary
-    // dump that happens to contain a JSON line or two).
-    let transcript_path = request
-        .project_root
-        .join("history/transcripts")
-        .join(format!("codex-{}.jsonl", request.invocation_id));
-    let transcript_contents =
-        fs::read_to_string(&transcript_path).expect("transcript file should exist");
-    assert!(
-        transcript_contents.contains("turn.completed"),
-        "transcript should contain codex stdout events; got: \
-         {transcript_contents:?}"
-    );
-    let event_count = transcript_contents
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            serde_json::from_str::<serde_json::Value>(line).unwrap_or_else(|error| {
-                panic!(
-                    "every transcript line must be valid JSON (--json mode); \
-                     line was {line:?}, error: {error}"
-                )
-            })
-        })
-        .count();
-    assert_eq!(
-        event_count, 2,
-        "transcript should contain exactly the two NDJSON events written \
-         by the fake codex; got: {transcript_contents:?}"
     );
 }
 
