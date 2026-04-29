@@ -1,0 +1,7 @@
+id = "9ni35-1"
+name = "9ni.3.5 auto-create milestone"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "f7c9ab892a43aff373d6f20863c020f7e4b290bf245b16beb263552f4a936f11"
+created_at = "2026-04-29T14:32:53.244208947Z"
+status_summary = "created"

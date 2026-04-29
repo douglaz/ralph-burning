@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429143253-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429143253-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T16:10:31.947007873Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo actionable correctness, safety, or robustness findings in the scoped source/test changes. Reviewed the branch diff against c00d6ab9a69ccdb3c366419d56cb013ec29f7435 while ignoring .ralph-burning runtime state, and verified nix build, cargo fmt --check, clippy with test-stub, and targeted auto-materialization tests.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

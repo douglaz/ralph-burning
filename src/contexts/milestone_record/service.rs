@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_arguments)]
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -1425,18 +1426,39 @@ pub fn materialize_bundle_with_source(
     source: Option<MaterializeBundleSource>,
     now: DateTime<Utc>,
 ) -> AppResult<MilestoneRecord> {
-    let milestone_id = MilestoneId::new(bundle.identity.id.clone())?;
+    let requested_milestone_id = MilestoneId::new(bundle.identity.id.clone())?;
+    let mut materialized_bundle = Cow::Borrowed(bundle);
+    let milestone_id = if let Some(source) = source.as_ref() {
+        match find_milestone_id_by_source(store, snapshot_store, base_dir, source)? {
+            Some(existing_id) if existing_id != requested_milestone_id => {
+                let existing_record = store.read_milestone_record(base_dir, &existing_id)?;
+                let mut target_bundle = bundle.clone();
+                retarget_bundle_for_milestone(
+                    &mut target_bundle,
+                    &existing_id,
+                    &existing_record.name,
+                );
+                materialized_bundle = Cow::Owned(target_bundle);
+                existing_id
+            }
+            Some(existing_id) => existing_id,
+            None => requested_milestone_id,
+        }
+    } else {
+        requested_milestone_id
+    };
+    let bundle = materialized_bundle.as_ref();
     let expected_plan_json = render_plan_json(bundle).map_err(AppError::SerdeJson)?;
     let expected_plan_md = render_plan_md_checked(bundle)
         .map_err(|errors| snapshot_corrupt_record(&milestone_id, errors.join("; ")))?;
     let expected_plan_shape_signature = progress_shape_signature(bundle)
         .map_err(|errors| snapshot_corrupt_record(&milestone_id, errors.join("; ")))?;
     let expected_plan_hash = hash_text(&expected_plan_json);
-    let expected_source = source.map(|source| SourceRequirementsBundleRef {
-        requirements_run_id: source.requirements_run_id,
-        milestone_bundle_id: source.milestone_bundle_id,
+    let expected_source = source.as_ref().map(|source| SourceRequirementsBundleRef {
+        requirements_run_id: source.requirements_run_id.clone(),
+        milestone_bundle_id: source.milestone_bundle_id.clone(),
         schema_version: source.schema_version,
-        plan_hash: source.plan_hash,
+        plan_hash: source.plan_hash.clone(),
     });
     let expected_plan_shape =
         render_plan_shape_artifact(&expected_plan_hash, &expected_plan_shape_signature)?;
@@ -1533,6 +1555,65 @@ pub fn materialize_bundle_with_source(
 
         Ok(record)
     })
+}
+
+fn find_milestone_id_by_source(
+    store: &impl MilestoneStorePort,
+    snapshot_store: &impl MilestoneSnapshotPort,
+    base_dir: &Path,
+    source: &MaterializeBundleSource,
+) -> AppResult<Option<MilestoneId>> {
+    for milestone_id in store.list_milestone_ids(base_dir)? {
+        let snapshot = snapshot_store.read_snapshot(base_dir, &milestone_id)?;
+        let Some(existing_source) = snapshot.source_requirements_bundle.as_ref() else {
+            continue;
+        };
+        if existing_source.requirements_run_id == source.requirements_run_id
+            && existing_source.milestone_bundle_id == source.milestone_bundle_id
+        {
+            return Ok(Some(milestone_id));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn retarget_bundle_for_milestone(
+    bundle: &mut MilestoneBundle,
+    milestone_id: &MilestoneId,
+    milestone_name: &str,
+) {
+    let previous_id = bundle.identity.id.clone();
+    bundle.identity.id = milestone_id.to_string();
+    bundle.identity.name = milestone_name.to_owned();
+
+    if previous_id == milestone_id.as_str() {
+        return;
+    }
+
+    let previous_prefix = format!("{previous_id}.");
+    let next_prefix = format!("{}.", milestone_id);
+    for criterion in &mut bundle.acceptance_map {
+        for covered_by in &mut criterion.covered_by {
+            if let Some(suffix) = covered_by.strip_prefix(&previous_prefix) {
+                *covered_by = format!("{next_prefix}{suffix}");
+            }
+        }
+    }
+
+    for workstream in &mut bundle.workstreams {
+        for bead in &mut workstream.beads {
+            if let Some(bead_id) = &mut bead.bead_id {
+                if let Some(suffix) = bead_id.strip_prefix(&previous_prefix) {
+                    *bead_id = format!("{next_prefix}{suffix}");
+                }
+            }
+            for depends_on in &mut bead.depends_on {
+                if let Some(suffix) = depends_on.strip_prefix(&previous_prefix) {
+                    *depends_on = format!("{next_prefix}{suffix}");
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -7985,6 +8066,72 @@ mod tests {
             MilestoneSourceBundleStatus::Fresh
         );
         validate_milestone_source_bundle_fresh(&FsRequirementsStore, base, &record.id, &snapshot)?;
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_bundle_with_source_updates_existing_milestone_by_source(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc.with_ymd_and_hms(2026, 4, 1, 10, 0, 0).unwrap();
+
+        let bundle_v1 = sample_bundle("source-original", "Source Original");
+        let initial = materialize_bundle_with_source(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle_v1,
+            Some(materialized_source("req-source", "bundle-v1", &bundle_v1)?),
+            now,
+        )?;
+        let initial_snapshot = snapshot_store.read_snapshot(base, &initial.id)?;
+        let initial_source = initial_snapshot
+            .source_requirements_bundle
+            .expect("initial materialization records source");
+
+        let mut bundle_v2 = sample_bundle("source-regenerated", "Source Regenerated");
+        bundle_v2.executive_summary = "Updated plan from the same requirements bundle.".to_owned();
+        let updated = materialize_bundle_with_source(
+            &store,
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &bundle_v2,
+            Some(materialized_source("req-source", "bundle-v1", &bundle_v2)?),
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        assert_eq!(updated.id, initial.id);
+        assert_eq!(store.list_milestone_ids(base)?, vec![initial.id.clone()]);
+        let updated_snapshot = snapshot_store.read_snapshot(base, &initial.id)?;
+        let updated_source = updated_snapshot
+            .source_requirements_bundle
+            .expect("updated materialization keeps source");
+        assert_eq!(updated_source.requirements_run_id, "req-source");
+        assert_eq!(updated_source.milestone_bundle_id, "bundle-v1");
+        assert_eq!(
+            updated_source.requirements_run_id,
+            initial_source.requirements_run_id
+        );
+        assert_eq!(
+            updated_source.milestone_bundle_id,
+            initial_source.milestone_bundle_id
+        );
+        assert_ne!(updated_source.plan_hash, initial_source.plan_hash);
+
+        let plan_json = plan_store.read_plan_json(base, &initial.id)?;
+        assert!(plan_json.contains("source-original"));
+        assert!(!plan_json.contains("source-regenerated"));
+        assert!(plan_json.contains("Updated plan from the same requirements bundle."));
         Ok(())
     }
 

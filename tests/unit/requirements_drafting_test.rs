@@ -655,12 +655,12 @@ mod service_integration {
     use ralph_burning::contexts::milestone_record::bundle::MILESTONE_BUNDLE_VERSION;
     use ralph_burning::contexts::milestone_record::service as milestone_service;
     use ralph_burning::contexts::requirements_drafting::model::{
-        RequirementsMode, RequirementsOutputKind, RequirementsStatus,
+        RequirementsJournalEventType, RequirementsMode, RequirementsOutputKind, RequirementsStatus,
     };
     use ralph_burning::contexts::requirements_drafting::service::{
         extract_milestone_bundle_handoff, is_requirements_run_complete, RequirementsService,
     };
-    use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
+    use ralph_burning::contexts::workspace_governance::{self, config::EffectiveConfig};
     use ralph_burning::shared::domain::{
         BackendRoleTimeouts, BackendRuntimeSettings, ResolvedBackendTarget, WorkspaceConfig,
     };
@@ -988,8 +988,8 @@ mod service_integration {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn materialized_milestone_detects_reanswered_requirements_bundle_staleness() {
-        use milestone_service::MilestoneSnapshotPort;
+    async fn reanswered_milestone_requirements_update_existing_materialized_milestone() {
+        use milestone_service::{MilestoneSnapshotPort, MilestoneStorePort};
         use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
 
         std::env::set_var("EDITOR", "true");
@@ -1044,27 +1044,23 @@ mod service_integration {
             .milestone_bundle_id
             .clone()
             .expect("completed run should record bundle id");
-        let source = milestone_service::MaterializeBundleSource::from_bundle(
-            &run_id,
-            &bundle_id,
-            &handoff.bundle,
-        )
-        .expect("build materialized source");
-        let record = milestone_service::materialize_bundle_with_source(
-            &FsMilestoneStore,
-            &FsMilestoneSnapshotStore,
-            &FsMilestoneJournalStore,
-            &FsMilestonePlanStore,
-            temp_dir.path(),
-            &handoff.bundle,
-            Some(source),
-            deterministic_now(),
-        )
-        .expect("materialize milestone");
+        let milestone_ids = FsMilestoneStore
+            .list_milestone_ids(temp_dir.path())
+            .expect("list auto-created milestones");
+        assert_eq!(
+            milestone_ids.len(),
+            1,
+            "initial milestone completion should auto-create one milestone"
+        );
+        let milestone_id = milestone_ids[0].clone();
 
         let snapshot = FsMilestoneSnapshotStore
-            .read_snapshot(temp_dir.path(), &record.id)
+            .read_snapshot(temp_dir.path(), &milestone_id)
             .expect("read materialized snapshot");
+        let initial_source = snapshot
+            .source_requirements_bundle
+            .clone()
+            .expect("auto-created milestone should record requirements source");
         assert_eq!(
             milestone_service::detect_milestone_source_bundle_status(
                 &FsRequirementsStore,
@@ -1112,26 +1108,43 @@ mod service_integration {
             .await
             .expect("re-answer should rebuild milestone bundle");
 
-        let snapshot = FsMilestoneSnapshotStore
-            .read_snapshot(temp_dir.path(), &record.id)
-            .expect("read materialized snapshot");
-        let status = milestone_service::detect_milestone_source_bundle_status(
-            &FsRequirementsStore,
-            temp_dir.path(),
-            &snapshot,
-        )
-        .expect("detect stale source");
-        let staleness = match status {
-            milestone_service::MilestoneSourceBundleStatus::Stale(staleness) => staleness,
-            milestone_service::MilestoneSourceBundleStatus::Fresh => {
-                panic!("expected materialized milestone to be stale after re-answer")
-            }
-        };
-        assert_eq!(staleness.expected.requirements_run_id, run_id);
-        assert_eq!(staleness.expected.milestone_bundle_id, bundle_id);
+        let milestone_ids = FsMilestoneStore
+            .list_milestone_ids(temp_dir.path())
+            .expect("list milestones after re-answer");
         assert_eq!(
-            staleness.reason,
-            "source milestone bundle content no longer matches the materialized plan"
+            milestone_ids,
+            vec![milestone_id.clone()],
+            "same requirements run and bundle id should update the existing milestone in place"
+        );
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp_dir.path(), &milestone_id)
+            .expect("read materialized snapshot");
+        let updated_source = snapshot
+            .source_requirements_bundle
+            .clone()
+            .expect("updated milestone should keep requirements source");
+        assert_eq!(updated_source.requirements_run_id, run_id);
+        assert_eq!(updated_source.milestone_bundle_id, bundle_id);
+        assert_eq!(
+            updated_source.requirements_run_id,
+            initial_source.requirements_run_id
+        );
+        assert_eq!(
+            updated_source.milestone_bundle_id,
+            initial_source.milestone_bundle_id
+        );
+        assert_ne!(
+            updated_source.plan_hash, initial_source.plan_hash,
+            "re-answer should refresh the persisted source hash for the updated bundle"
+        );
+        assert_eq!(
+            milestone_service::detect_milestone_source_bundle_status(
+                &FsRequirementsStore,
+                temp_dir.path(),
+                &snapshot,
+            )
+            .expect("detect refreshed source"),
+            milestone_service::MilestoneSourceBundleStatus::Fresh
         );
     }
 
@@ -1827,6 +1840,7 @@ mod service_integration {
     /// passes, recording stage completion in committed_stages and journal.
     #[tokio::test(flavor = "multi_thread")]
     async fn draft_full_mode_records_committed_stages_and_journal_events() {
+        use milestone_service::MilestoneStorePort;
         use ralph_burning::contexts::requirements_drafting::model::RequirementsJournalEventType;
         use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
 
@@ -1878,10 +1892,18 @@ mod service_integration {
             stage_completed_count >= 6,
             "journal should have StageCompleted events for ideation through validation, got {stage_completed_count}"
         );
+        assert!(
+            FsMilestoneStore
+                .list_milestone_ids(temp_dir.path())
+                .expect("list milestones")
+                .is_empty(),
+            "project-seed completion must not auto-create a milestone"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn draft_milestone_full_mode_records_bundle_in_run_state_and_history() {
+        use milestone_service::{MilestoneSnapshotPort, MilestoneStorePort};
         use ralph_burning::contexts::requirements_drafting::model::RequirementsJournalEventType;
         use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
 
@@ -1936,6 +1958,33 @@ mod service_integration {
             .expect("read bundle payload");
         assert_eq!(payload_json["identity"]["id"], "ms-stub");
 
+        let milestone_ids = FsMilestoneStore
+            .list_milestone_ids(temp_dir.path())
+            .expect("list auto-created milestones");
+        assert_eq!(
+            milestone_ids.len(),
+            1,
+            "milestone bundle completion should auto-create one milestone"
+        );
+        let milestone_id = &milestone_ids[0];
+        assert_eq!(milestone_id.as_str(), "ms-stub");
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp_dir.path(), milestone_id)
+            .expect("read auto-created milestone snapshot");
+        let source = snapshot
+            .source_requirements_bundle
+            .expect("auto-created milestone should record requirements source");
+        assert_eq!(source.requirements_run_id, run_id);
+        assert_eq!(source.milestone_bundle_id, expected_bundle_id);
+        assert_eq!(source.schema_version, MILESTONE_BUNDLE_VERSION);
+        assert_eq!(
+            workspace_governance::read_active_milestone(temp_dir.path())
+                .expect("read active milestone")
+                .as_deref(),
+            Some("ms-stub"),
+            "auto-created milestone should become active"
+        );
+
         let journal = store
             .read_journal(temp_dir.path(), &run_id)
             .expect("read journal");
@@ -1944,6 +1993,64 @@ mod service_integration {
                 .iter()
                 .any(|e| e.event_type == RequirementsJournalEventType::RunCompleted),
             "journal should contain run_completed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn milestone_auto_materialize_failure_preserves_completed_run_and_journals_error() {
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+        let milestones_dir = temp_dir.path().join(".ralph-burning/milestones");
+        std::fs::create_dir_all(&milestones_dir).expect("create milestones dir");
+        std::fs::write(milestones_dir.join("ms-stub"), "not a milestone directory")
+            .expect("create path that blocks milestone creation");
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone auto-create failure test",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("requirements completion should succeed despite auto-create failure");
+
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        let journal = store
+            .read_journal(temp_dir.path(), &run_id)
+            .expect("read journal");
+        let failure = journal
+            .iter()
+            .find(|event| {
+                event.event_type == RequirementsJournalEventType::AutoMilestoneMaterializationFailed
+            })
+            .expect("auto-materialize failure should be journaled");
+        assert_eq!(failure.details["run_id"], run_id);
+        assert_eq!(
+            failure.details["milestone_bundle_id"],
+            format!("{run_id}-milestone-bundle-1")
+        );
+        assert!(
+            !failure.details["error"]
+                .as_str()
+                .expect("error detail")
+                .is_empty(),
+            "failure detail should include the materialize error"
+        );
+        assert!(
+            failure.details["recovery_command"]
+                .as_str()
+                .expect("recovery command")
+                .contains("project create --from-requirements"),
+            "failure event should include manual recovery command"
         );
     }
 

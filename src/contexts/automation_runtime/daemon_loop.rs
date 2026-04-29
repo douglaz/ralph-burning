@@ -5211,10 +5211,12 @@ mod tests {
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
     };
     use crate::contexts::milestone_record::controller::{self as milestone_controller};
-    use crate::contexts::milestone_record::model::{MilestoneEventType, TaskRunOutcome};
+    use crate::contexts::milestone_record::model::{
+        MilestoneEventType, MilestoneId, TaskRunOutcome,
+    };
     use crate::contexts::milestone_record::service::{
         self as milestone_service, create_milestone, persist_plan, read_journal, record_bead_start,
-        update_status, CreateMilestoneInput, MilestoneSnapshotPort,
+        update_status, CreateMilestoneInput, MilestoneSnapshotPort, MilestoneStorePort,
     };
     use crate::contexts::project_run_record::journal;
     use crate::contexts::project_run_record::model::{
@@ -6167,35 +6169,12 @@ mod tests {
         let req_store = FsRequirementsStore;
 
         let milestone_store = FsMilestoneStore;
-        let plan_store = FsMilestonePlanStore;
         let snapshot_store = FsMilestoneSnapshotStore;
         let journal_store = FsMilestoneJournalStore;
-        let handoff =
-            crate::contexts::requirements_drafting::service::extract_milestone_bundle_handoff(
-                &req_store, base, &run_id,
-            )
-            .expect("extract milestone handoff");
-        let existing = create_milestone(
-            &milestone_store,
-            base,
-            CreateMilestoneInput {
-                id: "ms-stub".to_owned(),
-                name: "Stub Milestone".to_owned(),
-                description: "existing completed milestone".to_owned(),
-            },
-            now,
-        )
-        .expect("create existing milestone");
-        crate::contexts::milestone_record::service::materialize_bundle(
-            &milestone_store,
-            &snapshot_store,
-            &journal_store,
-            &plan_store,
-            base,
-            &handoff.bundle,
-            now,
-        )
-        .expect("materialize existing milestone");
+        let existing_id = MilestoneId::new("ms-stub").expect("valid milestone id");
+        let existing = milestone_store
+            .read_milestone_record(base, &existing_id)
+            .expect("read auto-created milestone");
         update_status(
             &snapshot_store,
             &journal_store,
