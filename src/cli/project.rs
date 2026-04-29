@@ -324,13 +324,25 @@ async fn handle_create_from_requirements(run_id: String) -> AppResult<()> {
             let snapshot_store = FsMilestoneSnapshotStore;
             let journal_store = FsMilestoneJournalStore;
             let plan_store = FsMilestonePlanStore;
-            let record = milestone_service::materialize_bundle(
+            let source = handoff
+                .milestone_bundle_id
+                .clone()
+                .map(|milestone_bundle_id| {
+                    milestone_service::MaterializeBundleSource::from_bundle(
+                        handoff.requirements_run_id.clone(),
+                        milestone_bundle_id,
+                        &handoff.bundle,
+                    )
+                })
+                .transpose()?;
+            let record = milestone_service::materialize_bundle_with_source(
                 &milestone_store,
                 &snapshot_store,
                 &journal_store,
                 &plan_store,
                 &current_dir,
                 &handoff.bundle,
+                source,
                 Utc::now(),
             )?;
             set_active_milestone_after_command(&current_dir, &record.id)?;
@@ -378,6 +390,12 @@ pub(crate) async fn execute_create_from_bead_in_dir(
         &snapshot_store,
         current_dir,
         &milestone_id,
+    )?;
+    milestone_service::validate_milestone_source_bundle_fresh(
+        &FsRequirementsStore,
+        current_dir,
+        &milestone_id,
+        &milestone_snapshot,
     )?;
     let milestone_bundle = load_milestone_bundle(&plan_store, current_dir, &milestone_id)?;
     let bead = load_bead_detail(current_dir, &milestone_id, &args.bead_id).await?;
@@ -1246,7 +1264,9 @@ pub(crate) fn load_project_detail(
     let journal_store = FsJournalStore;
     let active_store = FsActiveProjectStore;
     let milestone_store = FsMilestoneStore;
+    let milestone_snapshot_store = FsMilestoneSnapshotStore;
     let plan_store = FsMilestonePlanStore;
+    let requirements_store = FsRequirementsStore;
 
     service::show_project(
         &store,
@@ -1254,7 +1274,9 @@ pub(crate) fn load_project_detail(
         &journal_store,
         &active_store,
         &milestone_store,
+        &milestone_snapshot_store,
         &plan_store,
+        &requirements_store,
         base_dir,
         project_id,
     )

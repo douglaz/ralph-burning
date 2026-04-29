@@ -642,7 +642,8 @@ mod service_integration {
     use tempfile::tempdir;
 
     use ralph_burning::adapters::fs::{
-        FileSystem, FsRawOutputStore, FsRequirementsStore, FsSessionStore,
+        FileSystem, FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore,
+        FsMilestoneStore, FsRawOutputStore, FsRequirementsStore, FsSessionStore,
     };
     use ralph_burning::adapters::stub_backend::StubBackendAdapter;
     use ralph_burning::contexts::agent_execution::model::{
@@ -652,6 +653,7 @@ mod service_integration {
         AgentExecutionPort, AgentExecutionService,
     };
     use ralph_burning::contexts::milestone_record::bundle::MILESTONE_BUNDLE_VERSION;
+    use ralph_burning::contexts::milestone_record::service as milestone_service;
     use ralph_burning::contexts::requirements_drafting::model::{
         RequirementsMode, RequirementsOutputKind, RequirementsStatus,
     };
@@ -905,6 +907,42 @@ mod service_integration {
             .with_label_payload("requirements:question_set", questions)
     }
 
+    fn milestone_bundle_payload(summary: &str, goal: &str) -> serde_json::Value {
+        json!({
+            "schema_version": MILESTONE_BUNDLE_VERSION,
+            "identity": {
+                "id": "ms-stub",
+                "name": "Stub Milestone"
+            },
+            "executive_summary": summary,
+            "goals": [goal],
+            "non_goals": [],
+            "constraints": [],
+            "acceptance_map": [{
+                "id": "AC-1",
+                "description": "Milestone can be executed from structured plan output.",
+                "covered_by": ["ms-stub.bead-1"]
+            }],
+            "workstreams": [{
+                "name": "Planning",
+                "description": "Stub workstream",
+                "beads": [{
+                    "bead_id": "ms-stub.bead-1",
+                    "title": "Stub bead",
+                    "description": "Carry the milestone plan into execution.",
+                    "bead_type": "task",
+                    "priority": 1,
+                    "labels": ["stub"],
+                    "depends_on": [],
+                    "acceptance_criteria": ["AC-1"],
+                    "flow_override": "standard"
+                }]
+            }],
+            "default_flow": "standard",
+            "agents_guidance": "Use stub guidance."
+        })
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn draft_with_questions_transitions_to_awaiting_answers() {
         let temp_dir = tempdir().expect("create temp dir");
@@ -946,6 +984,154 @@ mod service_integration {
             result.pending_question_count,
             Some(1),
             "should report 1 pending question"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn materialized_milestone_detects_reanswered_requirements_bundle_staleness() {
+        use milestone_service::MilestoneSnapshotPort;
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        std::env::set_var("EDITOR", "true");
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default()
+            .with_label_payload_sequence(
+                "requirements:validation",
+                vec![
+                    json!({
+                        "outcome": "pass",
+                        "evidence": ["Initial validation passes"],
+                        "blocking_issues": [],
+                        "missing_information": []
+                    }),
+                    json!({
+                        "outcome": "pass",
+                        "evidence": ["Re-answered validation passes"],
+                        "blocking_issues": [],
+                        "missing_information": []
+                    }),
+                ],
+            )
+            .with_label_payload_sequence(
+                "requirements:milestone_bundle",
+                vec![
+                    milestone_bundle_payload("Initial milestone plan.", "Deliver the initial plan"),
+                    milestone_bundle_payload(
+                        "Updated milestone plan after re-answer.",
+                        "Deliver the updated plan",
+                    ),
+                ],
+            );
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let run_id = service
+            .draft_milestone(
+                temp_dir.path(),
+                "Milestone stale source detection",
+                deterministic_now(),
+                None,
+            )
+            .await
+            .expect("milestone draft should complete");
+        let handoff =
+            extract_milestone_bundle_handoff(&FsRequirementsStore, temp_dir.path(), &run_id)
+                .expect("extract initial bundle");
+        let bundle_id = handoff
+            .milestone_bundle_id
+            .clone()
+            .expect("completed run should record bundle id");
+        let source = milestone_service::MaterializeBundleSource::from_bundle(
+            &run_id,
+            &bundle_id,
+            &handoff.bundle,
+        )
+        .expect("build materialized source");
+        let record = milestone_service::materialize_bundle_with_source(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            temp_dir.path(),
+            &handoff.bundle,
+            Some(source),
+            deterministic_now(),
+        )
+        .expect("materialize milestone");
+
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp_dir.path(), &record.id)
+            .expect("read materialized snapshot");
+        assert_eq!(
+            milestone_service::detect_milestone_source_bundle_status(
+                &FsRequirementsStore,
+                temp_dir.path(),
+                &snapshot,
+            )
+            .expect("detect fresh source"),
+            milestone_service::MilestoneSourceBundleStatus::Fresh
+        );
+
+        let store = FsRequirementsStore;
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let question_id = format!("{run_id}-qs-1");
+        let question_artifact_id = format!("{run_id}-qs-art-1");
+        store
+            .write_payload_artifact_pair_atomic(
+                temp_dir.path(),
+                &run_id,
+                &question_id,
+                &json!({
+                    "questions": [{
+                        "id": "q1",
+                        "prompt": "What changed?",
+                        "rationale": "Force answer-sensitive regeneration",
+                        "required": true
+                    }]
+                }),
+                &question_artifact_id,
+                "# Questions\n\n- q1: What changed?\n",
+            )
+            .expect("write question payload");
+        store
+            .write_answers_toml(temp_dir.path(), &run_id, "q1 = \"Scope changed\"\n")
+            .expect("write answers");
+        run.status = RequirementsStatus::AwaitingAnswers;
+        run.status_summary = "awaiting answers: 1 question(s), round 1".to_owned();
+        run.latest_question_set_id = Some(question_id);
+        run.pending_question_count = Some(1);
+        store
+            .write_run(temp_dir.path(), &run_id, &run)
+            .expect("write awaiting run");
+
+        service
+            .answer(temp_dir.path(), &run_id, None)
+            .await
+            .expect("re-answer should rebuild milestone bundle");
+
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp_dir.path(), &record.id)
+            .expect("read materialized snapshot");
+        let status = milestone_service::detect_milestone_source_bundle_status(
+            &FsRequirementsStore,
+            temp_dir.path(),
+            &snapshot,
+        )
+        .expect("detect stale source");
+        let staleness = match status {
+            milestone_service::MilestoneSourceBundleStatus::Stale(staleness) => staleness,
+            milestone_service::MilestoneSourceBundleStatus::Fresh => {
+                panic!("expected materialized milestone to be stale after re-answer")
+            }
+        };
+        assert_eq!(staleness.expected.requirements_run_id, run_id);
+        assert_eq!(staleness.expected.milestone_bundle_id, bundle_id);
+        assert_eq!(
+            staleness.reason,
+            "source milestone bundle content no longer matches the materialized plan"
         );
     }
 
@@ -1946,6 +2132,8 @@ mod service_integration {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn extract_milestone_bundle_handoff_falls_back_to_embedded_bundle_when_payload_invalid() {
+        use milestone_service::MilestoneSnapshotPort;
+
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
@@ -1986,6 +2174,47 @@ mod service_integration {
                 .expect("valid embedded bundle should be used as fallback");
         assert_eq!(handoff.bundle.identity.id, "ms-stub");
         assert_eq!(handoff.bundle.schema_version, MILESTONE_BUNDLE_VERSION);
+        assert!(
+            handoff.milestone_bundle_id.is_none(),
+            "embedded fallback should not claim lineage to the invalid payload id"
+        );
+
+        let source = handoff
+            .milestone_bundle_id
+            .clone()
+            .map(|milestone_bundle_id| {
+                milestone_service::MaterializeBundleSource::from_bundle(
+                    handoff.requirements_run_id.clone(),
+                    milestone_bundle_id,
+                    &handoff.bundle,
+                )
+            })
+            .transpose()
+            .expect("build materialization source");
+        let record = milestone_service::materialize_bundle_with_source(
+            &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            temp_dir.path(),
+            &handoff.bundle,
+            source,
+            deterministic_now(),
+        )
+        .expect("materialize embedded fallback bundle");
+        let snapshot = FsMilestoneSnapshotStore
+            .read_snapshot(temp_dir.path(), &record.id)
+            .expect("read materialized snapshot");
+        assert!(snapshot.source_requirements_bundle.is_none());
+        assert_eq!(
+            milestone_service::detect_milestone_source_bundle_status(
+                &FsRequirementsStore,
+                temp_dir.path(),
+                &snapshot,
+            )
+            .expect("embedded fallback should remain usable"),
+            milestone_service::MilestoneSourceBundleStatus::Fresh
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

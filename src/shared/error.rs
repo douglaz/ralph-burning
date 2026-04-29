@@ -72,6 +72,13 @@ pub enum AppError {
         action: String,
         details: String,
     },
+    #[error("stale milestone plan for '{milestone_id}': {details}")]
+    StaleMilestonePlan {
+        milestone_id: String,
+        requirements_run_id: String,
+        milestone_bundle_id: String,
+        details: String,
+    },
     #[error("corrupt record in {file}: {details}")]
     CorruptRecord { file: String, details: String },
     #[error("invalid prompt file '{path}': {reason}")]

@@ -18,7 +18,9 @@ use ralph_burning::contexts::milestone_record::bundle::{
 use ralph_burning::contexts::milestone_record::model::{
     MilestoneId, MilestoneRecord, MilestoneSnapshot,
 };
-use ralph_burning::contexts::milestone_record::service::{MilestonePlanPort, MilestoneStorePort};
+use ralph_burning::contexts::milestone_record::service::{
+    MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
+};
 use ralph_burning::contexts::project_run_record::model::*;
 use ralph_burning::contexts::project_run_record::service;
 use ralph_burning::contexts::project_run_record::service::*;
@@ -426,6 +428,49 @@ impl MilestonePlanPort for FakeMilestonePlanStore {
         _contents: &str,
     ) -> AppResult<()> {
         Ok(())
+    }
+}
+
+struct FakeMilestoneSnapshotStore {
+    snapshot: MilestoneSnapshot,
+}
+
+impl Default for FakeMilestoneSnapshotStore {
+    fn default() -> Self {
+        Self {
+            snapshot: MilestoneSnapshot::initial(test_timestamp()),
+        }
+    }
+}
+
+impl MilestoneSnapshotPort for FakeMilestoneSnapshotStore {
+    fn read_snapshot(
+        &self,
+        _base_dir: &Path,
+        _milestone_id: &MilestoneId,
+    ) -> AppResult<MilestoneSnapshot> {
+        Ok(self.snapshot.clone())
+    }
+
+    fn write_snapshot(
+        &self,
+        _base_dir: &Path,
+        _milestone_id: &MilestoneId,
+        _snapshot: &MilestoneSnapshot,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn with_milestone_write_lock<T, F>(
+        &self,
+        _base_dir: &Path,
+        _milestone_id: &MilestoneId,
+        operation: F,
+    ) -> AppResult<T>
+    where
+        F: FnOnce() -> AppResult<T>,
+    {
+        operation()
     }
 }
 
@@ -2142,6 +2187,7 @@ fn list_tasks_for_milestone_returns_only_matching_task_projects_in_stable_order(
         &FakeMilestoneStore {
             record: milestone.clone(),
         },
+        &FakeMilestoneSnapshotStore::default(),
         &FakeMilestonePlanStore {
             plan_json: make_milestone_plan_json(
                 "ms-alpha",
@@ -2150,6 +2196,7 @@ fn list_tasks_for_milestone_returns_only_matching_task_projects_in_stable_order(
                 "First alpha bead",
             ),
         },
+        &ralph_burning::adapters::fs::FsRequirementsStore,
         &project_store,
         &dummy_base_dir(),
         &milestone.id,
@@ -2190,6 +2237,7 @@ fn list_tasks_for_milestone_can_identify_project_for_specific_bead() {
         &FakeMilestoneStore {
             record: milestone.clone(),
         },
+        &FakeMilestoneSnapshotStore::default(),
         &FakeMilestonePlanStore {
             plan_json: make_milestone_plan_json(
                 "ms-alpha",
@@ -2198,6 +2246,7 @@ fn list_tasks_for_milestone_can_identify_project_for_specific_bead() {
                 "First alpha bead",
             ),
         },
+        &ralph_burning::adapters::fs::FsRequirementsStore,
         &project_store,
         &dummy_base_dir(),
         &milestone.id,
@@ -2219,9 +2268,11 @@ fn list_tasks_for_milestone_with_no_linked_tasks_returns_empty_list() {
         &FakeMilestoneStore {
             record: milestone.clone(),
         },
+        &FakeMilestoneSnapshotStore::default(),
         &FakeMilestonePlanStore {
             plan_json: make_milestone_plan_json("ms-gamma", "Gamma", "ms-gamma.b-1", "Gamma bead"),
         },
+        &ralph_burning::adapters::fs::FsRequirementsStore,
         &FakeProjectStore::empty(),
         &dummy_base_dir(),
         &milestone.id,
@@ -2797,7 +2848,9 @@ fn show_project_returns_detail() {
         &journal_store,
         &active_store,
         &milestone_store,
+        &FakeMilestoneSnapshotStore::default(),
         &plan_store,
+        &ralph_burning::adapters::fs::FsRequirementsStore,
         &base_dir,
         &pid,
     )
@@ -2841,7 +2894,9 @@ fn show_project_fails_for_missing_project() {
         &journal_store,
         &active_store,
         &milestone_store,
+        &FakeMilestoneSnapshotStore::default(),
         &plan_store,
+        &ralph_burning::adapters::fs::FsRequirementsStore,
         &base_dir,
         &pid,
     );
@@ -2895,7 +2950,9 @@ fn show_project_returns_task_lineage_for_milestone_tasks() {
         &journal_store,
         &active_store,
         &milestone_store,
+        &FakeMilestoneSnapshotStore::default(),
         &plan_store,
+        &ralph_burning::adapters::fs::FsRequirementsStore,
         &base_dir,
         &pid,
     )

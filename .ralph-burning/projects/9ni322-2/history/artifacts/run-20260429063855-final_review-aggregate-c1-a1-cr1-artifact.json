@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260429063855-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429063855-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T10:58:10.477272225Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-84e8db66`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-84e8db66`\n\n**Classification:** fix_current_bead\n\nStaleness validation is still bypassed by plan-derived lineage/task views. `src/contexts/milestone_record/service.rs:4135` reads the current plan via `load_plan_bundle_for_lineage()` without checking `snapshot.source_requirements_bundle`, and the same unvalidated path feeds `bead_execution_history()` at `src/contexts/milestone_record/service.rs:4198` and `list_tasks_for_milestone()` at `src/contexts/milestone_record/service.rs:4338`. CLI/read-model surfaces such as `milestone tasks` (`src/cli/milestone.rs:854`), `project show` (`src/contexts/project_run_record/service.rs:1501`), and run status labels (`src/cli/run.rs:3013`) can therefore continue rendering old bead titles/acceptance criteria after the source requirements bundle has been re-answered. This violates the bead requirement that plan renderers surface a structured stale result instead of silently using stale artifacts. Wire `RequirementsStorePort` plus the milestone snapshot into these lineage/task loaders, or return an explicit stale status, and add a regression covering a stale materialized source through at least one of these read-model paths.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

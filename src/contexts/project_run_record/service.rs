@@ -5,7 +5,10 @@ use chrono::{DateTime, Utc};
 use crate::adapters::fs::FileSystem;
 use crate::contexts::milestone_record::model::{MilestoneProgress, MilestoneStatus};
 use crate::contexts::milestone_record::queries::BeadLineageView;
-use crate::contexts::milestone_record::service::{MilestonePlanPort, MilestoneStorePort};
+use crate::contexts::milestone_record::service::{
+    MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
+};
+use crate::contexts::requirements_drafting::service::RequirementsStorePort;
 use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
 use crate::contexts::workspace_governance::config::{
@@ -1484,9 +1487,11 @@ pub fn list_projects(
     Ok(entries)
 }
 
-fn load_task_lineage_detail(
+fn load_task_lineage_detail<S: MilestoneSnapshotPort>(
     milestone_store: &dyn MilestoneStorePort,
+    milestone_snapshot_store: &S,
     plan_store: &dyn MilestonePlanPort,
+    requirements_store: &dyn RequirementsStorePort,
     base_dir: &Path,
     task_source: Option<&TaskSource>,
 ) -> AppResult<Option<BeadLineageView>> {
@@ -1500,7 +1505,9 @@ fn load_task_lineage_detail(
 
     match crate::contexts::milestone_record::service::read_bead_lineage_with_task_source(
         milestone_store,
+        milestone_snapshot_store,
         plan_store,
+        requirements_store,
         base_dir,
         &milestone_id,
         &task_source.bead_id,
@@ -1517,13 +1524,15 @@ fn load_task_lineage_detail(
 
 /// Show detailed project information.
 #[allow(clippy::too_many_arguments)]
-pub fn show_project(
+pub fn show_project<S: MilestoneSnapshotPort>(
     store: &dyn ProjectStorePort,
     run_port: &dyn RunSnapshotPort,
     journal_port: &dyn JournalStorePort,
     active_port: &dyn ActiveProjectPort,
     milestone_store: &dyn MilestoneStorePort,
+    milestone_snapshot_store: &S,
     plan_store: &dyn MilestonePlanPort,
+    requirements_store: &dyn RequirementsStorePort,
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<ProjectDetail> {
@@ -1541,7 +1550,9 @@ pub fn show_project(
     let is_active = active_id.as_deref() == Some(project_id.as_str());
     let task_lineage = load_task_lineage_detail(
         milestone_store,
+        milestone_snapshot_store,
         plan_store,
+        requirements_store,
         base_dir,
         record.task_source.as_ref(),
     )?;
@@ -2828,7 +2839,7 @@ mod tests {
     use crate::adapters::fs::{
         FsActiveProjectStore, FsArtifactStore, FsJournalStore, FsMilestoneJournalStore,
         FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsProjectStore,
-        FsRunSnapshotStore,
+        FsRequirementsStore, FsRunSnapshotStore,
     };
     use crate::contexts::milestone_record::bundle::{
         AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
@@ -2938,7 +2949,9 @@ mod tests {
             &FsJournalStore,
             &FsActiveProjectStore,
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &ProjectId::new("task-alpha")?,
         )?;
@@ -3005,7 +3018,9 @@ mod tests {
             &FsJournalStore,
             &FsActiveProjectStore,
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &ProjectId::new("task-alpha")?,
         )?;
@@ -3076,7 +3091,9 @@ mod tests {
             &FsJournalStore,
             &FsActiveProjectStore,
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &ProjectId::new("task-alpha")?,
         )?;
@@ -3151,7 +3168,9 @@ mod tests {
             &FsJournalStore,
             &FsActiveProjectStore,
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &ProjectId::new("task-alpha")?,
         )?;
@@ -3210,7 +3229,9 @@ mod tests {
             &FsJournalStore,
             &FsActiveProjectStore,
             &FsMilestoneStore,
+            &FsMilestoneSnapshotStore,
             &FsMilestonePlanStore,
+            &FsRequirementsStore,
             base,
             &ProjectId::new("task-alpha")?,
         )?;

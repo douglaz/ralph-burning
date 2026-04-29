@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429063855-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T12:37:42.270794277Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the pending remediation for Bead 9ni.3.2.2. Runtime bead membership loading now validates the materialized milestone snapshot's source requirements bundle before returning planned/exported bead refs, so CLI and daemon post-completion selection paths cannot claim from a stale materialized plan. Embedded-bundle fallback handoffs now clear the payload bundle id when the authoritative payload is invalid, so materialized legacy fallback plans do not persist a bogus source backlink and remain fresh. Added regressions for stale post-completion selection and embedded-fallback freshness. Verified the deferred precise per-question invalidation follow-up exists as bead ralph-burning-epnn.\",\"outstanding_risks\":[],\"steps\":[{\"order\":1,\"status\":\"completed\",\"description\":\"Inspected the stale bypasses in runtime bead selection and requirements milestone handoff extraction.\"},{\"order\":2,\"status\":\"completed\",\"description\":\"Moved runtime plan-membership freshness validation \n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

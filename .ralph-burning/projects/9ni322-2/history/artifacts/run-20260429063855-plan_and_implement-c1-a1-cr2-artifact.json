@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260429063855-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T11:38:00.337626224Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Completed the remediation for Bead 9ni.3.2.2. Plan-derived lineage/task read models now validate materialized milestone source-bundle freshness before rendering persisted plan details: read_bead_lineage/read_bead_lineage_with_task_source, bead_execution_history, list_tasks_for_milestone, milestone tasks, project show, and run status now carry RequirementsStorePort plus milestone snapshots through the load path and surface StaleMilestonePlan instead of silently using stale bundle artifacts. Added regression coverage for stale and fresh materialized requirements sources through list_tasks_for_milestone. Verified the deferred precise per-question invalidation follow-up exists as bead ralph-burning-epnn.\",\n  \"outstanding_risks\": [],\n  \"steps\": [\n    {\n      \"order\": 1,\n      \"status\": \"completed\",\n      \"description\": \"Inspected the pending amendment paths and confirmed the stale bypass was in plan-derived lineage/task loaders and their CLI/read-model callers.\"\n    }\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429063855-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429063855-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T12:55:45.671406713Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against `ebfe49877d4c9d0fc55de4a3b81c203e30264495`. `nix build`, `cargo fmt --check`, and targeted stale/fresh tests passed, but two source-staleness propagation gaps remain.\n\n## Amendments\n\n1. `src/cli/milestone.rs:1881-1888` routes plan-inspection failures through `map_inspection_error`, and `src/cli/milestone.rs:2120-2127` wraps every non-milestone error into `MilestoneOperationFailed`. That includes the new `AppError::StaleMilestonePlan` raised by `validate_milestone_source_bundle_fresh` at `src/cli/milestone.rs:1992-1997`, so `milestone show/status` lose the structured staleness variant and callers can no longer match on the source run/bundle fields. The action path has the same issue via `ensure_execution_plan_available` at `src/cli/milestone.rs:1826-1833` and `map_action_error` at `src/cli/milestone.rs:2131-2138`. Pass `AppError::StaleMilestonePlan { .. }` through unchanged so downstream loads propagate structured staleness as required.\n   Classification: fix_current_bead\n   Rationale: The bead explicitly requires structured stale detection to be surfaced by downstream plan-rendering and execution commands; wrapping it as a generic operation failure breaks that contract for automation and tests that inspect error variants.\n2. The milestone controller resume path used from bead task execution can still bypass source-bundle freshness checks. `prepare_milestone_controller_for_execution` calls `resume_controller` directly at `src/cli/run.rs:1452-1459`, but the `ProjectMilestoneControllerRuntime::all_beads_closed` implementation at `src/cli/run.rs:1418-1433` only reads snapshot progress and never calls `validate_milestone_source_bundle_fresh`; the duplicate command runtime at `src/cli/milestone.rs:1712-1727` has the same blind spot. `resume_transition_request` then uses that result at `src/contexts/milestone_record/controller.rs:1035` and can transition Idle/Selecting controllers to Completed at `src/contexts/milestone_record/controller.rs:1052-1067` before any plan membership load triggers the new stale check. Add a source freshness validation before controller resume/completion decisions so a re-answered requirements bundle cannot leave the old materialized milestone silently marked complete or executable.\n   Classification: fix_current_bead\n   Rationale: The new staleness checks cover bead selection and export, but this controller path can still consume stale milestone state without warning after the source requirements bundle changes.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}
