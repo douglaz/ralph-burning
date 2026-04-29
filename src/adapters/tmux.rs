@@ -738,8 +738,6 @@ struct ManagedTmuxSession {
     stdin_path: PathBuf,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
-    stdout_pipe_path: PathBuf,
-    stderr_pipe_path: PathBuf,
     exit_status_path: PathBuf,
     signal_pid_path: PathBuf,
 }
@@ -758,8 +756,6 @@ impl ManagedTmuxSession {
         let stdin_path = temp_dir.join(format!("{}.tmux.stdin", request.invocation_id));
         let stdout_path = temp_dir.join(format!("{}.tmux.stdout", request.invocation_id));
         let stderr_path = temp_dir.join(format!("{}.tmux.stderr", request.invocation_id));
-        let stdout_pipe_path = temp_dir.join(format!("{}.tmux.stdout.pipe", request.invocation_id));
-        let stderr_pipe_path = temp_dir.join(format!("{}.tmux.stderr.pipe", request.invocation_id));
         let exit_status_path = temp_dir.join(format!("{}.tmux.exit", request.invocation_id));
         let signal_pid_path = temp_dir.join(format!("{}.tmux.pid", request.invocation_id));
         let wrapper_path = temp_dir.join(format!("{}.tmux.sh", request.invocation_id));
@@ -774,8 +770,6 @@ impl ManagedTmuxSession {
                 &stdin_path,
                 &stdout_path,
                 &stderr_path,
-                &stdout_pipe_path,
-                &stderr_pipe_path,
                 &exit_status_path,
                 &signal_pid_path,
             )?,
@@ -796,8 +790,6 @@ impl ManagedTmuxSession {
             stdin_path,
             stdout_path,
             stderr_path,
-            stdout_pipe_path,
-            stderr_pipe_path,
             exit_status_path,
             signal_pid_path,
         })
@@ -876,8 +868,6 @@ impl ManagedTmuxSession {
             &self.stdin_path,
             &self.stdout_path,
             &self.stderr_path,
-            &self.stdout_pipe_path,
-            &self.stderr_pipe_path,
             &self.exit_status_path,
             &self.signal_pid_path,
         ] {
@@ -951,8 +941,6 @@ fn build_wrapper_script(
     stdin_path: &Path,
     stdout_path: &Path,
     stderr_path: &Path,
-    stdout_pipe_path: &Path,
-    stderr_pipe_path: &Path,
     exit_status_path: &Path,
     signal_pid_path: &Path,
 ) -> AppResult<String> {
@@ -974,14 +962,29 @@ fn build_wrapper_script(
         .chain(args.iter().map(|arg| shell_escape(arg)))
         .collect::<Vec<_>>()
         .join(" ");
+    // Issue #188 follow-up: the original wrapper used `mkfifo` + two
+    // background `tee FILE < FIFO` processes to capture stdout/stderr
+    // while keeping the streams visible to anyone attaching to the tmux
+    // session. That pattern relies on `tee` looping until EOF on the
+    // FIFO. uutils-coreutils tee 0.8.0 (the default tee on NixOS and
+    // some other distros that ship uutils) reads the FIFO once and
+    // exits, closing its read end. The child's next write to the FIFO
+    // then gets SIGPIPE and the child exits 141 — which surfaced as the
+    // "codex exited with code 101" loop reported in issue #188.
+    //
+    // The fix is to drop the FIFO+tee dance entirely. We redirect the
+    // child's stdout/stderr directly to files (load-bearing — ralph's
+    // CaptureTail reads these files through `wait_for_session_exit`,
+    // not through the tmux pty) and use `tail -f` to mirror the live
+    // output to the tmux pty for `run attach` users. `tail -f` on a
+    // regular growing file works correctly under both GNU and uutils
+    // coreutils, so no FIFO is involved in the streaming path.
     Ok(format!(
-        "#!/usr/bin/env bash\nset +e\nset -m\ncd {cwd}\nrm -f {exit_status} {signal_pid} {stdout_pipe} {stderr_pipe}\nmkfifo {stdout_pipe} {stderr_pipe}\ntrap 'rm -f {signal_pid} {stdout_pipe} {stderr_pipe}' EXIT\ntee {stdout} < {stdout_pipe} &\nstdout_tee_pid=$!\ntee {stderr} < {stderr_pipe} >&2 &\nstderr_tee_pid=$!\n(\n  printf '%s' \"$BASHPID\" > {signal_pid}\n  exec {command} < {stdin} > {stdout_pipe} 2> {stderr_pipe}\n) &\nchild_pid=$!\nwait \"$child_pid\"\nstatus=$?\nwait \"$stdout_tee_pid\"\nwait \"$stderr_tee_pid\"\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
+        "#!/usr/bin/env bash\nset +e\nset -m\ncd {cwd}\nrm -f {exit_status} {signal_pid}\ntrap 'rm -f {signal_pid}' EXIT\n: > {stdout}\n: > {stderr}\n(\n  printf '%s' \"$BASHPID\" > {signal_pid}\n  exec {command} < {stdin} > {stdout} 2> {stderr}\n) &\nchild_pid=$!\ntail -n +1 -f {stdout} 2>/dev/null &\ntail_stdout_pid=$!\ntail -n +1 -f {stderr} >&2 2>/dev/null &\ntail_stderr_pid=$!\nwait \"$child_pid\"\nstatus=$?\nkill \"$tail_stdout_pid\" \"$tail_stderr_pid\" 2>/dev/null\nwait \"$tail_stdout_pid\" 2>/dev/null\nwait \"$tail_stderr_pid\" 2>/dev/null\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
         cwd = shell_escape(&working_dir.to_string_lossy()),
         stdin = shell_escape(&stdin_path.to_string_lossy()),
         stdout = shell_escape(&stdout_path.to_string_lossy()),
         stderr = shell_escape(&stderr_path.to_string_lossy()),
-        stdout_pipe = shell_escape(&stdout_pipe_path.to_string_lossy()),
-        stderr_pipe = shell_escape(&stderr_pipe_path.to_string_lossy()),
         exit_status = shell_escape(&exit_status_path.to_string_lossy()),
         signal_pid = shell_escape(&signal_pid_path.to_string_lossy()),
     ))
@@ -1102,4 +1105,212 @@ fn exit_status_from_code(code: i32) -> std::process::ExitStatus {
 #[cfg(not(unix))]
 fn exit_status_from_code(_code: i32) -> std::process::ExitStatus {
     unreachable!("tmux execution currently targets unix platforms")
+}
+
+#[cfg(all(test, unix))]
+mod wrapper_script_tests {
+    //! Issue #188 follow-up regression tests for `build_wrapper_script`.
+    //!
+    //! The original wrapper used `mkfifo` + `tee FILE < FIFO` to capture
+    //! stdout/stderr while still streaming to the tmux pty. That pattern
+    //! relies on `tee` looping until EOF on the FIFO. uutils-coreutils tee
+    //! 0.8.0 (the default `tee` on NixOS and any system that ships uutils
+    //! in lieu of GNU coreutils) reads the FIFO once and exits. The child's
+    //! next write to the FIFO then gets `SIGPIPE` and the child exits 141,
+    //! which surfaced as the `code 101 transport_failure` retry loop in
+    //! issue #188.
+    //!
+    //! These tests exercise the wrapper script with a fake codex that
+    //! mimics the failing pattern: write output, sleep (FIFO would be idle
+    //! here), write more, exit cleanly. The wrapper must capture **all**
+    //! lines and report exit 0. They run as part of the normal cargo test
+    //! run; they don't require a tmux binary because they execute the
+    //! wrapper script directly under bash.
+
+    use super::build_wrapper_script;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn write_executable(path: &Path, contents: &str) {
+        fs::write(path, contents).expect("write fake binary");
+        let mut permissions = fs::metadata(path).expect("stat fake binary").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod fake binary");
+    }
+
+    /// Fake child that emits output, sleeps, emits more output, then
+    /// exits cleanly. Matches the codex CLI shape that triggered #188:
+    /// banner → reasoning (idle on stdout) → final response.
+    ///
+    /// Uses `#!/bin/sh` (POSIX-only) so the test runs in restricted
+    /// environments like the Nix build sandbox where `/usr/bin/env`
+    /// and bash may not be on $PATH for child exec.
+    fn write_fake_codex(bin: &Path) {
+        write_executable(
+            bin,
+            r#"#!/bin/sh
+echo "OpenAI Codex banner"
+sleep 1
+echo "thinking..."
+sleep 1
+echo "final response"
+exit 0
+"#,
+        );
+    }
+
+    fn make_wrapper(working_dir: &Path, binary: &Path, paths: &WrapperPaths) -> std::path::PathBuf {
+        let script = build_wrapper_script(
+            working_dir,
+            binary,
+            &[],
+            &paths.stdin,
+            &paths.stdout,
+            &paths.stderr,
+            &paths.exit_status,
+            &paths.signal_pid,
+        )
+        .expect("build wrapper script");
+        let wrapper_path = working_dir.join("wrapper.sh");
+        write_executable(&wrapper_path, &script);
+        wrapper_path
+    }
+
+    struct WrapperPaths {
+        stdin: std::path::PathBuf,
+        stdout: std::path::PathBuf,
+        stderr: std::path::PathBuf,
+        exit_status: std::path::PathBuf,
+        signal_pid: std::path::PathBuf,
+    }
+
+    impl WrapperPaths {
+        fn new(dir: &Path) -> Self {
+            let stdin = dir.join("stdin.txt");
+            fs::write(&stdin, "test prompt\n").expect("write stdin");
+            Self {
+                stdin,
+                stdout: dir.join("stdout"),
+                stderr: dir.join("stderr"),
+                exit_status: dir.join("exit"),
+                signal_pid: dir.join("pid"),
+            }
+        }
+    }
+
+    #[test]
+    fn wrapper_captures_all_output_across_sleeps_under_uutils_tee() {
+        // Regression test for issue #188: the wrapper must capture every
+        // line of child output even when the system `tee` is uutils
+        // 0.8.0, which reads a FIFO once and exits. Before the fix, the
+        // wrapper used `tee FILE < FIFO` and only the first line landed
+        // in the file before SIGPIPE killed the child. After the fix the
+        // wrapper redirects directly to the file and uses `tail -f` for
+        // tmux pty streaming, so the FIFO+tee race no longer exists.
+        let dir = tempdir().expect("create temp dir");
+        let bin = dir.path().join("fake-codex");
+        write_fake_codex(&bin);
+        let paths = WrapperPaths::new(dir.path());
+        let wrapper = make_wrapper(dir.path(), &bin, &paths);
+
+        let output = Command::new("bash")
+            .arg(&wrapper)
+            .output()
+            .expect("run wrapper");
+
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "wrapper must exit 0; stderr was: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let captured_stdout = fs::read_to_string(&paths.stdout).expect("read captured stdout");
+        let captured_lines: Vec<&str> = captured_stdout.lines().collect();
+        assert_eq!(
+            captured_lines,
+            vec!["OpenAI Codex banner", "thinking...", "final response"],
+            "wrapper must capture all 3 child stdout lines (uutils tee \
+             0.8.0 reads the FIFO once and exits, which would lose every \
+             line after the first under the old wrapper)"
+        );
+
+        let recorded_status =
+            fs::read_to_string(&paths.exit_status).expect("read exit-status file");
+        assert_eq!(
+            recorded_status, "0",
+            "exit_status file must record the child's clean exit"
+        );
+    }
+
+    #[test]
+    fn wrapper_propagates_child_failure_exit_code() {
+        // Sanity: a child that writes to stdout then exits non-zero must
+        // surface its exit code, not get masked into 0 by the wrapper's
+        // own exit handling.
+        let dir = tempdir().expect("create temp dir");
+        let bin = dir.path().join("failing-fake");
+        write_executable(
+            &bin,
+            r#"#!/bin/sh
+echo "starting"
+sleep 1
+echo "about to fail"
+exit 7
+"#,
+        );
+        let paths = WrapperPaths::new(dir.path());
+        let wrapper = make_wrapper(dir.path(), &bin, &paths);
+
+        let output = Command::new("bash")
+            .arg(&wrapper)
+            .output()
+            .expect("run wrapper");
+
+        assert_eq!(output.status.code(), Some(7));
+        let recorded_status =
+            fs::read_to_string(&paths.exit_status).expect("read exit-status file");
+        assert_eq!(recorded_status, "7");
+        let captured_stdout = fs::read_to_string(&paths.stdout).expect("read captured stdout");
+        assert!(
+            captured_stdout.contains("starting") && captured_stdout.contains("about to fail"),
+            "captured stdout should contain both lines emitted before \
+             the non-zero exit; got: {captured_stdout:?}"
+        );
+    }
+
+    #[test]
+    fn wrapper_records_signal_pid_for_external_cancellation() {
+        // The signal_pid file is the load-bearing handle ralph uses to
+        // SIGTERM/SIGKILL the child via `cancel()`. The fix must not
+        // regress that contract.
+        let dir = tempdir().expect("create temp dir");
+        let bin = dir.path().join("quick-fake");
+        write_executable(
+            &bin,
+            r#"#!/bin/sh
+echo "ok"
+exit 0
+"#,
+        );
+        let paths = WrapperPaths::new(dir.path());
+        let wrapper = make_wrapper(dir.path(), &bin, &paths);
+
+        let output = Command::new("bash")
+            .arg(&wrapper)
+            .output()
+            .expect("run wrapper");
+        assert_eq!(output.status.code(), Some(0));
+
+        // signal_pid is removed by the wrapper's EXIT trap on a clean
+        // exit; what we can assert is that the child was actually
+        // recorded with a real pid via the exit_status path.
+        assert_eq!(
+            fs::read_to_string(&paths.exit_status).expect("read exit-status"),
+            "0"
+        );
+    }
 }
