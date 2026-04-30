@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260430030405-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T07:26:39.135040909Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Made `ralph-burning pr open` idempotent after post-commit failures. The command now detects a single already-rendered squash commit in `origin/master..HEAD`, reconstructs the expected PR title/body from committed review-scope diff stats, verifies the commit message matches the expected rendered squash message, and retries only the push and PR creation steps without soft-resetting or recommitting. Non-matching hand-written commits still fail through the existing `NonCheckpointCommits` path. Added mockable committed-diff support to `PrToolPort` and regression tests for rerunning after transient `git push` and `gh pr create` failures.\",\n  \"outstanding_risks\": [],\n  \"steps\": [\n    {\n      \"description\": \"Inspected the existing `pr_open` flow and identified the retry gap between the squashed commit step and the fallible push/PR creation steps.\",\n      \"order\": 0,\n      \"status\": \"completed\"\n    },\n    {\n      \"description\": \"Added committed diff-stat retrieval to the \n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 7
+}

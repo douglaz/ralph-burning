@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T03:53:21.220585670Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against the requested fork point and the changed implementation files. `nix build`, `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --locked -- -D warnings`, and focused `nix develop -c cargo test --locked pr_open` passed. Found three git-safety issues in the PR-open flow.\n\n## Amendments\n\n1. `src/contexts/bead_workflow/pr_open.rs:416` soft-resets directly to freshly fetched `origin/master` without first proving that `origin/master` is already an ancestor of the feature branch. If master advanced after the checkpoint branch was created, `git reset --soft origin/master` leaves the index at the old checkpoint tree; the commit at `src/contexts/bead_workflow/pr_open.rs:443` can then include reversions or deletions for unrelated upstream changes. Add an ancestry check such as `git merge-base --is-ancestor origin/master HEAD` before the reset, or fail with a rebase/sync hint, and cover the advanced-master case in the mock port tests.\n   Classification: fix_current_bead\n   Rationale: Prevents the PR automation from manufacturing a squash commit that unintentionally reverts upstream master changes.\n2. `src/contexts/bead_workflow/pr_open.rs:258` collects only commit subjects, and `src/contexts/bead_workflow/pr_open.rs:405` treats any subject starting with `rb: checkpoint` as safe to squash. That does not enforce the requested safety check: a hand-written commit with a matching prefix, or a checkpoint from another project/run, is silently subsumed. Return full commit messages and validate them with the existing checkpoint metadata parser, ideally matching the active project/run, before allowing the reset. Add a regression for a commit titled `rb: checkpoint manual` with no `RB-*` body.\n   Classification: fix_current_bead\n   Rationale: The command is explicitly meant to avoid silently squashing hand-written commits; the current prefix check is too weak for that safety boundary.\n3. `open_pr_for_completed_run` runs gates on the working tree at `src/contexts/bead_workflow/pr_open.rs:382`, then soft-resets and commits only the staged index at `src/contexts/bead_workflow/pr_open.rs:416` and `src/contexts/bead_workflow/pr_open.rs:443`. There is no guard for unstaged real-code changes before the reset. If a user or late tool leaves `src/` or `tests/` edits unstaged, the gates can pass against code that the PR commit omits. Add a pre-reset dirty-worktree check excluding allowed live `.ralph-burning/` state, or explicitly stage the intended real-code paths after reset, with a test that unstaged product changes fail before push.\n   Classification: fix_current_bead\n   Rationale: The pushed PR must correspond to the exact tree that was validated by the success gates.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

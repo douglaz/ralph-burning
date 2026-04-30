@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T04:39:19.724106250Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound two correctness issues in the PR open flow. Verification run: `nix build`, `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --locked -- -D warnings`, and `nix develop -c cargo test` all completed successfully.\n\n## Amendments\n\n1. src/contexts/bead_workflow/pr_open.rs:297 only checks unstaged and untracked paths before the reset, while src/contexts/bead_workflow/pr_open.rs:496 then runs `git reset --soft origin/master` and src/contexts/bead_workflow/pr_open.rs:523 commits whatever is already in the index. `git reset --soft` preserves any pre-existing staged manual edits, so an operator can have a staged real-code change silently swept into the squashed PR commit even though it was not part of an `rb: checkpoint` commit. Reject or explicitly account for pre-existing staged real-code changes before the soft reset, and add a test with a staged path.\n   Classification: fix_current_bead\n   Rationale: This defeats the checkpoint-only safety check and can push unrelated manual work in the automated PR commit.\n2. src/contexts/bead_workflow/pr_open.rs:332 builds the \"real-code\" diff stats by excluding only `.ralph-burning/**`, and src/contexts/bead_workflow/pr_open.rs:606 plus src/contexts/bead_workflow/pr_open.rs:615 render that list directly into the PR body and reviewer file list. That treats `.beads/issues.jsonl` and other non-source metadata as reviewer-visible real code, and it can also make src/contexts/bead_workflow/pr_open.rs:510 think there are real-code changes when only backlog metadata changed. Filter the stats/reviewer list to the stated review scope (`src/`, `tests/`, `docs/`, and config files) or explicitly exclude non-code state such as `.beads/`.\n   Classification: fix_current_bead\n   Rationale: The PR body is supposed to show real-code-only stats and reviewer attention, not backlog/runtime metadata.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

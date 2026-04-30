@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T06:28:08.834421097Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against dac073d99369604ddefdedad77a1bc351e6612d5, including the changed PR CLI and pr_open implementation. Targeted pr_open tests, cargo fmt --check, cargo clippy --locked -- -D warnings, and nix build all pass via nix develop/nix build; one correctness issue remains around dirty staged state after the squash commit.\n\n## Amendments\n\n1. src/contexts/bead_workflow/pr_open.rs:619-632 commits only `review_scope_paths` after `git reset --soft origin/master`, and `is_review_scope_path` filters out `.ralph-burning`/`.beads` at src/contexts/bead_workflow/pr_open.rs:856-864. Since checkpoint commits include those generated files, a successful `pr open` leaves the excluded changes staged/dirty after pushing the PR. The command should either commit all squashed checkpoint paths while only filtering stats/reviewer guidance, or explicitly unstage/restore excluded generated state before returning success so the drain loop exits in a clean, predictable git state.\n   Classification: fix_current_bead\n   Rationale: The success-path automation is meant to replace the manual post-run cleanup. Leaving staged generated files behind after reporting success can break the next checkout/reset/drain step and makes the local branch state diverge from the PR that was just opened.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

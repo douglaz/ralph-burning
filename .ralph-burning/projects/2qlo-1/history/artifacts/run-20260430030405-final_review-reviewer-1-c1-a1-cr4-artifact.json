@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T05:55:44.219233136Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against dac073d99369604ddefdedad77a1bc351e6612d5, excluding live .ralph-burning state. `nix develop -c cargo fmt --check`, `nix develop -c cargo clippy --locked -- -D warnings`, `nix develop -c cargo test --features test-stub --locked --quiet`, and `nix build` all passed. Found one correctness issue in path handling for renamed files.\n\n## Amendments\n\n1. `src/contexts/bead_workflow/pr_open.rs:594-600` uses the rendered diff-stat paths as the pathspecs for `git commit`, but those paths come from raw `git diff --cached --numstat` parsing at `src/contexts/bead_workflow/pr_open.rs:772-784`. For renames, git emits paths like `src/{old.rs => new.rs}`, which are valid display text but not valid commit pathspecs, so `ralph-burning pr open` fails after the soft reset for any bead that renames or moves a review-scope file. Keep diff stats for display, but derive commit paths from a pathspec-safe source such as `git diff --cached --name-only -z` or correctly parse `--numstat -z` rename records, and add a regression covering a staged rename.\n   Classification: fix_current_bead\n   Rationale: The command is meant to automate the success path for arbitrary bead diffs; rename-only or rename-containing diffs are legitimate product changes and currently make the PR-open flow fail after it has already reset the branch.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 4
+}

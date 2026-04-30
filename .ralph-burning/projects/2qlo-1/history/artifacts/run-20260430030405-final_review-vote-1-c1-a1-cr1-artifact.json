@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430030405-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T03:54:29.805298823Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAll three amendments identify real safety defects in the PR-opening squash path: the reset base is not proven safe, checkpoint commits are authenticated only by subject prefix, and gates can run against uncommitted work that is not included in the pushed PR commit.\n\n## Votes\n\n- `fr-1-485691a3`: Accept\n  Valid defect. After fetching a newer origin/master, a soft reset to that ref while the branch does not contain it leaves the index/worktree at the feature checkpoint tree and can stage deletions or reversions of upstream changes. An ancestry guard or explicit rebase requirement is needed before squashing.\n- `fr-1-02617c1e`: Accept\n  Valid defect. Checking only commit subjects with a starts_with prefix is not enough to prove commits are generated checkpoints for the current run. Full commit-message parsing with the existing checkpoint metadata format would reject manual prefix-only commits and wrong-run checkpoints before destructive squashing.\n- `fr-1-322ee87c`: Accept\n  Valid defect. The gates execute against the working tree, but the later commit records only the staged index after the soft reset. Unstaged product changes can therefore influence gate results while being omitted from the pushed PR commit, so a dirty-worktree guard or deliberate staging step is required.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

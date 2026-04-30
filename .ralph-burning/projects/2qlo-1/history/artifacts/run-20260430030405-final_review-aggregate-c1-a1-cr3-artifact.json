@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430030405-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430030405-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T05:12:28.734919920Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-154a1ae8`\n- `fr-3-6ac2a69b`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-154a1ae8`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/pr_open.rs:441-444 computes the PR run-history text from the full project journal, and convergence_pattern at src/contexts/bead_workflow/pr_open.rs:688-707 ignores details.run_id on completion_round_advanced events. Projects can have older run IDs in the same journal, so amendment counts from a prior run can leak into the new PR body and commit message. Pass the current/latest run id into convergence extraction and add a regression with mixed old/current run events.\n\n### `fr-3-6ac2a69b`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/pr_open.rs:561-563 commits the whole staged index after the soft reset, but staged_real_code_diff_stats and is_review_scope_path at src/contexts/bead_workflow/pr_open.rs:347-363 and src/contexts/bead_workflow/pr_open.rs:762-777 only report a hard-coded whitelist of paths. Legitimate committed changes outside src/, tests/, docs/, or root config files, such as .github workflows, scripts, templates, or README.md, would be omitted from Diff stats and Review these files, or cause NoRealCodeChanges if they are the only product change. Align the stats/reviewer filter with the actual committed path set, or path-restrict the commit to the same set, and cover this with tests.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

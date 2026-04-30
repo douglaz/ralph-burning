@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430030405-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T06:28:42.009756012Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the amendment because the described dirty/staged worktree outcome follows from the current soft-reset and filtered commit flow.\n\n## Votes\n\n- `fr-5-e92356ae`: Accept\n  The code soft-resets to origin/master, which stages all checkpoint changes, but then filters commit paths through review_scope_paths, excluding .ralph-burning and .beads. A path-limited git commit will not include those excluded staged files, so generated state can remain staged after a successful push/PR open. That leaves the drain loop in an unpredictable dirty state; the command should either include all squashed checkpoint paths in the commit while filtering only review text/stats, or explicitly clean/unstage excluded generated paths before success.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

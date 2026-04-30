@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430030405-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430030405-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T07:05:51.332439049Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 6/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-6-cbffa3f4`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-cbffa3f4`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/pr_open.rs:622 commits the squashed work before the fallible push and PR steps at src/contexts/bead_workflow/pr_open.rs:629 and src/contexts/bead_workflow/pr_open.rs:636, but each invocation first rejects any non-checkpoint commit in origin/master..HEAD at src/contexts/bead_workflow/pr_open.rs:535. After a transient git push failure or gh pr create failure, the repo is left with the final `<bead-id>: <title>` commit, so rerunning `ralph-burning pr open` fails with `NonCheckpointCommits` instead of resuming push/PR creation. Make the command idempotent for an already-rendered squash commit, or otherwise allow retry after post-commit failures, and add regression coverage for rerunning after push and PR-create failures.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

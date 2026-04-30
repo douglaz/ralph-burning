@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430030405-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T06:16:07.339337749Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the pending staged-rename remediation in `src/contexts/bead_workflow/pr_open.rs`. `ralph pr open` now keeps rendered diff stats from cached numstat output for display, but derives `git commit` pathspecs through a separate mockable `staged_real_code_commit_paths` port backed by `git diff --cached --name-only -z --no-renames`, so rename display paths like `src/{old.rs => new.rs}` are no longer passed to `git commit`. Added NUL path parsing, updated the mock port and happy-path call assertions, kept review-scope filtering on the commit path list, and added a staged-rename regression asserting that the PR body still displays the rename while the commit receives pathspec-safe old/new paths.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Inspected the existing `pr_open` implementation and confirmed the failure came from reusing rendered diff-stat paths as commit pathspecs after the soft reset.\",\"order\":0,\"status\":\"completed\"},{\"description\":\"Added a dedicated\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 5
+}

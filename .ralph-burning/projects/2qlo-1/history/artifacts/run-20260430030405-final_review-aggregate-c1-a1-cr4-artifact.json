@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430030405-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430030405-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T05:56:21.227714479Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-ffb7a33f`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-ffb7a33f`\n\n**Classification:** fix_current_bead\n\n`src/contexts/bead_workflow/pr_open.rs:594-600` uses the rendered diff-stat paths as the pathspecs for `git commit`, but those paths come from raw `git diff --cached --numstat` parsing at `src/contexts/bead_workflow/pr_open.rs:772-784`. For renames, git emits paths like `src/{old.rs => new.rs}`, which are valid display text but not valid commit pathspecs, so `ralph-burning pr open` fails after the soft reset for any bead that renames or moves a review-scope file. Keep diff stats for display, but derive commit paths from a pathspec-safe source such as `git diff --cached --name-only -z` or correctly parse `--numstat -z` rename records, and add a regression covering a staged rename.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}
