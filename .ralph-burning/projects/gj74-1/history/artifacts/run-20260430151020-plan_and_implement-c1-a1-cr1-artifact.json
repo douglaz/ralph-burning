@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430151020-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430151020-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T15:25:56.765714367Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Implemented deterministic drain failure recovery policy support: added pure classify_drain_failure(observation: &FailureObservation) -> RecoveryAction in src/contexts/bead_workflow/drain_failure.rs, exported it from bead_workflow, reused pr_watch's known CI flake predicate and pr_open::Gate, documented the policy in docs/drain-failure-policy.md, and added exhaustive unit coverage in tests/unit/drain_failure_policy_test.rs.\",\n  \"outstanding_risks\": [\n    \"br lint could not be run because br is not installed or available on PATH in this environment.\",\n    \"Host cargo commands outside Nix are blocked by missing rustup default toolchain, so cargo gates were run through nix develop.\"\n  ],\n  \"steps\": [\n    {\n      \"order\": 1,\n      \"status\": \"completed\",\n      \"description\": \"Reviewed existing PR watch, PR open, backend failure, and engine completion-round semantics to reuse existing flake, gate, and backend classifications.\"\n    },\n    {\n      \"order\": 2,\n      \"statu\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

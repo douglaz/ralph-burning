@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430151020-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430151020-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T15:36:16.703217934Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against ddd3ac54ba404d2dd130f6f83a5e803dfb7bc350, including source/docs/tests changes and the current worktree diff while excluding .ralph-burning runtime state. No correctness, safety, robustness, or significant maintainability findings. Verification run: nix develop cargo fmt --check, targeted drain_failure_policy tests, targeted clippy, and nix build all passed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}
