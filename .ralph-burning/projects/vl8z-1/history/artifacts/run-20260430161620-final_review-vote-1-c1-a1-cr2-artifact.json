@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430161620-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T17:49:22.054584049Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth proposed amendments identify real correctness defects in drain failure handling and interrupt cleanup.\n\n## Votes\n\n- `fr-2-022774de`: Accept\n  The drain path does discard the original execute_start/execute_resume error whenever a readable non-completed snapshot exists, and outcome_from_run_snapshot collapses RunStatus::Failed and NotStarted to DomainValidationFailure. Since classify_drain_failure has materially different actions for BackendExhausted and RunInterrupted/Cancellation, this can file the wrong follow-up or abort instead of skipping/resuming. Preserving the journal or original failure class is necessary.\n- `fr-2-eea62484`: Accept\n  The outer drain-level tokio::select! can complete on wait_until_interrupted while execute_start/execute_resume is still inside its own termination-signal cleanup, causing that future to be dropped. Dropping it can bypass cancellation finalization, interrupted snapshot/journal persistence, pid cleanup, and orderly lease release paths. The run command's signal handling should own the cleanup or the drain must await the shared cleanup path before returning.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

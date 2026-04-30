@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T19:18:06.181162698Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against 4c3990408bd0caad41b19ef7a86694ccd22e6da6 and ignored .ralph-burning runtime state. Found two correctness issues. nix build passed; a direct cargo test invocation could not start because rustup has no default toolchain configured.\n\n## Amendments\n\n1. src/contexts/bead_workflow/drain.rs:215 and src/contexts/bead_workflow/drain.rs:266-270 make the pending resume path run after a fresh master reset, not on the bead's feature branch. ProcessDrainPorts checks out master in src/cli/drain.rs:153-162, while create_project_from_bead creates a feature branch but the returned branch name is discarded at src/cli/drain.rs:185-204. After a RunInterrupted queues pending_resume_bead, the next loop resets away the branch context and then calls resume_run on master, so a resumed run can lose the work tree and later fail pr open as a non-feature branch. If this is fixed by staying on the feature branch, src/contexts/bead_workflow/drain.rs:231 will still skip the bead because create_project_from_bead marks it in_progress at src/contexts/bead_workflow/create_project.rs:214. Store and restore the created branch for pending resumes, and allow the currently claimed bead status instead of only open.\n   Classification: fix_current_bead\n   Rationale: The required ResumeOnNextCycle behavior cannot work reliably with the real git/br ports; it either resumes from the wrong branch or skips the claimed bead.\n2. src/contexts/bead_workflow/drain.rs:589-591 converts RecoveryAction::Rerun into an Abort/Failed outcome. The bead contract says Rerun is the CI-flake class owned by pr watch and should be ignored by the drain layer; this implementation stops the whole drain if that action reaches handle_recovery_action. Treat it as a drain no-op/continue case, or make it an explicit unreachable invariant before classification can return it here, instead of surfacing Failed.\n   Classification: fix_current_bead\n   Rationale: This is a direct mismatch with the specified RecoveryAction handling and can turn a known flake classification into a terminal drain failure.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 4
+}

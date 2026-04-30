@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430161620-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T19:51:12.135759883Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAll three amendments identify concrete correctness or reliability issues in the current tree and should be accepted.\n\n## Votes\n\n- `fr-5-97e9ba46`: Accept\n  The cited test builds an executable script with a shebang derived from test_shell(), which can fall back to /bin/sh. In the nix sandbox that path is not reliable, so the configured br binary can fail before the behavior under test is exercised. Fixing the test to avoid a non-sandbox interpreter is necessary for the authoritative nix build gate.\n- `fr-5-7eb734c3`: Accept\n  The drain loop queues a resume but then calls sync_master_and_sanity_check before restore_resume_context. The process implementation runs git reset --hard on the current branch first, so if the current branch is the interrupted feature branch, uncommitted code or run state needed for resume can be discarded. That is a real data-loss and resumability defect.\n- `fr-5-66da050f`: Accept\n  complete_success_path checks the interrupt flag after watch_pr returns and before matching WatchOutcome::Merged. If watch_pr already performed the merge, this ordering can skip the bead close and mutation persistence, leaving repository and bead state inconsistent. Post-merge closure should take precedence or be handled as idempotent cleanup.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

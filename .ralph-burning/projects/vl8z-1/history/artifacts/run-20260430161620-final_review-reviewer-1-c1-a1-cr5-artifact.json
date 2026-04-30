@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T19:50:04.697211371Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch against the requested base and read the changed source files. `cargo test`, `cargo fmt --check`, and `cargo clippy --locked -- -D warnings` passed via `nix develop`; `nix build` failed as noted above.\n\n## Amendments\n\n1. `nix build` fails on the final tree in `src/adapters/br_process.rs:2858`. The test writes the fake `custom-br` script using `test_shell()` (`src/adapters/br_process.rs:2247`), whose fallback `/bin/sh` is not available in the nix sandbox, so the configured-binary health-check test reports `br` as unavailable. Fix the test to use a sandbox-available interpreter or avoid a shell script so the authoritative gate passes.\n   Classification: fix_current_bead\n   Rationale: The project treats `nix build` as the authoritative acceptance gate, and it currently fails deterministically in the sandbox.\n2. Pending resume state can be destroyed before `run resume`. `src/contexts/bead_workflow/drain.rs:393` queues a pending resume, but the next loop runs `sync_master_and_sanity_check()` first (`src/contexts/bead_workflow/drain.rs:230`). The process port implements that sync as `git reset --hard` on the current branch before switching to master (`src/cli/drain.rs:153`). If the current branch is the interrupted bead branch, uncommitted run snapshot, journal, or worktree state needed for resume can be discarded before `restore_resume_context` runs. Preserve the feature-branch state, or sync master without hard-resetting the pending resume branch.\n   Classification: fix_current_bead\n   Rationale: The required ResumeOnNextCycle path is unsafe if the failed run left any uncommitted durable state after its last checkpoint.\n3. A SIGINT that lands during a successful PR merge can leave the bead unclosed. `complete_success_path` awaits `watch_pr` at `src/contexts/bead_workflow/drain.rs:524`, checks interruption at line 525, and only then handles `WatchOutcome::Merged` at line 528. If `watch_pr` has already merged the PR when the interrupt flag is set, drain returns `Interrupted` and skips the `Landed via PR #N` close/persist step. Handle `Merged` before honoring the interrupt, or make post-merge bead closure run as idempotent cleanup.\n   Classification: fix_current_bead\n   Rationale: This violates the after-merge close requirement and can leave an in-progress bead that future `br ready` drains will not pick up.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

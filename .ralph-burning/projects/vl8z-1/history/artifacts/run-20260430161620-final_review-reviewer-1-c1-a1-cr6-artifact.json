@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T20:32:29.302210559Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the full branch delta against the requested fork point, excluding live `.ralph-burning/projects/vl8z-1/` runtime state. `nix build`, `cargo test --locked`, `cargo clippy --locked -- -D warnings`, and `cargo fmt --check` passed under `nix develop`/Nix, but the two recovery-path issues above remain.\n\n## Amendments\n\n1. `FailureObservationKind::AmendmentOscillationLimitReached` is only reachable in mocks, not through the real drain CLI path. The journal mapper only reads `failure_class` (`src/cli/drain.rs:753`), max-completion-round failures are emitted as unclassified `StageCommitFailed`/`unknown` with completion-round metadata (`src/contexts/workflow_composition/engine.rs:8231`, `src/contexts/workflow_composition/engine.rs:8372`), and the app-error fallback defaults unclassified errors to `TransportFailure` (`src/cli/drain.rs:659`). A real final-review oscillation will therefore file a follow-up and abort instead of taking the `ForceCompleteRun` success path (`src/contexts/bead_workflow/drain.rs:432`). Amend this bead to parse the max-completion-round journal shape into `AmendmentOscillationLimitReached` and add a test using that real RunFailed shape.\n   Classification: fix_current_bead\n   Rationale: This breaks one of the required recovery actions in the real process adapter even though the pure drain mock test passes.\n2. `ProcessDrainPorts::resume_run` treats a completed snapshot as failure whenever `execute_resume` returns an error (`src/cli/drain.rs:281`). But `execute_resume` deliberately returns `ResumeFailed` when stale-run reconciliation discovers the run already completed (`src/cli/run.rs:4356`) or when the snapshot is already completed (`src/cli/run.rs:4299`). In a queued resume cycle, that turns an actually completed bead into a transport failure and aborts/files a follow-up instead of opening and watching the PR. Amend the current bead to classify the already-completed resume case as `DrainRunOutcome::Completed` and cover it with a pending-resume test.\n   Classification: fix_current_bead\n   Rationale: The resume recovery path should continue when the run is found complete; otherwise unattended drain stops after a successful but reconciled run.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 6
+}

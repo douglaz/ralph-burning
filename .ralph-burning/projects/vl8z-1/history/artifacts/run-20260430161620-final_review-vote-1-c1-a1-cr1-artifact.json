@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430161620-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T17:00:42.813119669Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted all three amendments. Each identifies a real defect in the drain workflow around persistence, terminal run-state handling, or interruption responsiveness.\n\n## Votes\n\n- `fr-1-f8170095`: Accept\n  The drain loop flushes bead mutations but does not commit or push the resulting .beads changes before the next cycle resets the worktree to origin/master. That can discard successful close/follow-up state and make the queue reprocess already handled beads.\n- `fr-1-34d53e03`: Accept\n  ProcessDrainPorts maps any successful execute_start/execute_resume return to Completed even though the run engine can persist a non-completed final snapshot such as Paused and still return Ok. The subsequent open_pr path then fails outside the drain failure classifier, so the adapter should inspect the final snapshot before opening a PR.\n- `fr-1-7c24cad1`: Accept\n  The interrupt flag is only checked after a full bead cycle, while sync, run execution, PR opening, and PR watching can all be long-running. Ctrl-C can therefore be delayed or routed through unrelated failure handling instead of producing a prompt Interrupted outcome.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

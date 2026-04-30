@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430161620-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T20:33:51.372352034Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth amendments identify real defects in the real drain/resume paths and include appropriate regression-test requirements.\n\n## Votes\n\n- `fr-6-c4829c8f`: Accept\n  The claim matches the code: the drain journal mapper only converts recognized failure_class labels, while max-completion-round failures are emitted from StageCommitFailed with an unrecognized/unknown class plus completion-round metadata. That prevents AmendmentOscillationLimitReached from reaching the ForceCompleteRun policy in real CLI execution. Parsing the real RunFailed shape into the specific observation is correct and should be covered by a regression test.\n- `fr-6-ec7feb80`: Accept\n  ProcessDrainPorts::resume_run currently maps an execute_resume error with a completed snapshot to observation_from_app_error, which defaults ResumeFailed to a transport backend failure. execute_resume intentionally returns ResumeFailed for already-completed snapshots and stale-running reconciliation that discovers journal completion, so a queued resume can abort instead of taking the completed success path. Classifying that completed-snapshot resume case as DrainRunOutcome::Completed, with a pending-resume regression test, is technically correct.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 6
+}

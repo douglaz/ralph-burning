@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260430161620-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T21:11:13.028152881Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Completed the pending drain-loop amendments in the current tree. The real drain journal mapper now recognizes the max-completion-round RunFailed shape, including unknown/stage-commit failure labels with completion-round metadata, and maps it to FailureObservationKind::AmendmentOscillationLimitReached so gj74 ForceComplete recovery can run. The queued-resume path now treats an execute_resume error with a reconciled completed run snapshot as DrainRunOutcome::Completed instead of converting it to a transport/backend failure. Added focused tests for both cases and validated the final tree through the repo's Nix environment.\",\"outstanding_risks\":[\"Live orchestration state under .ralph-burning/projects/vl8z-1 remains modified in the workspace and was left untouched because it is outside review scope.\",\"cargo test --locked passes but still emits pre-existing test-only unused-code warnings; cargo clippy --locked -- -D warnings passes cleanly.\"],\"steps\":[{\"description\":\"Inspe\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 7
+}

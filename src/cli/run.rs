@@ -4526,6 +4526,10 @@ pub(crate) async fn execute_resume(
 }
 
 async fn handle_stop() -> AppResult<()> {
+    execute_stop().await
+}
+
+pub(crate) async fn execute_stop() -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
     let run_snapshot_read = FsRunSnapshotStore;

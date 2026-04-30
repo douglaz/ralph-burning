@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430161620-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T16:48:50.768881306Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Implemented the top-level sequential drain loop with a new `ralph-burning drain` CLI command, a reusable `contexts::bead_workflow::drain` orchestrator, structured `DrainOutcome` reporting, stop-condition handling, direct library calls into bead project creation, run start/resume, PR open/watch, and gj74 failure classification. Added isolated port-based tests for happy path, empty queue, P0 stop, interruption, consecutive failures, status re-checking, and every RecoveryAction response path.\",\n  \"outstanding_risks\": [\n    \"`br lint` could not be run because the `br` binary is not available in this environment, including inside `nix develop`.\",\n    \"The existing untracked `.ralph-burning/projects/vl8z-1/` orchestration state remains unmodified and outside review scope.\"\n  ],\n  \"steps\": [\n    {\n      \"order\": 1,\n      \"description\": \"Added a dedicated drain workflow module with `DrainOptions`, `DrainOutcome`, `DrainReport`, cycle summaries, a `DrainPort` abstraction,\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

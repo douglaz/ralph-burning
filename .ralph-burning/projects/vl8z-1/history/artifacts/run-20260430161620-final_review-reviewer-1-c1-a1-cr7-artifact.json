@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T21:28:30.334441693Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against the requested base, excluding live `.ralph-burning/` state. Targeted drain tests, `cargo clippy --locked -- -D warnings`, `cargo fmt --check`, and `nix build` passed. Found one sync robustness issue.\n\n## Amendments\n\n1. Fix the master sync order in `src/cli/drain.rs:175`. `sync_master_and_sanity_check` runs `git checkout -B master origin/master` before the hard reset at `src/cli/drain.rs:181`; with any dirty tracked file, checkout can fail before the drain gets to the reset that is supposed to discard local state and sync master. Reset or force-clean the current worktree before switching branches, or use a forced checkout, and add a regression test with a dirty tracked file.\n   Classification: fix_current_bead\n   Rationale: The headline drain loop is intended to run unattended from whatever state the previous cycle left behind. Aborting before the required hard reset makes the sync step fragile and can strand the drain before it even inspects `br ready`.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 7
+}

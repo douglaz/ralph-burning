@@ -2102,7 +2102,10 @@ mod tests {
         let fake_br = tmp.path().join("fake-br");
         std::fs::write(
             &fake_br,
-            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  echo broken >&2\n  exit 7\nfi\nexit 0\n",
+            format!(
+                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  echo broken >&2\n  exit 7\nfi\nexit 0\n",
+                test_shell()?.display()
+            ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
         permissions.set_mode(0o755);
@@ -2128,28 +2131,18 @@ mod tests {
     {
         let tmp = tempfile::tempdir()?;
         let fake_br = tmp.path().join("fake-br");
-        let shell_path = std::env::var_os("SHELL")
-            .map(PathBuf::from)
-            .filter(|path| path.exists())
-            .or_else(|| {
-                std::env::var_os("PATH").and_then(|paths| {
-                    for dir in std::env::split_paths(&paths) {
-                        for shell in ["sh", "bash"] {
-                            let path = dir.join(shell);
-                            if path.exists() {
-                                return Some(path);
-                            }
-                        }
-                    }
-                    None
-                })
-            })
-            .unwrap_or_else(|| PathBuf::from("/bin/sh"));
+        let version_probe_blocker = tmp.path().join("version-probe-blocker");
+        nix::unistd::mkfifo(
+            &version_probe_blocker,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )?;
+        let shell_path = test_shell()?;
         std::fs::write(
             &fake_br,
             format!(
-                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  while :; do\n    :\n  done\nfi\nexit 0\n",
-                shell_path.display()
+                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  read _ < '{}'\nfi\nexit 0\n",
+                shell_path.display(),
+                version_probe_blocker.display()
             ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
@@ -2244,10 +2237,26 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn test_shell() -> String {
-        std::env::var("BASH")
-            .or_else(|_| std::env::var("SHELL"))
-            .unwrap_or_else(|_| "/bin/sh".to_owned())
+    fn test_shell() -> Result<PathBuf, Box<dyn std::error::Error>> {
+        if let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths).find_map(|dir| {
+                let path = dir.join("bash");
+                path.exists().then_some(path)
+            })
+        }) {
+            return Ok(path);
+        }
+
+        let from_env = ["BASH", "SHELL"]
+            .into_iter()
+            .filter_map(std::env::var_os)
+            .map(PathBuf::from)
+            .find(|path| path.exists() && path.file_name().is_some_and(|name| name == "bash"));
+        if let Some(path) = from_env {
+            return Ok(path);
+        }
+
+        Err("no bash found in BASH, SHELL, or PATH for executable-script test".into())
     }
 
     fn write_pending_mutation_record(
@@ -2864,7 +2873,7 @@ mod tests {
             &fake_br,
             format!(
                 "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--import-only\" ]; then\n  echo imported-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
-                test_shell()
+                test_shell()?.display()
             ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
@@ -2896,7 +2905,7 @@ mod tests {
             &fake_br,
             format!(
                 "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"sync\" ] && [ \"$2\" = \"--flush-only\" ]; then\n  echo synced-via-custom-binary\n  exit 0\nfi\necho unexpected \"$@\" >&2\nexit 99\n",
-                test_shell()
+                test_shell()?.display()
             ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();

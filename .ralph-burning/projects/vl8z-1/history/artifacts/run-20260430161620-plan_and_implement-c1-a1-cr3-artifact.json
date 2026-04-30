@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430161620-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T18:11:49.209260878Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Plan and implementation completed for the pending drain amendments. The drain start/resume adapters now await `execute_start` and `execute_resume` directly so the existing run command signal handling owns cancellation cleanup, pid cleanup, interrupted handoff persistence, and writer lease release. Non-completed run snapshots now preserve the original `AppError` failure observation when available, cancellation maps to `RunInterrupted`, failed snapshots read the run journal for canonical failure classes, and failed snapshots with a generic/noncanonical `run_failed` label fall back to the latest matching `stage_failed` event. Added focused tests covering journal-backed backend exhaustion, stage-failure fallback, cancellation-to-interruption mapping, and preservation of the original failure class for still-running snapshots.\",\n  \"outstanding_risks\": [\n    \"Existing modified `.ralph-burning/projects/vl8z-1/` orchestration state remains outside review scope and was not\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

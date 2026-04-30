@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430161620-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T18:19:00.250139464Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAll three amendments identify real correctness or operability defects in the current drain failure handling and should be accepted.\n\n## Votes\n\n- `fr-3-bcbc547c`: Accept\n  The current drain path propagates PR-open errors as `DrainError` and treats non-merged PR-watch outcomes as generic drain failures, so `GateFailed` and `BlockedByCi` bypass the existing `VerificationFailureSource::{Gate,Ci}` classifier policy. Converting these into `FailureObservationKind::VerificationFailure` is the correct way to make the documented recovery behavior production-reachable.\n- `fr-3-1d650827`: Accept\n  The implementation classifies `FailureObservation` and then drops it; follow-up bead creation only receives `RecoveryAction` and records a generic debug string. That loses the exact diagnostic payload needed to act on the filed bead, such as gate/source, failing tests, run id, and failure class. Passing the observation through is a maintainability and recovery-quality fix.\n- `fr-3-ff3f3ea1`: Accept\n  `ResumeRun { stop_first: true }` is currently reduced to an unconditional immediate resume, with no stop/cleanup path and with a failed resume becoming a hard drain failure. This contradicts the documented interrupted-run policy and leaves the `stop_first` field effectively dead. The recovery path should honor cleanup and make resume retry behavior explicit across drain cycles.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

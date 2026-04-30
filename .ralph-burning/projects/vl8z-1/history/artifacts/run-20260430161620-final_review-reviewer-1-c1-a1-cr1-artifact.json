@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T16:58:42.995124381Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against the requested base, excluding live `.ralph-burning/` state. `nix build` passed. Found three correctness issues in the new drain orchestration.\n\n## Amendments\n\n1. Post-merge bead mutations are not persisted before the next hard reset. The success path closes the bead after PR merge in `src/contexts/bead_workflow/drain.rs:215-217`, and skip/follow-up paths mutate beads in `src/contexts/bead_workflow/drain.rs:393-404`, but the concrete port only runs `br close`/`br create` plus guarded `br sync` in `src/cli/drain.rs:230-265`. The next cycle starts with `git reset --hard origin/master` in `src/cli/drain.rs:113-116`, so those uncommitted `.beads/` changes can be discarded. Persist the final bead mutations to master, for example by syncing, committing, and pushing `.beads/` after merge or by otherwise ensuring the close/follow-up state lands before continuing.\n   Classification: fix_current_bead\n   Rationale: The drain can report a bead as landed or skipped while master still contains stale bead state, which breaks the authoritative backlog and future ready-queue behavior.\n2. The concrete run adapter treats any `execute_start`/`execute_resume` success as a completed run. `ProcessDrainPorts::start_run` returns `DrainRunOutcome::Completed` on any `Ok(())` in `src/cli/drain.rs:162-166`, but `execute_start` can return `Ok(())` after a paused run and merely print the paused status in `src/cli/run.rs:4256-4263`. Drain then attempts `open_pr`, where `pr_open` rejects non-completed snapshots in `src/contexts/bead_workflow/pr_open.rs:501-504`, bypassing `classify_drain_failure`. Read the final run snapshot after start/resume and map non-completed states to the appropriate `FailureObservationKind` before deciding whether to open a PR.\n   Classification: fix_current_bead\n   Rationale: Paused or otherwise non-clean runs become generic open-PR operation failures instead of structured drain recovery decisions.\n3. SIGINT is only observed after an entire bead cycle completes. The loop starts sync, bead selection, project creation, run start, PR open, and PR watch before checking `should_interrupt` at `src/contexts/bead_workflow/drain.rs:344-350`; there is no check before `sync_master_and_sanity_check` at `src/contexts/bead_workflow/drain.rs:192`. A Ctrl-C during sync, run, or PR watch can therefore continue processing work instead of returning `Interrupted{...}` promptly. Check the interrupt flag at the top of the loop and between long operations, and make the run/watch paths cancellable or interrupt-aware.\n   Classification: fix_current_bead\n   Rationale: The required user-interrupt stop condition is not reliable for the long-running operations this command orchestrates.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}
