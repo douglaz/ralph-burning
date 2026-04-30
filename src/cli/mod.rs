@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod flow;
 pub mod init;
 pub mod milestone;
+pub mod pr;
 pub mod project;
 pub mod requirements;
 pub mod run;
@@ -32,6 +33,7 @@ pub enum Commands {
     Flow(flow::FlowCommand),
     Config(config::ConfigCommand),
     Milestone(milestone::MilestoneCommand),
+    Pr(pr::PrCommand),
     Project(project::ProjectCommand),
     Run(run::RunCommand),
     Requirements(requirements::RequirementsCommand),
@@ -48,6 +50,7 @@ pub async fn run(cli: Cli) -> AppResult<()> {
         Commands::Flow(command) => flow::handle(command).await,
         Commands::Config(command) => config::handle(command).await,
         Commands::Milestone(command) => milestone::handle(command).await,
+        Commands::Pr(command) => pr::handle(command).await,
         Commands::Project(command) => project::handle(command).await,
         Commands::Run(command) => run::handle(command).await,
         Commands::Requirements(command) => requirements::handle(command).await,

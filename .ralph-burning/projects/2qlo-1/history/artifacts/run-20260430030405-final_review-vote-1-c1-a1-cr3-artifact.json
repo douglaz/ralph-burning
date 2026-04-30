@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-vote-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430030405-final_review-vote-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T05:12:28.702638327Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth amendments identify real correctness issues in PR-open behavior: run-history rendering can mix journal state across runs, and review-scope reporting is inconsistent with what is actually committed.\n\n## Votes\n\n- `fr-3-154a1ae8`: Accept\n  The code derives convergence_pattern from all CompletionRoundAdvanced journal events while those events include run_id and the current run is otherwise inferred with latest_run_id for checkpoint validation. Older events can therefore influence the rendered convergence pattern, especially when the current run has fewer or no round-advance events for a given round. Filtering by the current/latest run id and adding a mixed-run regression is a correctness and maintainability improvement.\n- `fr-3-6ac2a69b`: Accept\n  After the soft reset, commit() commits the full staged index, but diff stats and reviewer file lists are filtered to a narrow path whitelist. That creates a real mismatch: committed files outside the whitelist can be hidden from the PR body, and branches containing only such files can be rejected as NoRealCodeChanges. Aligning reporting with the actual committed paths, or restricting the commit to the reported scope, is necessary for review safety and should be covered by tests.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

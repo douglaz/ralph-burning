@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T05:11:29.112120220Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the full branch delta against dac073d99369604ddefdedad77a1bc351e6612d5 and read the changed source files. Verification run: nix develop -c cargo test, nix develop -c cargo clippy --locked -- -D warnings, nix develop -c cargo fmt --check, and nix build all passed. Found two correctness gaps in PR metadata generation.\n\n## Amendments\n\n1. src/contexts/bead_workflow/pr_open.rs:441-444 computes the PR run-history text from the full project journal, and convergence_pattern at src/contexts/bead_workflow/pr_open.rs:688-707 ignores details.run_id on completion_round_advanced events. Projects can have older run IDs in the same journal, so amendment counts from a prior run can leak into the new PR body and commit message. Pass the current/latest run id into convergence extraction and add a regression with mixed old/current run events.\n   Classification: fix_current_bead\n   Rationale: The command is required to render the completed run's convergence pattern; using all historical project events makes that metadata wrong for rerun or rollback histories.\n2. src/contexts/bead_workflow/pr_open.rs:561-563 commits the whole staged index after the soft reset, but staged_real_code_diff_stats and is_review_scope_path at src/contexts/bead_workflow/pr_open.rs:347-363 and src/contexts/bead_workflow/pr_open.rs:762-777 only report a hard-coded whitelist of paths. Legitimate committed changes outside src/, tests/, docs/, or root config files, such as .github workflows, scripts, templates, or README.md, would be omitted from Diff stats and Review these files, or cause NoRealCodeChanges if they are the only product change. Align the stats/reviewer filter with the actual committed path set, or path-restrict the commit to the same set, and cover this with tests.\n   Classification: fix_current_bead\n   Rationale: The PR body is supposed to direct reviewers to the actual non-orchestration files in the squashed commit; a narrower reporting filter can hide committed changes from review.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

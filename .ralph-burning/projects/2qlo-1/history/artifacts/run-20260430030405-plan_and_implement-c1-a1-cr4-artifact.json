@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430030405-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T05:38:21.417937055Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Completed the pending `ralph pr open` remediation in `src/contexts/bead_workflow/pr_open.rs`: convergence history is now scoped to the latest/current run id so older run journal events cannot leak into commit messages or PR bodies, and the PR diff/commit path handling now aligns committed paths with the rendered review-scope file set. The review-scope filter now includes legitimate product paths beyond the original `src/`, `tests/`, `docs/`, and root-config whitelist, such as `.github/`, `scripts/`, `templates/`, common root docs, and common code/config extensions, while still excluding orchestration and generated metadata such as `.ralph-burning/`, `.beads/`, `.git/`, `target/`, and `node_modules/`. Added regression coverage for mixed old/current run convergence events and reviewable paths outside the original whitelist, and updated the mockable PR tool port to record and commit only the filtered path set.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Inspected t\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 4
+}

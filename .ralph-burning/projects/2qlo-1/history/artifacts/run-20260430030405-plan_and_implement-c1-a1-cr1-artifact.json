@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430030405-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T03:42:36.520319312Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented `ralph-burning pr open` for the completed-run drain-loop success path. The command verifies completed run state, optionally runs gates, sanity-checks checkpoint commits, soft-resets to `origin/master`, renders a bead-aware commit message and PR body using the shared orchestration-state exclusion constant, commits, pushes, opens the PR through `gh`, and prints the PR URL. Git and gh interactions are routed through a mockable `PrToolPort`, with unit coverage for the happy path, run-state rejection, every configured gate failure, non-feature branches, non-checkpoint commits, no-checkpoint warning behavior, push failure, gh PR creation failure, and pure PR-body rendering.\",\"steps\":[{\"order\":0,\"status\":\"completed\",\"description\":\"Inspected existing bead workflow renderer, project/run store ports, CLI module plumbing, and repository conventions for drain-loop commands.\"},{\"order\":1,\"status\":\"completed\",\"description\":\"Added `pr` CLI module and wired `ralph-burnin\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

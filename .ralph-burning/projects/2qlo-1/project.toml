@@ -1,0 +1,7 @@
+id = "2qlo-1"
+name = "2qlo ralph pr open"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "20ba1313f01bbdf13c0ff07e998b9f15d45b882cf0601aa6adb6a3cf0a78eda4"
+created_at = "2026-04-30T03:04:05.737876243Z"
+status_summary = "created"

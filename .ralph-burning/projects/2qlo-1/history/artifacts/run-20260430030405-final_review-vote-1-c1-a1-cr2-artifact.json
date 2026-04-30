@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430030405-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T04:40:18.181279212Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth amendments identify real PR-open workflow defects that can mis-scope the squashed commit or reviewer-facing diff, so both should be accepted.\n\n## Votes\n\n- `fr-2-f4f734a1`: Accept\n  The workflow checks only unstaged and untracked paths before `git reset --soft origin/master`. A soft reset preserves the index, and the later commit uses that index, so a pre-existing staged manual real-code edit can be silently included in the squash despite not being an `rb: checkpoint` commit. This is a concrete safety issue; adding a staged-path regression test is warranted.\n- `fr-2-4c7288e9`: Accept\n  The staged diff stats are labeled and used as real-code scope for `NoRealCodeChanges`, PR diff stats, and reviewer attention, but the command excludes only `.ralph-burning/**`. That can classify `.beads/` backlog state or other metadata as reviewer-visible real code, contradicting the stated review scope of `src/`, `tests/`, `docs/`, and config files. The stats/filtering should explicitly enforce that scope or exclude non-code state.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

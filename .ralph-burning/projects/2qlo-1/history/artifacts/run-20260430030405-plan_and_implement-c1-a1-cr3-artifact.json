@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430030405-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T04:59:39.804396220Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Implemented the pending pr-open safety remediations in src/contexts/bead_workflow/pr_open.rs. The command now checks the index for pre-existing staged review-scope changes before the soft reset and fails with a dedicated StagedRealCodeWorktree error instead of sweeping manual staged edits into the squash commit. Real-code diff handling now uses an explicit review-scope filter for src/, tests/, docs/, and root config files, excluding orchestration/backlog metadata such as .ralph-burning/ and .beads/ from dirty checks, diff stats, reviewer file lists, and the no-real-code-changes decision. Added mock-port support and tests for staged-path rejection, metadata filtering in PR rendering, and metadata-only diffs producing NoRealCodeChanges.\",\n  \"outstanding_risks\": [],\n  \"steps\": [\n    {\n      \"description\": \"Inspected the existing pr_open implementation and pending amendments to identify the two remaining safety gaps: pre-reset staged changes and overly broad diff/rev\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

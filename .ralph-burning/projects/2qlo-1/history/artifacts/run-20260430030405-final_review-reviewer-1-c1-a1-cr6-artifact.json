@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T07:05:35.732511854Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nFound one robustness issue in the post-commit failure path. `cargo fmt --check`, `cargo clippy --locked -- -D warnings`, `cargo test --locked`, and `nix build` passed under the available nix environment.\n\n## Amendments\n\n1. src/contexts/bead_workflow/pr_open.rs:622 commits the squashed work before the fallible push and PR steps at src/contexts/bead_workflow/pr_open.rs:629 and src/contexts/bead_workflow/pr_open.rs:636, but each invocation first rejects any non-checkpoint commit in origin/master..HEAD at src/contexts/bead_workflow/pr_open.rs:535. After a transient git push failure or gh pr create failure, the repo is left with the final `<bead-id>: <title>` commit, so rerunning `ralph-burning pr open` fails with `NonCheckpointCommits` instead of resuming push/PR creation. Make the command idempotent for an already-rendered squash commit, or otherwise allow retry after post-commit failures, and add regression coverage for rerunning after push and PR-create failures.\n   Classification: fix_current_bead\n   Rationale: The bead explicitly handles push and gh failure modes; leaving the command non-retryable after those failures can strand the drain loop in a state that requires manual recovery.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 6
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430030405-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430030405-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T06:28:42.050374048Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-e92356ae`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-e92356ae`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/pr_open.rs:619-632 commits only `review_scope_paths` after `git reset --soft origin/master`, and `is_review_scope_path` filters out `.ralph-burning`/`.beads` at src/contexts/bead_workflow/pr_open.rs:856-864. Since checkpoint commits include those generated files, a successful `pr open` leaves the excluded changes staged/dirty after pushing the PR. The command should either commit all squashed checkpoint paths while only filtering stats/reviewer guidance, or explicitly unstage/restore excluded generated state before returning success so the drain loop exits in a clean, predictable git state.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

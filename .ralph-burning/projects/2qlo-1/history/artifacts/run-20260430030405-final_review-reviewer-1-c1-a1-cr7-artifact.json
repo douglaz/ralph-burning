@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260430030405-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T07:39:56.214710381Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo actionable correctness, safety, or robustness findings in the reviewed branch state. I reviewed the changed source files and validated with nix develop -c cargo fmt --check, nix develop -c cargo clippy --locked -- -D warnings, nix develop -c cargo test --locked, and nix build.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 7
+}
