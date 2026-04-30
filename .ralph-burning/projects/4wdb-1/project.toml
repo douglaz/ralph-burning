@@ -1,0 +1,7 @@
+id = "4wdb-1"
+name = "4wdb bead-prompt renderer"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "ea308234837f9e02e562661fca0025f2010d32a60005ec8a14645e509293306d"
+created_at = "2026-04-29T20:39:58.516284847Z"
+status_summary = "created"

@@ -1,5 +1,6 @@
 pub mod agent_execution;
 pub mod automation_runtime;
+pub mod bead_workflow;
 pub mod conformance_spec;
 pub mod milestone_record;
 pub mod project_run_record;

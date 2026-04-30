@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429203958-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429203958-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T22:27:41.584508381Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the amendment as a real prompt-rendering correctness issue.\n\n## Votes\n\n- `fr-1-ca904d7e`: Accept\n  The code currently sends every whitespace-delimited token through path detection, and a standalone slash passes because any token containing '/' is treated as a path. That can emit bogus `Where to Look` entries such as `/` from ordinary prose like `AGENTS.md / CLAUDE.md`, so tightening detection and adding a regression is justified.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

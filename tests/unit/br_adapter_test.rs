@@ -7,7 +7,7 @@ use serde::Deserialize;
 use tempfile::tempdir;
 
 use ralph_burning::adapters::br_models::{
-    BeadDetail, BeadStatus, BeadSummary, DepTreeNode, DependencyKind, ReadyBead,
+    BeadDetail, BeadSummary, DepTreeNode, DependencyKind, ReadyBead,
 };
 use ralph_burning::adapters::br_process::{
     BrAdapter, BrCommand, BrError, BrMutationAdapter, BrOutput, ProcessRunner,
@@ -279,27 +279,36 @@ async fn br_list_by_status_parses_array_output() -> Result<(), Box<dyn std::erro
 }
 
 #[tokio::test]
-async fn br_dep_tree_parses_nested_dependency_output() -> Result<(), Box<dyn std::error::Error>> {
-    let tree_json = r#"{
-        "id":"bead-root",
-        "title":"Root bead",
-        "status":"open",
-        "children":[
-            {
-                "id":"bead-child",
-                "title":"Child bead",
-                "status":"in_progress",
-                "children":[
-                    {
-                        "id":"bead-leaf",
-                        "title":"Leaf bead",
-                        "status":"closed",
-                        "children":[]
-                    }
-                ]
-            }
-        ]
-    }"#;
+async fn br_dep_tree_parses_flat_dependency_output() -> Result<(), Box<dyn std::error::Error>> {
+    let tree_json = r#"[
+        {
+            "id":"bead-root",
+            "title":"Root bead",
+            "depth":0,
+            "parent_id":null,
+            "priority":1,
+            "status":"open",
+            "truncated":false
+        },
+        {
+            "id":"bead-child",
+            "title":"Child bead",
+            "depth":1,
+            "parent_id":"bead-root",
+            "priority":2,
+            "status":"in_progress",
+            "truncated":false
+        },
+        {
+            "id":"bead-leaf",
+            "title":"Leaf bead",
+            "depth":2,
+            "parent_id":"bead-child",
+            "priority":3,
+            "status":"closed",
+            "truncated":false
+        }
+    ]"#;
     let (adapter, _) = read_adapter_with(vec![ScriptedBrCall {
         expected_args: vec![
             "dep".to_owned(),
@@ -310,20 +319,20 @@ async fn br_dep_tree_parses_nested_dependency_output() -> Result<(), Box<dyn std
         result: MockBrRunner::ok(tree_json),
     }]);
 
-    let tree: DepTreeNode = adapter.exec_json(&BrCommand::dep_tree("bead-root")).await?;
+    let tree: Vec<DepTreeNode> = adapter.exec_json(&BrCommand::dep_tree("bead-root")).await?;
 
     assert_eq!(
-        tree.id, "bead-root",
+        tree[0].id, "bead-root",
         "dep tree should parse the requested root bead"
     );
     assert_eq!(
-        tree.status,
-        BeadStatus::Open,
-        "dep tree should deserialize the public bead status contract"
+        tree[1].parent_id.as_deref(),
+        Some("bead-root"),
+        "dep tree should deserialize direct parent metadata from the flat output"
     );
     assert_eq!(
-        tree.children[0].children[0].id, "bead-leaf",
-        "dep tree should preserve nested dependency structure"
+        tree[2].depth, 2,
+        "dep tree should preserve node depth metadata"
     );
     Ok(())
 }

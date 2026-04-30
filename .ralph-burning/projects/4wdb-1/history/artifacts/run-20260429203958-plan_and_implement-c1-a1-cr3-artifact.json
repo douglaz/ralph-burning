@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429203958-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260429203958-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T23:53:47.562161283Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Adjusted the bead project prompt renderer and br dependency-tree model to match the live flat `br dep tree <id> --json` shape. `BeadPromptBrPort::bead_dep_tree` and the real `BrAdapter` implementation now deserialize a `Vec<DepTreeNode>`, `DepTreeNode` carries `depth` and `parent_id` metadata, and the renderer derives direct blocker context from nodes where `depth == 1` and `parent_id` matches the requested bead. Updated renderer mocks and added/updated flat-shape coverage in both the prompt tests and adapter tests so the real adapter path no longer relies on the old nested `children` shape.\",\"outstanding_risks\":[\"The working tree contains live orchestration state changes under `.ralph-burning/projects/4wdb-1/` that I did not treat as source review scope.\",\"`cargo test` passed but emitted existing unused-code/import warnings in test builds; `cargo clippy -- -D warnings` passed cleanly.\"],\"steps\":[{\"description\":\"Inspected the existing renderer, `DepTreeNode` model, p\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}
