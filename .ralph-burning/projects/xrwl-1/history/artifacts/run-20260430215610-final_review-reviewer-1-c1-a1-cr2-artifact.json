@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430215610-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430215610-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T23:29:47.667947783Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo actionable correctness, safety, or robustness issues found in the reviewed branch state. Reviewed the branch diff against 4f1a2390a063e793bd83d35702dc8a9b467926e2 and ignored .ralph-burning runtime state as requested. Verification: nix build, cargo test --locked, cargo clippy --locked -- -D warnings, and cargo fmt --check passed; br lint could not be run because br is not installed in this environment.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

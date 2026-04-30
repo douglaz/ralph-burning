@@ -128,3 +128,6 @@ mod bead_create_project_test;
 
 #[path = "unit/drain_failure_policy_test.rs"]
 mod drain_failure_policy_test;
+
+#[path = "unit/drain_harness_test.rs"]
+mod drain_harness_test;

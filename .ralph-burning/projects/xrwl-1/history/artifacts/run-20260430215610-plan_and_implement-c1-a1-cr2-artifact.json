@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430215610-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430215610-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T23:19:10.666103868Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the xrwl drain-loop harness remediation. The scratch drain harness now drives `drain_bead_queue` through the real production entry points for project creation (`create_project_from_bead`), PR open/gates/squash (`open_pr_for_completed_run`), and PR polling/known-flake rerun/merge (`watch_pr`), with lower-level in-memory mocks for br, feature branches, PR tooling, PR watch tooling, deterministic clock, run completion snapshots, bead close, and follow-up filing. The backend-exhausted scenario now includes a second ready happy-path bead and asserts skip-plus-continue behavior across two cycles. The happy-path test also asserts that the real PR-open path invoked gates, reset, commit, push, and PR creation through the mock `PrToolPort`. Existing scenario coverage remains in place for happy path, known flake rerun, permanent failure follow-up abort, backend-exhausted skip, interrupted resume, bot rejection abort, force-complete merge, and `RecoveryAction` exhaus\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}
