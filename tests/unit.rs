@@ -119,3 +119,6 @@ mod controller_runtime_test;
 
 #[path = "unit/milestone_store_integration_test.rs"]
 mod milestone_store_integration_test;
+
+#[path = "unit/bead_project_prompt_test.rs"]
+mod bead_project_prompt_test;

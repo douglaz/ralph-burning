@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429203958-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429203958-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-29T22:16:38.189988266Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the bead project prompt renderer foundation. Added `contexts::bead_workflow::project_prompt` with a mockable `BeadPromptBrPort`, `render_project_prompt_from_bead`, structured render errors for missing/closed/open-blocked beads, nearby graph rendering, explicit path pointer extraction, repo norms footer detection, and a centralized orchestration-state exclusion boilerplate constant. Added unit coverage for happy path, omitted empty acceptance criteria, empty graph context, open blocker refusal, closed bead refusal, and missing bead handling.\",\"outstanding_risks\":[\"The working tree contains orchestration/backlog state outside the source patch: `.beads/issues.jsonl` is modified and `.ralph-burning/projects/4wdb-1/` is untracked. I did not modify or stage `.ralph-burning/` state.\"],\"steps\":[{\"description\":\"Inspected the existing `br` adapter, bead model types, context module layout, and unit test harness to place the renderer in the existing architecture.\",\"o\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

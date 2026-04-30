@@ -451,12 +451,25 @@ fn clean_acceptance_line(line: &str) -> String {
 
 // ── DepTreeNode ─────────────────────────────────────────────────────────────
 
-/// A node in the dependency tree, as returned by `br dep tree <id>`.
+/// A node in the dependency tree, as returned by `br dep tree <id> --json`.
+///
+/// The live `br` CLI emits a top-level flat array of nodes with `depth` and
+/// `parent_id` metadata. The `children` field remains defaulted so older nested
+/// fixtures continue to deserialize, but production callers should use the flat
+/// metadata to reconstruct direct relationships.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DepTreeNode {
     pub id: String,
     pub title: String,
-    pub status: BeadStatus,
+    pub status: String,
+    #[serde(default)]
+    pub depth: usize,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub truncated: bool,
     #[serde(default)]
     pub children: Vec<DepTreeNode>,
 }
@@ -943,9 +956,40 @@ mod tests {
         let tree: DepTreeNode = serde_json::from_str(json)?;
         assert_eq!(tree.id, "bead-1");
         assert_eq!(tree.children.len(), 2);
-        assert_eq!(tree.children[0].status, BeadStatus::Closed);
+        assert_eq!(tree.children[0].status, "closed");
         assert_eq!(tree.children[1].children.len(), 1);
         assert_eq!(tree.children[1].children[0].id, "bead-1.2.1");
+        Ok(())
+    }
+
+    #[test]
+    fn dep_tree_flat_live_shape() -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"[
+            {
+                "id": "bead-root",
+                "title": "Root",
+                "depth": 0,
+                "parent_id": null,
+                "priority": 1,
+                "status": "open",
+                "truncated": false
+            },
+            {
+                "id": "bead-child",
+                "title": "Child",
+                "depth": 1,
+                "parent_id": "bead-root",
+                "priority": 2,
+                "status": "closed",
+                "truncated": false
+            }
+        ]"#;
+
+        let tree: Vec<DepTreeNode> = serde_json::from_str(json)?;
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree[1].parent_id.as_deref(), Some("bead-root"));
+        assert_eq!(tree[1].depth, 1);
+        assert_eq!(tree[1].status, "closed");
         Ok(())
     }
 

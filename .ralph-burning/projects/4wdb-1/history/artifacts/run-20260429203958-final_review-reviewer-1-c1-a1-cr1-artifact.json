@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260429203958-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260429203958-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-29T22:27:03.205465218Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against the fork point, excluding live .ralph-burning state. `nix develop --command cargo test --quiet`, `nix develop --command cargo clippy --quiet -- -D warnings`, `cargo +nightly fmt --check`, and `nix build` passed. Found one prompt-rendering correctness issue.\n\n## Amendments\n\n1. `src/contexts/bead_workflow/project_prompt.rs:315` feeds every whitespace token into path detection, and `src/contexts/bead_workflow/project_prompt.rs:337` accepts any token containing `/` as an explicit path. That makes ordinary prose like `AGENTS.md / CLAUDE.md` render a bogus `Where to Look` entry for `/`, and similarly promotes slash-separated prose into file pointers. This violates the requirement to include the section only for explicit file/path pointers rather than guessing. Tighten bare-token detection, or only honor backticked/path-section entries, and add a regression for slash separators.\n   Classification: fix_current_bead\n   Rationale: The prompt renderer is the drain foundation, so systematically injecting bogus navigation pointers can mislead follow-on agents even when the bead description has no real Where-to-Look paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}
