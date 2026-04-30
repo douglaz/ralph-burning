@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430161620-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T17:47:34.627270909Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against the requested base, read the changed drain implementation end-to-end, and ran targeted drain tests plus `cargo fmt --check` and `cargo clippy --locked -- -D warnings` under `nix develop`. Found two correctness issues in the real process-backed drain path.\n\n## Amendments\n\n1. `src/cli/drain.rs:187` and `src/cli/drain.rs:210` discard the actual run failure whenever a non-completed `run.json` can be read, and `src/cli/drain.rs:509` maps every `RunStatus::Failed` snapshot to `FailureClass::DomainValidationFailure`. That means real failures such as `BackendExhausted` or cancellation/interruption are never passed to `classify_drain_failure` with their true class, so the required recovery behavior is wrong: backend exhaustion should file a follow-up and skip/continue, while an interrupted run should resume, but the drain will classify both as domain validation and abort/file the wrong bead. Preserve the failure class from the run journal/latest stage failure, or otherwise pass the original classified failure into `FailureObservation` before calling the gj74 classifier.\n   Classification: fix_current_bead\n   Rationale: The drain loop's core failure policy is ineffective in the real process port, even though the mock tests pass by injecting already-classified outcomes.\n2. `src/cli/drain.rs:175` and `src/cli/drain.rs:198` race `execute_start`/`execute_resume` against a separate drain-level interrupt flag. If SIGINT arrives, `wait_until_interrupted` can win and the `execute_*` future is dropped before its own `run_with_termination_signal_waiter` cleanup path (`src/cli/run.rs:3287`) can cancel the engine, persist interrupted handoff state, remove pid files, and release the writer lease. A user interrupt can therefore strand a Running snapshot or live backend process instead of producing the required durable `Interrupted{...}` outcome. Let the existing run start/resume signal handling own cleanup, or share a cancellation path that awaits the cleanup before returning the drain outcome.\n   Classification: fix_current_bead\n   Rationale: Interrupt handling is a required stop condition, and the current implementation can leave the workspace in an unsafe state during the most common long-running phase.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

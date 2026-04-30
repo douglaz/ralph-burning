@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-final_review-vote-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260430161620-final_review-vote-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T21:28:57.203483992Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the proposed master-sync ordering change and found it technically justified.\n\n## Votes\n\n- `fr-7-9e247246`: Accept\n  ACCEPT. The current `sync_master_and_sanity_check` performs `git checkout -B master origin/master` before any hard reset, so dirty tracked changes in the current worktree can cause checkout to abort before the intended cleanup step runs. The drain workflow is explicitly trying to discard local state and sync to `origin/master`, and the nearby `prepare_bead_mutation_base` already resets before checkout, which supports the amendment's ordering concern. A regression test with a dirty tracked file would lock in the intended behavior.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430161620-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430161620-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T17:49:22.098253453Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-022774de`\n- `fr-2-eea62484`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-022774de`\n\n**Classification:** fix_current_bead\n\n`src/cli/drain.rs:187` and `src/cli/drain.rs:210` discard the actual run failure whenever a non-completed `run.json` can be read, and `src/cli/drain.rs:509` maps every `RunStatus::Failed` snapshot to `FailureClass::DomainValidationFailure`. That means real failures such as `BackendExhausted` or cancellation/interruption are never passed to `classify_drain_failure` with their true class, so the required recovery behavior is wrong: backend exhaustion should file a follow-up and skip/continue, while an interrupted run should resume, but the drain will classify both as domain validation and abort/file the wrong bead. Preserve the failure class from the run journal/latest stage failure, or otherwise pass the original classified failure into `FailureObservation` before calling the gj74 classifier.\n\n### `fr-2-eea62484`\n\n**Classification:** fix_current_bead\n\n`src/cli/drain.rs:175` and `src/cli/drain.rs:198` race `execute_start`/`execute_resume` against a separate drain-level interrupt flag. If SIGINT arrives, `wait_until_interrupted` can win and the `execute_*` future is dropped before its own `run_with_termination_signal_waiter` cleanup path (`src/cli/run.rs:3287`) can cancel the engine, persist interrupted handoff state, remove pid files, and release the writer lease. A user interrupt can therefore strand a Running snapshot or live backend process instead of producing the required durable `Interrupted{...}` outcome. Let the existing run start/resume signal handling own cleanup, or share a cancellation path that awaits the cleanup before returning the drain outcome.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

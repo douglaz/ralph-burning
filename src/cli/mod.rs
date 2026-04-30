@@ -3,6 +3,7 @@ pub mod bead;
 pub mod config;
 pub mod conformance;
 pub mod daemon;
+pub mod drain;
 pub mod flow;
 pub mod init;
 pub mod milestone;
@@ -37,6 +38,7 @@ pub enum Commands {
     Project(project::ProjectCommand),
     Run(run::RunCommand),
     Requirements(requirements::RequirementsCommand),
+    Drain(drain::DrainCommand),
     Daemon(daemon::DaemonCommand),
     Backend(backend::BackendCommand),
     Conformance(conformance::ConformanceCommand),
@@ -54,6 +56,7 @@ pub async fn run(cli: Cli) -> AppResult<()> {
         Commands::Project(command) => project::handle(command).await,
         Commands::Run(command) => run::handle(command).await,
         Commands::Requirements(command) => requirements::handle(command).await,
+        Commands::Drain(command) => drain::handle(command).await,
         Commands::Daemon(command) => daemon::handle(command).await,
         Commands::Backend(command) => backend::handle(command).await,
         Commands::Conformance(command) => conformance::handle(command).await,

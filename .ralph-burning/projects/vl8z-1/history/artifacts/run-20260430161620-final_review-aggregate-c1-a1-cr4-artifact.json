@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430161620-final_review-aggregate-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430161620-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T19:19:41.263057014Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 4/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-4-f357b086`\n- `fr-4-fcb25080`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-4-f357b086`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/drain.rs:215 and src/contexts/bead_workflow/drain.rs:266-270 make the pending resume path run after a fresh master reset, not on the bead's feature branch. ProcessDrainPorts checks out master in src/cli/drain.rs:153-162, while create_project_from_bead creates a feature branch but the returned branch name is discarded at src/cli/drain.rs:185-204. After a RunInterrupted queues pending_resume_bead, the next loop resets away the branch context and then calls resume_run on master, so a resumed run can lose the work tree and later fail pr open as a non-feature branch. If this is fixed by staying on the feature branch, src/contexts/bead_workflow/drain.rs:231 will still skip the bead because create_project_from_bead marks it in_progress at src/contexts/bead_workflow/create_project.rs:214. Store and restore the created branch for pending resumes, and allow the currently claimed bead status instead of only open.\n\n### `fr-4-fcb25080`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/drain.rs:589-591 converts RecoveryAction::Rerun into an Abort/Failed outcome. The bead contract says Rerun is the CI-flake class owned by pr watch and should be ignored by the drain layer; this implementation stops the whole drain if that action reaches handle_recovery_action. Treat it as a drain no-op/continue case, or make it an explicit unreachable invariant before classification can return it here, instead of surfacing Failed.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

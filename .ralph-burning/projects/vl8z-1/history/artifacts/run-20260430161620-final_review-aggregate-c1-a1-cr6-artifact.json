@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430161620-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430161620-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T20:33:51.393483211Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 6/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-6-c4829c8f`\n- `fr-6-ec7feb80`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-c4829c8f`\n\n**Classification:** fix_current_bead\n\n`FailureObservationKind::AmendmentOscillationLimitReached` is only reachable in mocks, not through the real drain CLI path. The journal mapper only reads `failure_class` (`src/cli/drain.rs:753`), max-completion-round failures are emitted as unclassified `StageCommitFailed`/`unknown` with completion-round metadata (`src/contexts/workflow_composition/engine.rs:8231`, `src/contexts/workflow_composition/engine.rs:8372`), and the app-error fallback defaults unclassified errors to `TransportFailure` (`src/cli/drain.rs:659`). A real final-review oscillation will therefore file a follow-up and abort instead of taking the `ForceCompleteRun` success path (`src/contexts/bead_workflow/drain.rs:432`). Amend this bead to parse the max-completion-round journal shape into `AmendmentOscillationLimitReached` and add a test using that real RunFailed shape.\n\n### `fr-6-ec7feb80`\n\n**Classification:** fix_current_bead\n\n`ProcessDrainPorts::resume_run` treats a completed snapshot as failure whenever `execute_resume` returns an error (`src/cli/drain.rs:281`). But `execute_resume` deliberately returns `ResumeFailed` when stale-run reconciliation discovers the run already completed (`src/cli/run.rs:4356`) or when the snapshot is already completed (`src/cli/run.rs:4299`). In a queued resume cycle, that turns an actually completed bead into a transport failure and aborts/files a follow-up instead of opening and watching the PR. Amend the current bead to classify the already-completed resume case as `DrainRunOutcome::Completed` and cover it with a pending-resume test.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

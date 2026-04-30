@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430161620-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T17:42:11.457438710Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the pending drain-loop remediations. Bead mutations now have explicit prepare/persist hooks so landed, skipped, and follow-up bead changes are synced, committed, and pushed to master before the next cycle can hard-reset. The concrete run adapter now reads the final run snapshot after start/resume and maps non-completed states into classifier-friendly failure observations instead of treating every Ok(()) as completion. Interrupt handling now checks at loop entry and between long steps, makes PR watch sleeps interrupt-aware, races run start/resume against Ctrl-C, and stops before recovery handling when an interrupt is observed.\",\"outstanding_risks\":[\"br lint could not be run because br is not available in this environment, including inside nix develop.\",\"The existing .ralph-burning/projects/vl8z-1 orchestration state remains modified and outside review scope.\"],\"steps\":[{\"description\":\"Added drain port hooks for preparing a clean bead mutation base and pers\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430161620-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430161620-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T19:04:34.597484683Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the pending drain-loop remediations. PR-open gate failures and PR-watch CI failures now become VerificationFailure observations and flow through gj74 recovery classification instead of bypassing it. FileBead recovery now carries the original FailureObservation into follow-up bead creation, and the concrete follow-up description renders gate/CI failures, failing details, rerun counts, bot details, run ids, bead ids, and failure classes. Interrupted-run recovery now honors stop_first by calling the run-stop path, queues resume for the next drain cycle instead of resuming immediately in the same cycle, reclassifies any next-cycle resume failure through the same recovery path, and preserves P0 stop behavior before a queued resume can proceed.\",\"outstanding_risks\":[\"Existing modified .ralph-burning/projects/vl8z-1/ orchestration state remains outside review scope and was not modified intentionally.\",\"No bead backlog files were edited, so br lint was not run.\"]\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 4
+}

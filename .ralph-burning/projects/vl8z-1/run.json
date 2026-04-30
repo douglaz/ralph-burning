@@ -1,0 +1,61 @@
+{
+  "active_run": {
+    "run_id": "run-20260430161620",
+    "stage_cursor": {
+      "stage": "plan_and_implement",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 8
+    },
+    "started_at": "2026-04-30T16:16:20.244800116Z",
+    "prompt_hash_at_cycle_start": "a5829d739574aa6b21777d588d385c8bed6550c8b5fd028f83e464dcd1fe860f",
+    "prompt_hash_at_stage_start": "a5829d739574aa6b21777d588d385c8bed6550c8b5fd028f83e464dcd1fe860f",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 7
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 8,
+  "max_completion_rounds": 25,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "fr-7-9e247246",
+        "source_stage": "final_review",
+        "source_cycle": 1,
+        "source_completion_round": 7,
+        "body": "Fix the master sync order in `src/cli/drain.rs:175`. `sync_master_and_sanity_check` runs `git checkout -B master origin/master` before the hard reset at `src/cli/drain.rs:181`; with any dirty tracked file, checkout can fail before the drain gets to the reset that is supposed to discard local state and sync master. Reset or force-clean the current worktree before switching branches, or use a forced checkout, and add a regression test with a dirty tracked file.",
+        "created_at": "2026-04-30T21:28:57.241194501Z",
+        "batch_sequence": 1,
+        "source": "workflow_stage",
+        "dedup_key": "913a6d8c1a60973906aeb43c1b5ba755f02be97bfe5aaed92a42e809c01d4d4a",
+        "classification": "fix_current_bead"
+      }
+    ],
+    "processed_count": 15
+  },
+  "status_summary": "running: final review restart round 8 -> Plan and Implement",
+  "last_stage_resolution_snapshot": {
+    "stage_id": "final_review",
+    "resolved_at": "2026-04-30T21:11:13.345787510Z",
+    "final_review_reviewers": [
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.5-xhigh"
+      },
+      {
+        "backend_family": "codex",
+        "model_id": "gpt-5.3-codex-spark-xhigh"
+      }
+    ],
+    "final_review_arbiter": {
+      "backend_family": "codex",
+      "model_id": "gpt-5.5-xhigh"
+    }
+  }
+}
