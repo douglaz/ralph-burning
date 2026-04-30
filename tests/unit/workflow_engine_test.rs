@@ -48,6 +48,20 @@ static FAILPOINT_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 fn setup_workspace(base_dir: &Path) {
     workspace_governance::initialize_workspace(base_dir, Utc::now()).unwrap();
+    // Bead 2z8p dropped the compiled default for
+    // workflow.iterative_minimal.stable_rounds_required from 2 to 1. The
+    // engine tests below were written against the old default and hardcode
+    // iteration counts that assume two consecutive no-op iterations are
+    // required to declare stability. Pin the policy explicitly here so
+    // those assertions remain stable; tests that specifically want to
+    // exercise the new default-1 behavior can override this file.
+    let path = workspace_config_path(base_dir);
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    if !existing.contains("[workflow.iterative_minimal]") {
+        let appended =
+            format!("{existing}\n[workflow.iterative_minimal]\nstable_rounds_required = 2\n");
+        std::fs::write(&path, appended).unwrap();
+    }
 }
 
 fn live_workspace_root(base_dir: &Path) -> PathBuf {

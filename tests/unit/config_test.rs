@@ -166,6 +166,17 @@ fn effective_config_loads_compiled_defaults() {
 }
 
 #[test]
+fn iterative_minimal_default_stable_rounds_required_is_one() {
+    // Bead 2z8p: the implementer loop should declare convergence after a
+    // single no-op iteration by default. Operators who specifically want
+    // belt-and-braces convergence can still set workflow.iterative_minimal
+    // .stable_rounds_required = 2 in workspace.toml, but the default
+    // reflects the common case where a no-op iteration is sufficient
+    // signal that the implementer is done.
+    assert_eq!(DEFAULT_ITERATIVE_MINIMAL_STABLE_ROUNDS_REQUIRED, 1);
+}
+
+#[test]
 fn effective_config_merges_workspace_overrides() {
     let temp_dir = tempdir().expect("create temp dir");
     let workspace_root = initialize_workspace_fixture(temp_dir.path());
