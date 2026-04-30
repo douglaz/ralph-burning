@@ -1,0 +1,7 @@
+id = "d31l-1"
+name = "d31l ralph bead create-project"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "671ae392a87f5187ac4318f3ee39ac8f728a26d8f542ab9f26fb2d16de58f599"
+created_at = "2026-04-30T01:24:10.125680133Z"
+status_summary = "created"

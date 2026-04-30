@@ -1,4 +1,5 @@
 pub mod backend;
+pub mod bead;
 pub mod config;
 pub mod conformance;
 pub mod daemon;
@@ -38,6 +39,7 @@ pub enum Commands {
     Backend(backend::BackendCommand),
     Conformance(conformance::ConformanceCommand),
     Task(task::TaskCommand),
+    Bead(bead::BeadCommand),
 }
 
 pub async fn run(cli: Cli) -> AppResult<()> {
@@ -53,5 +55,6 @@ pub async fn run(cli: Cli) -> AppResult<()> {
         Commands::Backend(command) => backend::handle(command).await,
         Commands::Conformance(command) => conformance::handle(command).await,
         Commands::Task(command) => task::handle(command).await,
+        Commands::Bead(command) => bead::handle(command).await,
     }
 }

@@ -89,6 +89,8 @@ pub enum AppError {
     JournalSequence { details: String },
     #[error("cannot start run: {reason}")]
     RunStartFailed { reason: String },
+    #[error("{reason}")]
+    BeadProjectCreationFailed { reason: String },
     #[error("cannot resume run: {reason}")]
     ResumeFailed { reason: String },
     #[error("cannot stop run: {reason}")]
