@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T09:45:58.367334021Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against the fork point, excluding `.ralph-burning/` runtime state. `nix develop -c cargo test --locked --features test-stub`, `nix develop -c cargo clippy --locked -- -D warnings`, `nix develop -c cargo fmt --check`, and `nix build` passed.\n\n## Amendments\n\n1. `src/contexts/bead_workflow/pr_watch.rs:376` fetches PR review comments with a single `gh api` call, and `src/contexts/bead_workflow/pr_watch.rs:434`-`439` never passes `--paginate`. GitHub returns only the first page by default, so a PR with more than one page of review comments can have a new codex bot line finding that this watcher never sees; the code can then reach the merge path at `src/contexts/bead_workflow/pr_watch.rs:254`. Paginate and flatten the reactions/comments responses, with a regression test where the bot comment is not on page one.\n   Classification: fix_current_bead\n   Rationale: Missing bot findings before an automatic squash-merge is a correctness and safety failure for this bead.\n2. The known-flake rerun path matches the static flake test name against status-check names only: `src/contexts/bead_workflow/pr_watch.rs:517` stores the check `name`, and `src/contexts/bead_workflow/pr_watch.rs:303`-`307` compares those strings to `KNOWN_CI_FLAKES`. The repository's Actions job is named `Build, Test, and Conformance Gate` in `.github/workflows/conformance.yml:11`, so a failure of `adapters::br_process::tests::check_available_times_out_when_version_probe_hangs` will surface as that job/check name in `statusCheckRollup` and will be treated as non-flake. The watcher needs to inspect failed run logs or another source that contains failed test names before deciding whether to rerun.\n   Classification: fix_current_bead\n   Rationale: One required state-machine outcome, rerun once for the documented flake, will not work against the actual GitHub check shape.\n3. `comment_is_since_latest_push` short-circuits to `commit_id == head_sha` whenever a head SHA is available (`src/contexts/bead_workflow/pr_watch.rs:659`-`661`), ignoring the `latest_push_at` value that was passed in. That is narrower than the required \"line-comments since the latest push\" rule: on a multi-commit or manually amended PR, a fresh bot finding can be attached to a non-head commit in the current diff and be filtered out, allowing the merge path to run. Prefer the comment `created_at >= latest_push_at` test when the push timestamp is known, and use commit id only as a fallback.\n   Classification: fix_current_bead\n   Rationale: The blocker check can miss real post-push bot findings, which undermines the automatic merge guard.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

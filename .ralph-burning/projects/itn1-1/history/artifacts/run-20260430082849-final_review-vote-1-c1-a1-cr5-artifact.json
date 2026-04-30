@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-vote-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430082849-final_review-vote-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T12:45:40.293338837Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the amendment; the reported approval watermark bug is technically valid.\n\n## Votes\n\n- `fr-5-2450f2f9`: Accept\n  The current code binds a bot +1 to the head SHA only if the reaction timestamp is at or after PR updatedAt, but updatedAt can advance for non-push PR activity after a valid approval. That makes an approval for the current head appear stale even though the relevant freshness boundary is the latest head push or an explicit reviewed commit SHA. This can prevent an otherwise mergeable PR from merging and should be fixed with the proposed regression coverage.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

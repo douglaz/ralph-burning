@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430082849-final_review-aggregate-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430082849-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T10:34:20.155553570Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 3\n**Final Review Restarts:** 2/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-2-92961389`\n- `fr-2-64d3a041`\n- `fr-2-b1a31ec0`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-2-92961389`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/pr_watch.rs:265 and src/contexts/bead_workflow/pr_watch.rs:504 merge whatever PR head is current when `gh pr merge` runs, even though CI, bot reaction, and line comments were checked against the earlier `PrStatusSnapshot.head_sha`. A push between the poll and merge can be merged without the watcher having observed CI/bot approval for that head. Thread the observed head SHA into `merge_pr` and use `gh pr merge --match-head-commit <head_sha>` or abort when no head SHA is available.\n\n### `fr-2-64d3a041`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/pr_watch.rs:429 fills `latest_push_at` from the latest commit's `committedDate`, and src/contexts/bead_workflow/pr_watch.rs:783 then filters bot comments using that value as if it were the most recent push time. Commit time can predate a delayed push or preserved-date head update, so stale bot comments from before the current push can be surfaced as current findings and block the success path. Use an actual PR head-update/push timestamp, or fall back to head-SHA filtering when only commit dates are available.\n\n### `fr-2-b1a31ec0`\n\n**Classification:** fix_current_bead\n\nsrc/cli/pr.rs:43 accepts `--poll-interval 0`, which becomes `Duration::from_secs(0)` at src/cli/pr.rs:92; src/contexts/bead_workflow/pr_watch.rs:312 then performs zero-duration sleeps and loops through `gh` status/reaction/comment calls as fast as possible until `max_wait`. Reject zero poll intervals at CLI or request validation.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

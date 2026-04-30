@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430082849-final_review-aggregate-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430082849-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T13:18:05.383309997Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 6/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-6-15ef2cd0`\n- `fr-6-444c6606`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-6-15ef2cd0`\n\n**Classification:** fix_current_bead\n\n`src/contexts/bead_workflow/pr_watch.rs:830` returns the GraphQL commit `pushedDate` as soon as it exists, so the timeline force-push/head-update timestamp at `src/contexts/bead_workflow/pr_watch.rs:834` is ignored. For a PR head that is force-pushed/reset to a commit already present in the repo, `pushedDate` can predate the latest PR branch update; then `bind_to_head` at `src/contexts/bead_workflow/pr_watch.rs:113` can accept a bot `+1` from before the latest push and the success path at `src/contexts/bead_workflow/pr_watch.rs:319` can auto-merge without post-push bot approval. Use the max of commit pushedDate and matching timeline head-update events, and add a regression where both timestamps exist and the timeline event is newer.\n\n### `fr-6-444c6606`\n\n**Classification:** fix_current_bead\n\n`parse_ci_state` does not classify all terminal unsuccessful GitHub check conclusions as failures. The failure set at `src/contexts/bead_workflow/pr_watch.rs:758` includes `FAILURE`, `ERROR`, `CANCELLED`, `TIMED_OUT`, and `ACTION_REQUIRED`, but omits GitHub conclusions such as `STARTUP_FAILURE` and `STALE`; those fall through to `pending` at `src/contexts/bead_workflow/pr_watch.rs:767`. A PR with one of those terminal failed checks will poll until timeout instead of returning `BlockedByCi` with the failing check name. Treat every known non-success terminal conclusion as failed, and cover `STARTUP_FAILURE`/`STALE` in tests.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

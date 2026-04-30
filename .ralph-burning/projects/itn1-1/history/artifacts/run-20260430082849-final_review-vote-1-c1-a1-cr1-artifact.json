@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430082849-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T09:46:53.453444888Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted all three amendments. Each identifies a concrete correctness or safety gap in the PR watcher that can affect merge decisions or CI rerun behavior.\n\n## Votes\n\n- `fr-1-d1857c23`: Accept\n  The code uses a single `gh api` request for both issue reactions and PR review comments, while both endpoints are paginated. Missing later pages can hide bot line findings or newer bot reactions, so pagination and page flattening are necessary before making block or merge decisions.\n- `fr-1-a6add15f`: Accept\n  The current flake check compares known test names against status check names, but GitHub Actions exposes the job/check name for the failing workflow, not the failed Rust test name. As written, the configured known flake will not be recognized in the real workflow, so inspecting failed run logs or another source containing test failures is required.\n- `fr-1-a7fd75ab`: Accept\n  `comment_is_since_latest_push` ignores `latest_push_at` whenever a head SHA is present, narrowing the intended recency rule to only comments attached to the head commit. Fresh bot findings can legitimately be attached to another commit in the current PR diff, so the timestamp check should take precedence when available with commit-id matching only as fallback.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-plan_and_implement-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430082849-plan_and_implement-c1-a1-cr5",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T12:38:45.044697955Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Remediated the PR-watch line-comment watermark gap in `src/contexts/bead_workflow/pr_watch.rs`. The real `ProcessPrToolPort::pr_status` now populates `latest_push_at` from the current PR head commit's GitHub GraphQL `pushedDate`, with current-head timeline push events as a fallback, instead of leaving it unset and relying only on head-SHA comment matching. Bot line comments created after the current head was pushed now block auto-merge even when GitHub anchors them to an older commit. Added regression coverage for GraphQL pushedDate filtering, force-push timeline fallback, and rejecting commit authored/committed timestamps as push-time substitutes.\",\"outstanding_risks\":[\"The working tree still contains unrelated `.ralph-burning/projects/itn1-1/journal.ndjson` and `.ralph-burning/projects/itn1-1/run.json` modifications outside the requested source-review scope; I did not modify them.\"],\"steps\":[{\"description\":\"Inspect the pending amendment and existing PR-watch state \n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 5
+}

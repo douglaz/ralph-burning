@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-plan_and_implement-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430082849-plan_and_implement-c1-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T10:53:23.227979598Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Completed the pending PR-watch remediation. The watcher now merges only the observed PR head by threading `PrStatusSnapshot.head_sha` into the merge port and invoking `gh pr merge --match-head-commit <head_sha>`, aborting if no observed head SHA is available. PR status no longer derives `latest_push_at` from commit `committedDate`; without an actual push timestamp, bot line-comment filtering falls back to head-SHA matching. The CLI now rejects `--poll-interval 0` with a positive-seconds parser. Added regression coverage for observed-head merge behavior, missing-head abort, head-SHA comment fallback, and zero poll interval rejection.\",\"outstanding_risks\":[\"The working tree still contains pre-existing `.ralph-burning/projects/itn1-1/` orchestration-state modifications outside the requested source review scope; I did not inspect or change them.\",\"Plain ambient `cargo` cannot run because rustup has no default toolchain configured, so Cargo gates were run through `nix dev\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 3
+}

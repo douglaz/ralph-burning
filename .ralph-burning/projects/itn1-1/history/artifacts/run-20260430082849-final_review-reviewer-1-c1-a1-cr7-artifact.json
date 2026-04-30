@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr7-artifact",
+  "payload_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T13:48:39.074325625Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against 380ce4da9f8f29b1894d7ca3e1eb5f2c00a9a238, focusing on the changed source files and ignoring .ralph-burning orchestration state. No correctness, safety, or robustness findings to amend. Targeted pr_watch tests, clippy, and fmt passed; a nix build was started but interrupted during this review, so it was not counted as fresh validation.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 7
+}

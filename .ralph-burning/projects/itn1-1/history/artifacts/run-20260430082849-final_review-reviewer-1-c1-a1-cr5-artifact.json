@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T12:45:08.343586044Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against 380ce4da9f8f29b1894d7ca3e1eb5f2c00a9a238, excluding .ralph-burning runtime state. Found one liveness/correctness issue in PR approval binding. `nix develop -c cargo fmt --check`, `cargo clippy --locked -- -D warnings`, and targeted pr_watch tests passed; full `cargo test --locked --features test-stub` hit the documented zh55 flake.\n\n## Amendments\n\n1. `src/contexts/bead_workflow/pr_watch.rs:510` populates the approval watermark from PR `updatedAt`, and `BotBodyReview::bind_to_head` only treats a bot `+1` as current when the reaction timestamp is at or after that watermark (`src/contexts/bead_workflow/pr_watch.rs:114`). The required state machine is keyed to the latest push, not arbitrary PR updates, so non-push activity after the bot approves can make `approved_for_head` false and cause the watcher to time out instead of merging despite CI green, bot `+1`, and no post-push line comments. Bind approval to the latest head push time or the bot review's reviewed commit SHA, and add a regression where `latest_push_at < +1 reaction < updatedAt` still merges.\n   Classification: fix_current_bead\n   Rationale: This violates the success-path automation this bead is meant to provide and can leave the drain loop stuck waiting for a fresh bot reaction even though the current head is already approved.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 5
+}

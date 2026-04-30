@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T11:04:38.247973018Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the full branch delta against the requested fork point and ignored live .ralph-burning state. Verification passed: `nix build`, `nix develop -c cargo test --locked`, `nix develop -c cargo clippy --locked -- -D warnings`, and `nix develop -c cargo fmt --check`.\n\n## Amendments\n\n1. src/contexts/bead_workflow/pr_watch.rs:260 merges whenever the bot body reaction is `Approved`, while src/contexts/bead_workflow/pr_watch.rs:709 reduces reactions to content only and never proves that approval applies to the current head SHA read at src/contexts/bead_workflow/pr_watch.rs:431. After a PR gets `+1`, a later amend/force-push or CI-fix push can leave that old reaction in place; once the new CI run is green and old line comments are filtered away, `watch_pr` can squash-merge code the bot never reviewed. Carry enough review metadata through the port and require approval for `status.head_sha` before merging.\n   Classification: fix_current_bead\n   Rationale: Automatic merge on stale bot approval is a safety issue for the PR watcher.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 3
+}

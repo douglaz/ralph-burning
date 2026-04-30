@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430082849-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T09:30:35.623248580Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented `ralph pr watch` support around a new mockable PR-watch workflow. The CLI now accepts `pr watch <pr-number> --max-wait <duration> --poll-interval <seconds>`, prints a serialized `WatchOutcome`, and maps watch failures through `AppError`. The new bead workflow module polls PR status, codex bot body reactions, bot line comments since the latest push, known-flake CI failures, one-shot reruns, and squash merge completion through the shared `ProcessPrToolPort` shell-out path. Unit coverage exercises the happy path, in-progress polling, known-flake rerun success, known-flake second failure, non-flake CI block, bot line-comment block, bot rejection, and timeout behavior.\",\"outstanding_risks\":[\"`br lint` could not be run because `br` is not installed in either the plain shell or `nix develop` environment; both attempts failed with command-not-found exit 127.\",\"The working tree contains existing `.beads/issues.jsonl` and untracked `.ralph-burning/projects/itn1-1/`\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

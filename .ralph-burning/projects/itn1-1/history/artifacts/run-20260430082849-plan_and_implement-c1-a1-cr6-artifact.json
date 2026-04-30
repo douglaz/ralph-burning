@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-plan_and_implement-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430082849-plan_and_implement-c1-a1-cr6",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T13:04:36.187445415Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the pending PR-watch approval watermark remediation in src/contexts/bead_workflow/pr_watch.rs. The real port no longer requests or uses PR updatedAt for approval binding; it binds bot +1 approval to the currently observed head using the latest head push timestamp instead, so non-push PR activity after approval does not incorrectly invalidate CI-green bot-approved PRs. Updated the mock port to apply the same binding behavior and added a regression proving latest_push_at < +1 reaction < later PR updatedAt still merges.\",\"outstanding_risks\":[\"The working tree still contains .ralph-burning/projects/itn1-1/journal.ndjson and .ralph-burning/projects/itn1-1/run.json orchestration-state modifications outside the requested source-review scope.\"],\"steps\":[{\"description\":\"Inspect existing PR-watch approval binding and pending amendment scope.\",\"order\":1,\"status\":\"completed\"},{\"description\":\"Change approval watermark source from PR updatedAt to latest head push time \n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 6
+}
