@@ -5,6 +5,7 @@
 
 pub mod br;
 pub mod bv;
+pub mod drain_harness;
 pub mod e2e_fixtures;
 pub mod env;
 pub mod fixtures;

@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430215610-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430215610-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T22:41:36.518969607Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 2\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-dfd6c407`\n- `fr-1-794d0617`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-dfd6c407`\n\n**Classification:** fix_current_bead\n\n`src/test_support/drain_harness.rs:272` implements the whole drain dependency surface directly as a `DrainPort`, and the key steps are canned at that same boundary (`create_project_from_bead` at `src/test_support/drain_harness.rs:315`, `open_pr` at `src/test_support/drain_harness.rs:393`, `watch_pr` at `src/test_support/drain_harness.rs:408`). This means the new harness does not exercise the library entry points/ports that this bead is meant to integrate: project creation, PR opening/gates/squash, PR watching/rerun/merge, and bead mutation are all simulated above those modules. A regression in the production wiring from `ralph drain` into `create_project_from_bead`, `open_pr_for_completed_run`, or `watch_pr` would not fail these tests. Fix the harness so it uses the real drain module entry points with lower-level mocks for br/git/PR/watch/run, or add a separate scenario that wires those production entry points together with mock ports rather than replacing them with a coarse `DrainPort` fake.\n\n### `fr-1-794d0617`\n\n**Classification:** fix_current_bead\n\n`tests/unit/drain_harness_test.rs:92` names the backend-exhausted case as a skip-and-continue scenario, but it creates only one bead and then accepts `DrainOutcome::Drained { cycles: 1 }` at `tests/unit/drain_harness_test.rs:103`. That would still pass if skip handling closed the current bead and then stopped without processing subsequent ready work. Add a second ready happy-path bead to this scenario and assert the first bead is in `report.skipped`, the second lands, and the report has two cycles, so the `SkipBeadAndContinueDrain` recovery action is actually covered by the harness.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

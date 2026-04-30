@@ -1,0 +1,7 @@
+id = "xrwl-1"
+name = "xrwl drain e2e harness"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "91e36311ae2ad9a9dd745eba2f6bc34beaa35747eee56eb21f265d6a45f2a750"
+created_at = "2026-04-30T21:56:10.679290482Z"
+status_summary = "created"

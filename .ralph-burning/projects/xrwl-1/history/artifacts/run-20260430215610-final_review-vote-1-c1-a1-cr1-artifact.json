@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430215610-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430215610-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T22:41:36.485915813Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth amendments identify real coverage gaps in the drain harness. The first targets over-mocking at the integration boundary, and the second strengthens a skip-and-continue scenario that currently only verifies skip-and-stop behavior.\n\n## Votes\n\n- `fr-1-dfd6c407`: Accept\n  The concern is technically valid. The scratch harness implements DrainPort at a coarse boundary and directly simulates project creation, PR opening, PR watching, and bead mutation, so it only exercises drain_bead_queue orchestration, not the production wiring or conversions through create_project_from_bead, open_pr_for_completed_run, or watch_pr. Existing unit tests for those pieces do not prove the drain adapter composes them correctly. Adding a lower-level mocked integration scenario would improve regression coverage without requiring real external services.\n- `fr-1-794d0617`: Accept\n  The current backend-exhausted test verifies that a single bead is skipped and the drain ends, but it does not prove SkipBeadAndContinueDrain actually advances to later ready work. Adding a second happy-path bead and asserting skipped plus landed outcomes with two cycles directly covers the intended recovery behavior and would catch a real control-flow regression.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}
