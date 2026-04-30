@@ -125,3 +125,6 @@ mod bead_project_prompt_test;
 
 #[path = "unit/bead_create_project_test.rs"]
 mod bead_create_project_test;
+
+#[path = "unit/drain_failure_policy_test.rs"]
+mod drain_failure_policy_test;

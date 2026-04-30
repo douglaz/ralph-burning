@@ -403,7 +403,7 @@ where
     }
 }
 
-fn is_known_flake_failure(failing: &[String]) -> bool {
+pub(crate) fn is_known_flake_failure(failing: &[String]) -> bool {
     let has_known_flake = failing
         .iter()
         .any(|failure| KNOWN_CI_FLAKES.iter().any(|flake| failure.contains(flake)));

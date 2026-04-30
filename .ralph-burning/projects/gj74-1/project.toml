@@ -1,0 +1,7 @@
+id = "gj74-1"
+name = "gj74 failure-mode policies"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "24a32e9d00aae09b047991d80a7c9a7a3f11d1c2e00f008875a52198ad5e73ab"
+created_at = "2026-04-30T15:10:20.146374049Z"
+status_summary = "created"
