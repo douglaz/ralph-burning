@@ -1,0 +1,7 @@
+id = "itn1-1"
+name = "itn1 ralph pr watch"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "8a0b4a7a07671105d2ddcae97aae1ca6489db0055c34beadb2723fc087d17404"
+created_at = "2026-04-30T08:28:49.613500355Z"
+status_summary = "created"

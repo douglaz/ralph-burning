@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T10:33:25.639020394Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta excluding `.ralph-burning/`. Ran `nix develop -c cargo test pr_watch`, `nix develop -c cargo clippy --locked -- -D warnings`, `nix develop -c cargo fmt --check`, and `nix build`; the commands passed. Found three fix-current-bead issues.\n\n## Amendments\n\n1. src/contexts/bead_workflow/pr_watch.rs:265 and src/contexts/bead_workflow/pr_watch.rs:504 merge whatever PR head is current when `gh pr merge` runs, even though CI, bot reaction, and line comments were checked against the earlier `PrStatusSnapshot.head_sha`. A push between the poll and merge can be merged without the watcher having observed CI/bot approval for that head. Thread the observed head SHA into `merge_pr` and use `gh pr merge --match-head-commit <head_sha>` or abort when no head SHA is available.\n   Classification: fix_current_bead\n   Rationale: This closes a real auto-merge race where the command can merge unreviewed or unchecked code.\n2. src/contexts/bead_workflow/pr_watch.rs:429 fills `latest_push_at` from the latest commit's `committedDate`, and src/contexts/bead_workflow/pr_watch.rs:783 then filters bot comments using that value as if it were the most recent push time. Commit time can predate a delayed push or preserved-date head update, so stale bot comments from before the current push can be surfaced as current findings and block the success path. Use an actual PR head-update/push timestamp, or fall back to head-SHA filtering when only commit dates are available.\n   Classification: fix_current_bead\n   Rationale: The bead explicitly requires line comments since the most recent push; commit time is not equivalent to push time.\n3. src/cli/pr.rs:43 accepts `--poll-interval 0`, which becomes `Duration::from_secs(0)` at src/cli/pr.rs:92; src/contexts/bead_workflow/pr_watch.rs:312 then performs zero-duration sleeps and loops through `gh` status/reaction/comment calls as fast as possible until `max_wait`. Reject zero poll intervals at CLI or request validation.\n   Classification: fix_current_bead\n   Rationale: A single bad argument can hammer GitHub and the local machine for the full watch window.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

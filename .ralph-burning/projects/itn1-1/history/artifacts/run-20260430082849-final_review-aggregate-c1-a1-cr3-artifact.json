@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430082849-final_review-aggregate-c1-a1-cr3-artifact",
+  "payload_id": "run-20260430082849-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T11:05:27.300840263Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 3/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-3-51cf3326`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-3-51cf3326`\n\n**Classification:** fix_current_bead\n\nsrc/contexts/bead_workflow/pr_watch.rs:260 merges whenever the bot body reaction is `Approved`, while src/contexts/bead_workflow/pr_watch.rs:709 reduces reactions to content only and never proves that approval applies to the current head SHA read at src/contexts/bead_workflow/pr_watch.rs:431. After a PR gets `+1`, a later amend/force-push or CI-fix push can leave that old reaction in place; once the new CI run is green and old line comments are filtered away, `watch_pr` can squash-merge code the bot never reviewed. Carry enough review metadata through the port and require approval for `status.head_sha` before merging.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T13:17:05.223752382Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against the requested fork point and read the changed implementation files. `nix develop -c cargo test --locked`, `nix develop -c cargo clippy --locked -- -D warnings`, `nix develop -c cargo fmt --check`, and `nix build` passed; `br lint` could not be run because `br` is not available in this environment.\n\n## Amendments\n\n1. `src/contexts/bead_workflow/pr_watch.rs:830` returns the GraphQL commit `pushedDate` as soon as it exists, so the timeline force-push/head-update timestamp at `src/contexts/bead_workflow/pr_watch.rs:834` is ignored. For a PR head that is force-pushed/reset to a commit already present in the repo, `pushedDate` can predate the latest PR branch update; then `bind_to_head` at `src/contexts/bead_workflow/pr_watch.rs:113` can accept a bot `+1` from before the latest push and the success path at `src/contexts/bead_workflow/pr_watch.rs:319` can auto-merge without post-push bot approval. Use the max of commit pushedDate and matching timeline head-update events, and add a regression where both timestamps exist and the timeline event is newer.\n   Classification: fix_current_bead\n   Rationale: This can violate the core safety condition that the bot approval applies to the latest pushed PR head.\n2. `parse_ci_state` does not classify all terminal unsuccessful GitHub check conclusions as failures. The failure set at `src/contexts/bead_workflow/pr_watch.rs:758` includes `FAILURE`, `ERROR`, `CANCELLED`, `TIMED_OUT`, and `ACTION_REQUIRED`, but omits GitHub conclusions such as `STARTUP_FAILURE` and `STALE`; those fall through to `pending` at `src/contexts/bead_workflow/pr_watch.rs:767`. A PR with one of those terminal failed checks will poll until timeout instead of returning `BlockedByCi` with the failing check name. Treat every known non-success terminal conclusion as failed, and cover `STARTUP_FAILURE`/`STALE` in tests.\n   Classification: fix_current_bead\n   Rationale: The watch state machine must distinguish terminal CI failure from in-progress CI so operators get the intended structured blocking outcome.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 6
+}

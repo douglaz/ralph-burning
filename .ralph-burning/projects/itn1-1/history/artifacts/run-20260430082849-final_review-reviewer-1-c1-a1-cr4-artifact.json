@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430082849-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T12:02:58.805984778Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff and changed implementation files. `cargo test`, `cargo clippy --locked -- -D warnings`, `cargo fmt --check`, and `nix build` pass under `nix develop`/Nix, but I found one correctness gap in the PR comment filtering.\n\n## Amendments\n\n1. src/contexts/bead_workflow/pr_watch.rs:503 and src/contexts/bead_workflow/pr_watch.rs:513 do not implement the required “line-comments since the most recent push” check in the real port. `pr_status` always sets `latest_push_at: None`, so `comment_is_since_latest_push` falls back at src/contexts/bead_workflow/pr_watch.rs:887 to filtering only comments whose `commit_id` or `original_commit_id` equals the current head SHA. Comments created after the latest push but anchored to an older commit/diff position are dropped, so green CI plus a +1 reaction can auto-merge despite bot findings. Populate a real latest-push/review watermark, or otherwise filter comments by `created_at` against the current head update, and cover the real-port behavior with a test.\n   Classification: fix_current_bead\n   Rationale: This violates the bead’s explicit bot-findings gate and can allow automatic merge when a blocking bot line comment exists.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 4
+}

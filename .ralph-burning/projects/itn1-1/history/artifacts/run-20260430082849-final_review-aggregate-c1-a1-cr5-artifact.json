@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260430082849-final_review-aggregate-c1-a1-cr5-artifact",
+  "payload_id": "run-20260430082849-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T12:45:40.329233254Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 5/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-5-2450f2f9`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-5-2450f2f9`\n\n**Classification:** fix_current_bead\n\n`src/contexts/bead_workflow/pr_watch.rs:510` populates the approval watermark from PR `updatedAt`, and `BotBodyReview::bind_to_head` only treats a bot `+1` as current when the reaction timestamp is at or after that watermark (`src/contexts/bead_workflow/pr_watch.rs:114`). The required state machine is keyed to the latest push, not arbitrary PR updates, so non-push activity after the bot approves can make `approved_for_head` false and cause the watcher to time out instead of merging despite CI green, bot `+1`, and no post-push line comments. Bind approval to the latest head push time or the bot review's reviewed commit SHA, and add a regression where `latest_push_at < +1 reaction < updatedAt` still merges.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

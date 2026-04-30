@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-plan_and_implement-c1-a1-cr7-artifact",
+  "payload_id": "run-20260430082849-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T13:37:04.578642710Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Implemented both pending PR-watch remediations in `src/contexts/bead_workflow/pr_watch.rs`. The latest-head push watermark now computes the maximum timestamp across GraphQL commit `pushedDate` and matching issue timeline head-update/force-push events, preventing stale bot approvals from being accepted after a newer PR branch update. CI status parsing now centralizes terminal conclusion classification and treats `STARTUP_FAILURE` and `STALE` as failed checks instead of pending. Added regression coverage for a newer timeline event winning over GraphQL `pushedDate`, and for `STARTUP_FAILURE`/`STALE` returning `BlockedByCi`-style failed check entries.\",\n  \"outstanding_risks\": [\n    \"The working tree still contains `.ralph-burning/projects/itn1-1/journal.ndjson` and `.ralph-burning/projects/itn1-1/run.json` orchestration-state modifications outside the requested source-review scope.\"\n  ],\n  \"steps\": [\n    {\n      \"description\": \"Inspect the existing PR-watch implement\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 7
+}

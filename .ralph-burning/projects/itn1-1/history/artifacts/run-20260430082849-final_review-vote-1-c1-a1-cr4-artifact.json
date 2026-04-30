@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-vote-1-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430082849-final_review-vote-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T12:03:57.556652454Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nThe amendment identifies a real safety gap in the PR watcher’s real GitHub port.\n\n## Votes\n\n- `fr-4-c6aecb73`: Accept\n  `ProcessPrToolPort::pr_status` always leaves `latest_push_at` unset, so the real path never uses the timestamp-based \"since latest push\" filtering that the helper and tests model. The fallback filters only by `commit_id`/`original_commit_id` matching the observed head SHA, which can miss post-push review comments anchored to older commits or diff positions. That creates a plausible false-negative bot-review state and can allow merge when current Codex line findings should block it. The fix should provide a real push/review watermark or equivalent created-at filtering and test the real-port behavior, not just the pure helper.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 4
+}

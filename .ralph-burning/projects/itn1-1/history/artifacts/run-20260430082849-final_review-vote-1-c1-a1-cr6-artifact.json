@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-final_review-vote-1-c1-a1-cr6-artifact",
+  "payload_id": "run-20260430082849-final_review-vote-1-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-04-30T13:18:05.351003664Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nBoth proposed amendments identify credible correctness gaps in PR watch gating. Each has a concrete failure mode and a focused regression-test path.\n\n## Votes\n\n- `fr-6-15ef2cd0`: Accept\n  The current code returns the commit pushedDate before consulting timeline head-update events, so a reused or reset-to-existing head commit can produce an older watermark than the actual PR branch update. Since bot approval is bound using that watermark, this can incorrectly treat a pre-update +1 as approval for the current head and allow merge. Taking the max of commit pushedDate and matching head-update timeline events is the right safer behavior.\n- `fr-6-444c6606`: Accept\n  The CI parser only marks a subset of unsuccessful terminal conclusions as failed. GitHub conclusions like STARTUP_FAILURE and STALE are terminal non-success states, so classifying them as pending would cause unnecessary polling/timeouts instead of a precise BlockedByCi result. Expanding the known failure set and adding tests for those conclusions improves correctness and diagnosability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 6
+}

@@ -234,7 +234,7 @@ pub trait PrToolPort {
 pub struct ProcessPrToolPort;
 
 impl ProcessPrToolPort {
-    fn run_command(
+    pub(super) fn run_command(
         repo_root: &Path,
         program: &str,
         args: &[&str],

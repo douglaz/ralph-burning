@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430082849-plan_and_implement-c1-a1-cr4-artifact",
+  "payload_id": "run-20260430082849-plan_and_implement-c1-a1-cr4",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T11:51:39.386735065Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\n  \"change_summary\": \"Implemented the pending PR-watch safety remediation in src/contexts/bead_workflow/pr_watch.rs. Bot body reactions now carry review metadata as BotBodyReview, including reaction timestamp and an explicit approved_head_sha. The watch state machine only merges when the approval is bound to the currently observed status.head_sha, so stale approvals after later PR updates or approvals tied to a different head SHA cannot trigger squash-merge. The process port now reads GitHub PR updatedAt as a conservative review watermark and binds +1 reactions to the current head only when the reaction is newer than that watermark. Added regression coverage for stale approvals and mismatched-head approvals, while preserving existing state-machine tests.\",\n  \"outstanding_risks\": [\n    \"GitHub issue-body reactions are not inherently commit-scoped, so the implementation uses PR updatedAt as a conservative watermark before binding approval to the observed head SHA; non-push PR activity a\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 4
+}
