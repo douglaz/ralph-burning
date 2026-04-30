@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260430012410-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260430012410-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-04-30T02:14:59.562797853Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the bead-backed project creation surface by adding `ralph-burning bead create-project <bead-id> [--branch [NAME]] [--flow <preset>]`, wiring it into CLI dispatch, and adding a reusable bead-workflow service that renders prompts through `bead_workflow::project_prompt`, creates projects through the existing project service, optionally creates a derived feature branch, and marks the bead `in_progress` through the br adapter. Added failure handling and unit coverage for missing, closed, blocked, collision, branch/default behavior, and partial-success br update failure cases.\",\"outstanding_risks\":[\"`br lint` could not be run because `br` is not available in PATH, including inside `nix develop`; source validation and `nix build` completed successfully.\",\"The worktree already contains `.beads/issues.jsonl` changes and an untracked `.ralph-burning/projects/d31l-1/` orchestration-state directory; I left those untouched.\"],\"steps\":[{\"description\":\"Inspected the exi\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

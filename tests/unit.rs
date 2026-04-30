@@ -122,3 +122,6 @@ mod milestone_store_integration_test;
 
 #[path = "unit/bead_project_prompt_test.rs"]
 mod bead_project_prompt_test;
+
+#[path = "unit/bead_create_project_test.rs"]
+mod bead_create_project_test;
