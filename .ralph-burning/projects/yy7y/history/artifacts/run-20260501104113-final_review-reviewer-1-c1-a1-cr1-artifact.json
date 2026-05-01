@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501104113-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501104113-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T11:03:35.478222156Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch delta against 67a17043cae76882737ef64a7a9086e48be071d7, ignoring .ralph-burning runtime state. No correctness, safety, or robustness issues found in the pr_open.rs change. Validation run: targeted resolver tests passed under nix develop, cargo fmt --check passed, and nix build passed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

@@ -313,6 +313,10 @@ impl ProcessPrToolPort {
         }
     }
 
+    fn fetch_origin_refs(repo_root: &Path) -> Result<(), PrToolError> {
+        Self::git(repo_root, &["fetch", "origin"]).map(|_| ())
+    }
+
     fn resolve_base_branch_ref(repo_root: &Path) -> Result<BaseBranchRef, PrToolError> {
         match Self::git(
             repo_root,
@@ -371,6 +375,7 @@ impl PrToolPort for ProcessPrToolPort {
             return Ok(cached);
         }
 
+        Self::fetch_origin_refs(repo_root)?;
         let resolved = Self::resolve_base_branch_ref(repo_root)?;
         *self
             .base_branch_cache
@@ -1609,6 +1614,10 @@ mod tests {
     }
 
     fn run_test_git(repo_root: &Path, args: &[&str]) {
+        run_test_git_output(repo_root, args);
+    }
+
+    fn run_test_git_output(repo_root: &Path, args: &[&str]) -> std::process::Output {
         let output = std::process::Command::new("git")
             .args(args)
             .current_dir(repo_root)
@@ -1621,12 +1630,17 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        output
     }
 
     #[tokio::test]
     async fn process_port_resolves_origin_head_and_caches_base_branch() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
+        let origin_dir = tempfile::tempdir().expect("origin dir");
         run_test_git(temp_dir.path(), &["init"]);
+        run_test_git(origin_dir.path(), &["init", "--bare"]);
+        let origin_path = origin_dir.path().to_str().expect("origin path utf8");
+        run_test_git(temp_dir.path(), &["remote", "add", "origin", origin_path]);
         run_test_git(
             temp_dir.path(),
             &[
@@ -1685,6 +1699,51 @@ mod tests {
             .expect("fresh port resolves updated base branch");
         assert_eq!(fresh.remote_ref, "origin/main");
         assert_eq!(fresh.branch_name, "main");
+    }
+
+    #[tokio::test]
+    async fn process_port_fetches_origin_before_resolving_unmaterialized_remote_refs() {
+        let origin_dir = tempfile::tempdir().expect("origin dir");
+        let seed_dir = tempfile::tempdir().expect("seed dir");
+        let repo_dir = tempfile::tempdir().expect("repo dir");
+        let origin_path = origin_dir.path().to_str().expect("origin path utf8");
+
+        run_test_git(origin_dir.path(), &["init", "--bare"]);
+        run_test_git(seed_dir.path(), &["init"]);
+        run_test_git(
+            seed_dir.path(),
+            &[
+                "-c",
+                "user.name=Test User",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        run_test_git(seed_dir.path(), &["branch", "-M", "master"]);
+        run_test_git(seed_dir.path(), &["remote", "add", "origin", origin_path]);
+        run_test_git(seed_dir.path(), &["push", "origin", "master"]);
+
+        run_test_git(repo_dir.path(), &["init"]);
+        run_test_git(repo_dir.path(), &["remote", "add", "origin", origin_path]);
+        let refs_before = run_test_git_output(repo_dir.path(), &["for-each-ref", "refs/remotes"]);
+        assert!(
+            String::from_utf8_lossy(&refs_before.stdout)
+                .trim()
+                .is_empty(),
+            "test repo should start without materialized origin refs"
+        );
+
+        let resolved = ProcessPrToolPort::new()
+            .base_branch_ref(repo_dir.path())
+            .await
+            .expect("resolve base branch after fetching origin");
+
+        assert_eq!(resolved.remote_ref, "origin/master");
+        assert_eq!(resolved.branch_name, "master");
     }
 
     #[tokio::test]
