@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260501125500-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501125500-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T13:24:59.149127312Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-fa7c486d`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-fa7c486d`\n\n**Classification:** fix_current_bead\n\n`src/test_support/drain_harness.rs:300` returns ready beads in raw `issues.jsonl` order. Because `append_follow_up_on_disk` writes follow-ups with priority 1 at `src/test_support/drain_harness.rs:383`, the new backend-exhausted test now expects the older P2 bead to land before the newly filed P1 follow-up (`tests/unit/drain_harness_test.rs:139`). Production `br ready` is priority-aware, and `drain_bead_queue` consumes the first ready bead, so this harness can still exercise a different queue order than the real drain. Sort the recomputed ready list to match the default `br ready` order, and update the test expectation so the P1 follow-up is selected before lower-priority existing work.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

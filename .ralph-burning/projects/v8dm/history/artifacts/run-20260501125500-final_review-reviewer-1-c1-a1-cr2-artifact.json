@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501125500-final_review-reviewer-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260501125500-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T13:57:27.900251127Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo correctness, safety, or robustness issues found in the scoped source/test changes. Reviewed the branch delta against b047db8533afb6c271bb089fbde06211ad7720b9, read the changed drain harness and unit test files, and `nix build` completed successfully.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 2
+}

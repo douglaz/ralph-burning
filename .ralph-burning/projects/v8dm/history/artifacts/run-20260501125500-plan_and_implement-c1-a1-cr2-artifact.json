@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501125500-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260501125500-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-05-01T13:48:26.669447924Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the pending drain harness amendment. The recomputed ready list from .beads/issues.jsonl is now sorted by BeadPriority.value(), so higher-priority beads are selected first while stable sorting preserves persisted graph order among equal priorities. Updated the backend-exhausted drain harness test to assert that the newly filed P1 follow-up is opened and landed before the older lower-priority bead, proving the harness now mirrors production br ready ordering for follow-ups filed during a drain run.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Inspect the existing drain harness ready-bead recomputation and the backend-exhausted recovery test to confirm the pending amendment target.\",\"order\":0,\"status\":\"completed\"},{\"description\":\"Make the harness priority-aware by sorting recomputed ready beads by raw priority value, preserving deterministic fixture order for equal priorities.\",\"order\":1,\"status\":\"completed\"},{\"description\":\"Update the backend-exhausted \n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

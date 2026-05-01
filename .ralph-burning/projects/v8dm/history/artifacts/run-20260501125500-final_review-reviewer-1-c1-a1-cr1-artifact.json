@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501125500-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501125500-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T13:23:43.668678567Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against b047db8533afb6c271bb089fbde06211ad7720b9 and the changed source/test files. `nix build` passed; a direct `cargo test --locked --features test-stub drain_harness_test` could not run because rustup has no default toolchain configured. Found one correctness gap in the harness ready ordering.\n\n## Amendments\n\n1. `src/test_support/drain_harness.rs:300` returns ready beads in raw `issues.jsonl` order. Because `append_follow_up_on_disk` writes follow-ups with priority 1 at `src/test_support/drain_harness.rs:383`, the new backend-exhausted test now expects the older P2 bead to land before the newly filed P1 follow-up (`tests/unit/drain_harness_test.rs:139`). Production `br ready` is priority-aware, and `drain_bead_queue` consumes the first ready bead, so this harness can still exercise a different queue order than the real drain. Sort the recomputed ready list to match the default `br ready` order, and update the test expectation so the P1 follow-up is selected before lower-priority existing work.\n   Classification: fix_current_bead\n   Rationale: The work item is specifically about mirroring production ready-bead behavior; preserving file order means the recovery scenario can still pass while disagreeing with the production queue selection that the harness is meant to model.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

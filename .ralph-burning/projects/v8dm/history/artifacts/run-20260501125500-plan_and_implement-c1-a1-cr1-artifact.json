@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501125500-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501125500-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-05-01T13:12:44.459402371Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Implemented the drain harness fix by removing the construction-time fixed bead_order and recomputing ready beads from the persisted .beads/issues.jsonl fixture on each ready_beads() call. The harness now parses current issue status, type, priority, labels, and blocking dependencies from disk, so follow-up beads appended during recovery become visible in later cycles just like production br ready. Updated the BackendExhaustedSkip harness test to prove the newly filed follow-up is selected, run through PR open/watch/merge, and closed in a third drain cycle.\",\"outstanding_risks\":[\"br lint could not be run because the br binary is not installed in the current PATH.\",\"The worktree includes orchestration/backlog state changes outside the source/test edits, including .beads/issues.jsonl and untracked .ralph-burning/projects/v8dm/. I did not review or alter .ralph-burning state.\"],\"steps\":[{\"order\":0,\"status\":\"completed\",\"description\":\"Inspected the drain harness and confirm\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

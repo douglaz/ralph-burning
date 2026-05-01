@@ -1,0 +1,7 @@
+id = "v8dm"
+name = "ralph-burning-v8dm: Drain harness: recompute ready beads from persisted graph each cycle"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "67b965b49917100f38671e502e6c7a351d64b5e68b86ebd661c8908f93142249"
+created_at = "2026-05-01T12:54:59.543842473Z"
+status_summary = "created"
