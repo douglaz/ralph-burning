@@ -63,12 +63,24 @@ impl StructuredLogCapture {
     }
 
     /// Run async test code inside this capture's tracing scope.
+    ///
+    /// Installs the capture's dispatch via both `set_default` (thread-local
+    /// guard, covers events emitted on the polling thread between awaits)
+    /// AND `with_subscriber` (per-poll wrap, covers events emitted from
+    /// poll-time work on multi-threaded runtimes). Either alone is
+    /// theoretically sufficient on the corresponding runtime, but the
+    /// `service_emits_invocation_completed_trace_with_token_fields` test
+    /// has historically been flaky in CI — combining both is belt-and-
+    /// braces and matches the patterns used elsewhere in the tracing
+    /// ecosystem when reliability matters more than minimal ceremony.
     pub async fn in_scope_async<F>(&self, future: F) -> F::Output
     where
         F: Future,
     {
         self.clear();
-        future.with_subscriber(self.dispatch()).await
+        let dispatch = self.dispatch();
+        let _guard = tracing::dispatcher::set_default(&dispatch);
+        future.with_subscriber(dispatch).await
     }
 
     /// Return a snapshot of all captured events.

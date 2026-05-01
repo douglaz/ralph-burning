@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501202048-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501202048-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T20:39:12.869524633Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo in-scope correctness or robustness issues found. Reviewed the branch delta against 10b07d9bdcdf3aa92c0e4d86751db3c0e3167b08; the only product-code change is the test timeout bump in src/adapters/br_process.rs. nix build passed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}
