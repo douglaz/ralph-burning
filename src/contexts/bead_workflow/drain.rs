@@ -249,9 +249,12 @@ pub async fn drain_bead_queue<P: DrainPort>(
         }
 
         let ready_beads = ports.ready_beads().await?;
+        let landed_in_session = report.landed.clone();
         let selected = if let Some(pending) = pending_resume.take() {
             if options.stop_on_p0 {
-                if let Some(bead) = next_open_ready_bead_from(ports, ready_beads).await? {
+                if let Some(bead) =
+                    next_open_ready_bead_from(ports, ready_beads, &landed_in_session).await?
+                {
                     if is_p0(&bead.priority) {
                         report.outcome = DrainOutcome::P0Encountered { bead_id: bead.id };
                         report.wall_time = started.elapsed();
@@ -270,7 +273,9 @@ pub async fn drain_bead_queue<P: DrainPort>(
                 created_project: pending.created_project,
             }
         } else {
-            let Some(bead) = next_open_ready_bead_from(ports, ready_beads).await? else {
+            let Some(bead) =
+                next_open_ready_bead_from(ports, ready_beads, &landed_in_session).await?
+            else {
                 report.outcome = DrainOutcome::Drained { cycles };
                 report.wall_time = started.elapsed();
                 return Ok(report);
@@ -634,8 +639,18 @@ fn check_interrupt<P: DrainPort>(
 async fn next_open_ready_bead_from<P: DrainPort>(
     ports: &mut P,
     ready_beads: Vec<ReadyBead>,
+    landed_in_session: &[String],
 ) -> Result<Option<ReadyBead>, DrainError> {
     for bead in ready_beads {
+        // Skip beads we just landed in this drain session, even if they
+        // appear in `br ready` again. This guards against the bot's
+        // PR #215 finding: when the bead-sync PR fails to merge, the
+        // next cycle's `git reset --hard origin/master` discards the
+        // local `br close` from this session, so `br ready` re-surfaces
+        // the same bead. Without this guard, drain would re-process it.
+        if landed_in_session.iter().any(|landed| landed == &bead.id) {
+            continue;
+        }
         if ports.bead_status(&bead.id).await? == BeadStatus::Open {
             return Ok(Some(bead));
         }

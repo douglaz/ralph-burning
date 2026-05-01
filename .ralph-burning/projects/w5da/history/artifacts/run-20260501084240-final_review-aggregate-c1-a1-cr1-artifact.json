@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260501084240-final_review-aggregate-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501084240-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T09:12:13.579577989Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 1\n**Unique Amendments:** 1\n**Final Review Restarts:** 1/25\n**Effective Min Reviewers:** 1\n**Exhausted Count:** 1\n\n## Accepted\n\n- `fr-1-cd86c62e`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-1-cd86c62e`\n\n**Classification:** fix_current_bead\n\nAdd regression coverage for the new bead-sync PR persistence path. `src/cli/drain.rs:494` now owns the post-merge `.beads` persistence flow and calls the new PR/watch helper at `src/cli/drain.rs:512`, but current drain harness coverage still mocks that boundary: `src/test_support/drain_harness.rs:971` only increments `persisted_mutations`, and `tests/unit/drain_harness_test.rs:40` validates PR tool calls for the code PR rather than the post-merge bead-sync PR. This was the exact class of gap called out by w5da, so add a focused test/seam that proves bead mutation persistence creates/pushes a branch, creates a PR, and invokes `watch_pr` instead of pushing directly to `master`.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

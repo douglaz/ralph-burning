@@ -25,10 +25,12 @@ use crate::contexts::bead_workflow::drain_failure::{
     FailureObservation, FailureObservationKind, RecoveryAction, VerificationFailureSource,
 };
 use crate::contexts::bead_workflow::pr_open::{
-    open_pr_for_completed_run, Gate, PrOpenError, PrOpenRequest, PrOpenStores, ProcessPrToolPort,
+    open_pr_for_completed_run, Gate, PrOpenError, PrOpenRequest, PrOpenStores, PrToolPort,
+    ProcessPrToolPort,
 };
 use crate::contexts::bead_workflow::pr_watch::{
-    watch_pr, PrWatchClock, PrWatchRequest, WatchOutcome, DEFAULT_MAX_WAIT, DEFAULT_POLL_INTERVAL,
+    watch_pr, PrWatchClock, PrWatchRequest, PrWatchToolPort, WatchOutcome, DEFAULT_MAX_WAIT,
+    DEFAULT_POLL_INTERVAL,
 };
 use crate::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, RunSnapshot, RunStatus,
@@ -112,6 +114,19 @@ impl ProcessDrainPorts {
         BrMutationAdapter::with_adapter_id(self.br_read(), "drain-loop".to_owned())
     }
 
+    async fn open_and_watch_bead_sync_pr(&self) -> Result<(), DrainError> {
+        let tools = ProcessPrToolPort::new();
+        open_and_watch_bead_sync_pr_with_tools(
+            &self.base_dir,
+            &tools,
+            &InterruptiblePrWatchClock::started_now(
+                Arc::clone(&self.interrupted),
+                DEFAULT_MAX_WAIT,
+            ),
+        )
+        .await
+    }
+
     fn project_id(&self) -> Result<&crate::shared::domain::ProjectId, DrainError> {
         self.active_project.as_ref().ok_or_else(|| {
             DrainError::operation("resolve active drain project", "no project created")
@@ -173,6 +188,74 @@ impl ProcessDrainPorts {
             _ => Ok(DrainRunOutcome::Failed(observation_from_app_error(
                 bead_id, error,
             ))),
+        }
+    }
+}
+
+async fn open_and_watch_bead_sync_pr_with_tools<T, C>(
+    base_dir: &Path,
+    tools: &T,
+    clock: &C,
+) -> Result<(), DrainError>
+where
+    T: PrToolPort + PrWatchToolPort,
+    C: PrWatchClock,
+{
+    let base_branch = tools
+        .base_branch_ref(base_dir)
+        .await
+        .map_err(|source| DrainError::operation("resolve bead sync PR base", source.to_string()))?;
+    let branch_name = bead_sync_branch_name(base_dir)?;
+    run_process(base_dir, "git", &["branch", "-f", &branch_name, "HEAD"])?;
+    tools
+        .push_branch(base_dir, &branch_name)
+        .await
+        .map_err(|source| DrainError::operation("push bead sync branch", source.to_string()))?;
+    let pr_url = tools
+        .create_pr(
+            base_dir,
+            &base_branch,
+            &branch_name,
+            "Sync beads after drain",
+            "Synchronizes `.beads/` mutations produced by the drain loop.",
+        )
+        .await
+        .map_err(|source| DrainError::operation("create bead sync PR", source.to_string()))?;
+    let pr_number = parse_pr_number(&pr_url)
+        .ok_or_else(|| DrainError::operation("parse bead sync PR number", pr_url.clone()))?;
+    match watch_pr(
+        PrWatchRequest {
+            base_dir,
+            pr_number,
+            max_wait: DEFAULT_MAX_WAIT,
+            poll_interval: DEFAULT_POLL_INTERVAL,
+        },
+        tools,
+        clock,
+    )
+    .await
+    .map_err(|error| DrainError::operation("watch bead sync PR", error.to_string()))?
+    {
+        WatchOutcome::Merged { .. } => Ok(()),
+        outcome => {
+            // Bot's PR #215 finding: the bead-sync PR happens AFTER the
+            // main run PR has already merged, so the actual work is on
+            // master. If the bead-sync PR fails to merge (transient CI
+            // flake, bot delay, timeout) the only consequence is that
+            // .beads/issues.jsonl on master is slightly out of date —
+            // the operator can merge that PR manually later. Aborting
+            // the entire drain here would also throw away progress
+            // from any subsequent cycles that the drain might still
+            // have been able to complete. Warn loudly and continue.
+            tracing::warn!(
+                pr_number,
+                ?outcome,
+                "bead sync PR #{pr_number} did not merge; \
+                 main bead work already landed on master, but \
+                 .beads/issues.jsonl on master is pending — \
+                 merge PR #{pr_number} manually to finish the cleanup."
+            );
+            Ok(())
         }
     }
 }
@@ -454,7 +537,7 @@ impl DrainPort for ProcessDrainPorts {
             "git",
             &["commit", "-m", "sync beads after drain"],
         )?;
-        run_process(&self.base_dir, "git", &["push", "origin", "HEAD:master"])?;
+        self.open_and_watch_bead_sync_pr().await?;
         Ok(())
     }
 
@@ -577,6 +660,41 @@ fn git_status_porcelain(base_dir: &Path, args: &[&str]) -> Result<String, DrainE
             output.status, stderr
         ),
     ))
+}
+
+fn git_output(base_dir: &Path, args: &[&str]) -> Result<String, DrainError> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(base_dir)
+        .output()
+        .map_err(|error| DrainError::operation("spawn process", error.to_string()))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(DrainError::operation(
+        "git",
+        format!(
+            "git {} failed with status {}: {}",
+            args.join(" "),
+            output.status,
+            stderr
+        ),
+    ))
+}
+
+fn bead_sync_branch_name(base_dir: &Path) -> Result<String, DrainError> {
+    let short_sha = git_output(base_dir, &["rev-parse", "--short", "HEAD"])?
+        .trim()
+        .to_owned();
+    if short_sha.is_empty() {
+        return Err(DrainError::operation(
+            "name bead sync branch",
+            "git rev-parse returned an empty HEAD",
+        ));
+    }
+    Ok(format!("drain/beads-sync-{short_sha}"))
 }
 
 fn git_cached_beads_changed(base_dir: &Path) -> Result<bool, DrainError> {
@@ -876,8 +994,14 @@ fn _duration_defaults() -> (Duration, Duration) {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::sync::Mutex;
 
     use crate::cli::{Cli, Commands};
+    use crate::contexts::bead_workflow::pr_open::{BaseBranchRef, DiffStat, PrToolError};
+    use crate::contexts::bead_workflow::pr_watch::{
+        BotBodyReaction, BotBodyReview, BotLineComment, CiState, MergeableState, PrMergeOutput,
+        PrStatusSnapshot,
+    };
 
     #[test]
     fn drain_br_path_parses() {
@@ -910,6 +1034,72 @@ mod tests {
             Some(123)
         );
         assert_eq!(parse_pr_number("not-a-pr"), None);
+    }
+
+    #[tokio::test]
+    async fn bead_sync_pr_path_pushes_branch_creates_pr_and_watches_merge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        run_process(temp.path(), "git", &["init"]).expect("git init");
+        run_process(
+            temp.path(),
+            "git",
+            &["config", "user.email", "test@example.test"],
+        )
+        .expect("configure git email");
+        run_process(temp.path(), "git", &["config", "user.name", "Ralph Test"])
+            .expect("configure git name");
+        std::fs::write(temp.path().join("README.md"), "fixture\n").expect("write fixture");
+        run_process(temp.path(), "git", &["add", "README.md"]).expect("git add");
+        run_process(temp.path(), "git", &["commit", "-m", "initial"]).expect("git commit");
+        run_process(temp.path(), "git", &["branch", "-M", "master"]).expect("rename master");
+
+        let head = git_output(temp.path(), &["rev-parse", "HEAD"]).expect("read head");
+        let short_head =
+            git_output(temp.path(), &["rev-parse", "--short", "HEAD"]).expect("read short head");
+        let expected_branch = format!("drain/beads-sync-{}", short_head.trim());
+        let tools = MockBeadSyncPrTools::default();
+        let clock = MockBeadSyncPrClock;
+
+        open_and_watch_bead_sync_pr_with_tools(temp.path(), &tools, &clock)
+            .await
+            .expect("bead sync PR opens and merges");
+
+        assert_eq!(
+            tools
+                .pushed_branches
+                .lock()
+                .expect("pushed branches")
+                .as_slice(),
+            &[expected_branch.clone()]
+        );
+        assert!(tools
+            .pushed_branches
+            .lock()
+            .expect("pushed branches")
+            .iter()
+            .all(|branch| branch != "master" && branch != "HEAD:master"));
+
+        let created_prs = tools.created_prs.lock().expect("created PRs");
+        assert_eq!(created_prs.len(), 1);
+        assert_eq!(created_prs[0].base_branch, "master");
+        assert_eq!(created_prs[0].branch_name, expected_branch);
+        assert_eq!(created_prs[0].title, "Sync beads after drain");
+        assert!(created_prs[0]
+            .body
+            .contains("Synchronizes `.beads/` mutations"));
+        drop(created_prs);
+
+        assert_eq!(
+            tools.status_polls.lock().expect("status polls").as_slice(),
+            &[77]
+        );
+        assert_eq!(
+            tools.merged_prs.lock().expect("merged PRs").as_slice(),
+            &[77]
+        );
+        let branch_head =
+            git_output(temp.path(), &["rev-parse", &expected_branch]).expect("read branch head");
+        assert_eq!(branch_head.trim(), head.trim());
     }
 
     #[test]
@@ -1139,5 +1329,236 @@ mod tests {
                 }
             ))
         );
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct CreatedPr {
+        base_branch: String,
+        branch_name: String,
+        title: String,
+        body: String,
+    }
+
+    #[derive(Debug, Default)]
+    struct MockBeadSyncPrTools {
+        pushed_branches: Mutex<Vec<String>>,
+        created_prs: Mutex<Vec<CreatedPr>>,
+        status_polls: Mutex<Vec<u64>>,
+        merged_prs: Mutex<Vec<u64>>,
+    }
+
+    impl PrToolPort for MockBeadSyncPrTools {
+        async fn run_gate(&self, _repo_root: &Path, _gate: Gate) -> Result<(), PrToolError> {
+            Ok(())
+        }
+
+        async fn current_branch(&self, _repo_root: &Path) -> Result<String, PrToolError> {
+            Ok("master".to_owned())
+        }
+
+        async fn base_branch_ref(&self, _repo_root: &Path) -> Result<BaseBranchRef, PrToolError> {
+            Ok(BaseBranchRef {
+                remote_ref: "origin/master".to_owned(),
+                branch_name: "master".to_owned(),
+            })
+        }
+
+        async fn fetch_base_branch(
+            &self,
+            _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
+        ) -> Result<(), PrToolError> {
+            Ok(())
+        }
+
+        async fn base_is_ancestor_of_head(
+            &self,
+            _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
+        ) -> Result<bool, PrToolError> {
+            Ok(true)
+        }
+
+        async fn commit_messages_since_base(
+            &self,
+            _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
+        ) -> Result<Vec<String>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn diff_stats_since_base(
+            &self,
+            _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
+        ) -> Result<Vec<DiffStat>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn unstaged_real_code_paths(
+            &self,
+            _repo_root: &Path,
+        ) -> Result<Vec<String>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn staged_real_code_paths(
+            &self,
+            _repo_root: &Path,
+        ) -> Result<Vec<String>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn soft_reset_base(
+            &self,
+            _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
+        ) -> Result<(), PrToolError> {
+            Ok(())
+        }
+
+        async fn staged_real_code_diff_stats(
+            &self,
+            _repo_root: &Path,
+        ) -> Result<Vec<DiffStat>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn staged_commit_paths(&self, _repo_root: &Path) -> Result<Vec<String>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn commit(
+            &self,
+            _repo_root: &Path,
+            _message: &str,
+            _paths: &[String],
+        ) -> Result<(), PrToolError> {
+            Ok(())
+        }
+
+        async fn push_branch(
+            &self,
+            _repo_root: &Path,
+            branch_name: &str,
+        ) -> Result<(), PrToolError> {
+            self.pushed_branches
+                .lock()
+                .expect("pushed branches")
+                .push(branch_name.to_owned());
+            Ok(())
+        }
+
+        async fn create_pr(
+            &self,
+            _repo_root: &Path,
+            base_branch: &BaseBranchRef,
+            branch_name: &str,
+            title: &str,
+            body: &str,
+        ) -> Result<String, PrToolError> {
+            self.created_prs
+                .lock()
+                .expect("created PRs")
+                .push(CreatedPr {
+                    base_branch: base_branch.branch_name.clone(),
+                    branch_name: branch_name.to_owned(),
+                    title: title.to_owned(),
+                    body: body.to_owned(),
+                });
+            Ok("https://example.test/ralph-burning/pull/77".to_owned())
+        }
+    }
+
+    impl PrWatchToolPort for MockBeadSyncPrTools {
+        async fn repo_slug(&self, _repo_root: &Path) -> Result<String, PrToolError> {
+            Ok("example/ralph-burning".to_owned())
+        }
+
+        async fn pr_status(
+            &self,
+            _repo_root: &Path,
+            _repo_slug: &str,
+            pr_number: u64,
+        ) -> Result<PrStatusSnapshot, PrToolError> {
+            self.status_polls
+                .lock()
+                .expect("status polls")
+                .push(pr_number);
+            Ok(PrStatusSnapshot {
+                ci: CiState::Success,
+                mergeable: MergeableState::Mergeable,
+                head_sha: Some("bead-sync-head".to_owned()),
+                head_review_watermark_at: None,
+                latest_push_at: None,
+                pr_url: format!("https://example.test/ralph-burning/pull/{pr_number}"),
+            })
+        }
+
+        async fn codex_bot_reaction(
+            &self,
+            _repo_root: &Path,
+            _repo_slug: &str,
+            _pr_number: u64,
+            head_sha: Option<&str>,
+            _head_review_watermark_at: Option<chrono::DateTime<Utc>>,
+        ) -> Result<BotBodyReview, PrToolError> {
+            Ok(BotBodyReview {
+                reaction: BotBodyReaction::Approved,
+                created_at: None,
+                approved_head_sha: head_sha.map(ToOwned::to_owned),
+            })
+        }
+
+        async fn codex_bot_line_comments_since_latest_push(
+            &self,
+            _repo_root: &Path,
+            _repo_slug: &str,
+            _pr_number: u64,
+            _head_sha: Option<&str>,
+            _latest_push_at: Option<chrono::DateTime<Utc>>,
+        ) -> Result<Vec<BotLineComment>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn failed_run_logs(
+            &self,
+            _repo_root: &Path,
+            _run_ids: &[u64],
+        ) -> Result<Vec<String>, PrToolError> {
+            Ok(Vec::new())
+        }
+
+        async fn rerun_failed_runs(
+            &self,
+            _repo_root: &Path,
+            _pr_number: u64,
+            _run_ids: &[u64],
+        ) -> Result<(), PrToolError> {
+            Ok(())
+        }
+
+        async fn merge_pr(
+            &self,
+            _repo_root: &Path,
+            pr_number: u64,
+            head_sha: &str,
+        ) -> Result<PrMergeOutput, PrToolError> {
+            self.merged_prs.lock().expect("merged PRs").push(pr_number);
+            Ok(PrMergeOutput {
+                sha: head_sha.to_owned(),
+                pr_url: format!("https://example.test/ralph-burning/pull/{pr_number}"),
+            })
+        }
+    }
+
+    struct MockBeadSyncPrClock;
+
+    impl PrWatchClock for MockBeadSyncPrClock {
+        fn elapsed(&self) -> Duration {
+            Duration::ZERO
+        }
+
+        async fn sleep(&self, _duration: Duration) {}
     }
 }

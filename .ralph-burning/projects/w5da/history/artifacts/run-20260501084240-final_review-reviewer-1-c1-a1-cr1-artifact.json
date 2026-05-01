@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501084240-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501084240-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T09:11:34.142981653Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against 35eaa55404219cbf7017a8daf037d61686d2cb62, ignoring live `.ralph-burning/projects/w5da/` state as requested. `nix develop --command cargo test --locked` and `nix build` passed. One amendment proposed for missing regression coverage around the newly changed persistence path.\n\n## Amendments\n\n1. Add regression coverage for the new bead-sync PR persistence path. `src/cli/drain.rs:494` now owns the post-merge `.beads` persistence flow and calls the new PR/watch helper at `src/cli/drain.rs:512`, but current drain harness coverage still mocks that boundary: `src/test_support/drain_harness.rs:971` only increments `persisted_mutations`, and `tests/unit/drain_harness_test.rs:40` validates PR tool calls for the code PR rather than the post-merge bead-sync PR. This was the exact class of gap called out by w5da, so add a focused test/seam that proves bead mutation persistence creates/pushes a branch, creates a PR, and invokes `watch_pr` instead of pushing directly to `master`.\n   Classification: fix_current_bead\n   Rationale: The implementation may be correct, but the original regression escaped because the drain tests mocked above this boundary; without a targeted regression test, the protected-branch push behavior can return unnoticed.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

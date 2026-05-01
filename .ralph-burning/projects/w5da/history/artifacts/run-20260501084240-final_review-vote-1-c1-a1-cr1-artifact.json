@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501084240-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501084240-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T09:12:13.542943011Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the proposed regression coverage amendment.\n\n## Votes\n\n- `fr-1-cd86c62e`: Accept\n  The amendment targets a real coverage gap around a safety-critical persistence path. The production code now persists post-merge `.beads` changes through a branch, PR creation, and `watch_pr`, while the current drain harness only counts `persisted_mutations` and the existing PR assertions cover the code PR path. A focused seam/test would make the intended no-direct-master behavior observable and reduce regression risk.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}
