@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -4084,6 +4085,14 @@ pub(crate) async fn execute_start(
     overrides: RunBackendOverrideArgs,
     emit_output: bool,
 ) -> AppResult<()> {
+    execute_start_with_br_path(overrides, emit_output, None).await
+}
+
+pub(crate) async fn execute_start_with_br_path(
+    overrides: RunBackendOverrideArgs,
+    emit_output: bool,
+    br_binary_path: Option<PathBuf>,
+) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace version
@@ -4201,13 +4210,21 @@ pub(crate) async fn execute_start(
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     let br_mutation = BrMutationAdapter::with_adapter_id(
-        BrAdapter::<OsProcessRunner>::new().with_working_dir(current_dir.clone()),
+        match br_binary_path.clone() {
+            Some(path) => BrAdapter::<OsProcessRunner>::with_binary_path(path),
+            None => BrAdapter::<OsProcessRunner>::new(),
+        }
+        .with_working_dir(current_dir.clone()),
         cli_terminal_reconciliation_adapter_id(
             project_id.as_str(),
             project_record.task_source.as_ref(),
         ),
     );
-    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let br = match br_binary_path.clone() {
+        Some(path) => BrAdapter::with_binary_path(path),
+        None => BrAdapter::new(),
+    }
+    .with_working_dir(current_dir.clone());
     let bv = BvAdapter::new().with_working_dir(current_dir.clone());
     let milestone_sync_result =
         sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation(
@@ -4270,6 +4287,14 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
 pub(crate) async fn execute_resume(
     overrides: RunBackendOverrideArgs,
     emit_output: bool,
+) -> AppResult<()> {
+    execute_resume_with_br_path(overrides, emit_output, None).await
+}
+
+pub(crate) async fn execute_resume_with_br_path(
+    overrides: RunBackendOverrideArgs,
+    emit_output: bool,
+    br_binary_path: Option<PathBuf>,
 ) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
@@ -4468,13 +4493,21 @@ pub(crate) async fn execute_resume(
             &final_snapshot,
         )?;
     let br_mutation = BrMutationAdapter::with_adapter_id(
-        BrAdapter::<OsProcessRunner>::new().with_working_dir(current_dir.clone()),
+        match br_binary_path.clone() {
+            Some(path) => BrAdapter::<OsProcessRunner>::with_binary_path(path),
+            None => BrAdapter::<OsProcessRunner>::new(),
+        }
+        .with_working_dir(current_dir.clone()),
         cli_terminal_reconciliation_adapter_id(
             project_id.as_str(),
             project_record.task_source.as_ref(),
         ),
     );
-    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let br = match br_binary_path.clone() {
+        Some(path) => BrAdapter::with_binary_path(path),
+        None => BrAdapter::new(),
+    }
+    .with_working_dir(current_dir.clone());
     let bv = BvAdapter::new().with_working_dir(current_dir.clone());
     let milestone_sync_result =
         sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation(
@@ -4921,19 +4954,34 @@ async fn handle_sync_milestone() -> AppResult<()> {
 }
 
 pub(crate) async fn execute_sync_milestone(emit_output: bool) -> AppResult<()> {
+    execute_sync_milestone_with_br_path(emit_output, None).await
+}
+
+pub(crate) async fn execute_sync_milestone_with_br_path(
+    emit_output: bool,
+    br_binary_path: Option<PathBuf>,
+) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
     let project_record = FsProjectStore.read_project_record(&current_dir, &project_id)?;
     let final_snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
 
     let br_mutation = BrMutationAdapter::with_adapter_id(
-        BrAdapter::<OsProcessRunner>::new().with_working_dir(current_dir.clone()),
+        match br_binary_path.clone() {
+            Some(path) => BrAdapter::<OsProcessRunner>::with_binary_path(path),
+            None => BrAdapter::<OsProcessRunner>::new(),
+        }
+        .with_working_dir(current_dir.clone()),
         cli_terminal_reconciliation_adapter_id(
             project_id.as_str(),
             project_record.task_source.as_ref(),
         ),
     );
-    let br = BrAdapter::new().with_working_dir(current_dir.clone());
+    let br = match br_binary_path.clone() {
+        Some(path) => BrAdapter::with_binary_path(path),
+        None => BrAdapter::new(),
+    }
+    .with_working_dir(current_dir.clone());
     let bv = BvAdapter::new().with_working_dir(current_dir.clone());
     let synced = sync_terminal_milestone_task_and_continue_selection_with_terminal_reconciliation(
         &current_dir,

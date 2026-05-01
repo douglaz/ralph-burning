@@ -125,6 +125,20 @@ impl ProcessBeadProjectBrPort {
             mutation,
         }
     }
+
+    pub fn with_br_binary(base_dir: PathBuf, br_binary: PathBuf) -> Self {
+        let read =
+            BrAdapter::with_binary_path(br_binary.clone()).with_working_dir(base_dir.clone());
+        let mutation = BrMutationAdapter::with_adapter_id(
+            BrAdapter::with_binary_path(br_binary).with_working_dir(base_dir.clone()),
+            "bead-create-project".to_owned(),
+        );
+        Self {
+            base_dir,
+            read,
+            mutation,
+        }
+    }
 }
 
 impl BeadPromptBrPort for ProcessBeadProjectBrPort {

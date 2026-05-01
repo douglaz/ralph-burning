@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501034351-final_review-vote-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501034351-final_review-vote-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T04:44:56.771362164Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nAccepted the amendment because the PR watch path is incorrectly coupled to br availability even though it does not use br.\n\n## Votes\n\n- `fr-1-0aa0a026`: Accept\n  The code resolves and preflights br before dispatching all pr subcommands, while handle_watch ignores the resolved PathBuf and the watcher operates through the PR/GitHub tool port. This creates a real availability regression: pr watch can fail with BrUnavailable solely because br is missing, despite not needing it. Gating the preflight to Open or other br-dependent subcommands, plus a regression covering br absent from PATH for pr watch, is technically sound and improves command isolation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

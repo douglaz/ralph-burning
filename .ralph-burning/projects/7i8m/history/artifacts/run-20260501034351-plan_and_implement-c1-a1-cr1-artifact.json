@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501034351-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501034351-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-05-01T04:40:18.193783701Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Added a br binary preflight and --br-path plumbing for bead create-project, pr, and drain command paths. The preflight resolves an explicit --br-path before PATH, reports the explicit path and PATH summary on failure, suggests nix develop and --br-path recovery, and includes the beads_rust install URL. Resolved br paths are cached into BrAdapter/ProcessBeadProjectBrPort/ProcessDrainPorts construction so subsequent br calls reuse the same executable.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Inspected existing BrAdapter construction and command handlers for bead, pr, and drain to identify all br-dependent entry points.\",\"order\":0,\"status\":\"completed\"},{\"description\":\"Implemented preflight_br_binary in src/adapters/br_process.rs, including executable checks, PATH candidate resolution, structured BrNotFound details, and unit coverage for explicit path, PATH lookup, and missing br cases.\",\"order\":1,\"status\":\"completed\"},{\"description\":\"Added BrAdapter::with_binary\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}

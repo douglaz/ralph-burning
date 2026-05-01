@@ -10,7 +10,9 @@ use clap::Args;
 use crate::adapters::br_models::{BeadStatus, ReadyBead};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrMutationAdapter, OsProcessRunner};
 use crate::adapters::fs::{FsJournalStore, FsProjectStore, FsRunSnapshotStore};
-use crate::cli::run::{execute_resume, execute_start, execute_stop, RunBackendOverrideArgs};
+use crate::cli::run::{
+    execute_resume_with_br_path, execute_start_with_br_path, execute_stop, RunBackendOverrideArgs,
+};
 use crate::contexts::bead_workflow::create_project::{
     create_project_from_bead, CreateProjectFromBeadInput, GitFeatureBranchPort,
     ProcessBeadProjectBrPort,
@@ -40,6 +42,8 @@ use crate::shared::error::{AppError, AppResult};
 #[derive(Debug, Args)]
 #[command(about = "Drain the ready bead queue one bead at a time.")]
 pub struct DrainCommand {
+    #[arg(long = "br-path", value_name = "PATH")]
+    pub br_path: Option<PathBuf>,
     #[arg(long = "max-cycles")]
     pub max_cycles: Option<u32>,
     #[arg(
@@ -55,11 +59,12 @@ pub struct DrainCommand {
 }
 
 pub async fn handle(command: DrainCommand) -> AppResult<()> {
+    let br_path = crate::cli::resolve_br_path_for_command(command.br_path.as_deref())?;
     let current_dir = std::env::current_dir()?;
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
 
-    let mut ports = ProcessDrainPorts::new(current_dir);
+    let mut ports = ProcessDrainPorts::new(current_dir, br_path);
     let report = drain_bead_queue(
         &mut ports,
         DrainOptions {
@@ -82,23 +87,25 @@ pub async fn handle(command: DrainCommand) -> AppResult<()> {
 
 struct ProcessDrainPorts {
     base_dir: PathBuf,
+    br_path: PathBuf,
     active_project: Option<crate::shared::domain::ProjectId>,
     interrupted: Arc<AtomicBool>,
 }
 
 impl ProcessDrainPorts {
-    fn new(base_dir: PathBuf) -> Self {
+    fn new(base_dir: PathBuf, br_path: PathBuf) -> Self {
         let interrupted = Arc::new(AtomicBool::new(false));
         install_ctrl_c_handler(Arc::clone(&interrupted));
         Self {
             base_dir,
+            br_path,
             active_project: None,
             interrupted,
         }
     }
 
     fn br_read(&self) -> BrAdapter<OsProcessRunner> {
-        BrAdapter::with_runner(OsProcessRunner::new()).with_working_dir(self.base_dir.clone())
+        BrAdapter::with_binary_path(self.br_path.clone()).with_working_dir(self.base_dir.clone())
     }
 
     fn br_mutation(&self) -> BrMutationAdapter<OsProcessRunner> {
@@ -241,7 +248,7 @@ impl DrainPort for ProcessDrainPorts {
         let output = create_project_from_bead(
             &FsProjectStore,
             &FsJournalStore,
-            &ProcessBeadProjectBrPort::new(self.base_dir.clone()),
+            &ProcessBeadProjectBrPort::with_br_binary(self.base_dir.clone(), self.br_path.clone()),
             &GitFeatureBranchPort,
             &self.base_dir,
             CreateProjectFromBeadInput {
@@ -278,7 +285,12 @@ impl DrainPort for ProcessDrainPorts {
     }
 
     async fn start_run(&mut self, bead_id: &str) -> Result<DrainRunOutcome, DrainError> {
-        let result = execute_start(RunBackendOverrideArgs::default(), false).await;
+        let result = execute_start_with_br_path(
+            RunBackendOverrideArgs::default(),
+            false,
+            Some(self.br_path.clone()),
+        )
+        .await;
         match result {
             Ok(()) => {
                 let snapshot = self.active_run_snapshot()?;
@@ -300,7 +312,12 @@ impl DrainPort for ProcessDrainPorts {
     }
 
     async fn resume_run(&mut self, bead_id: &str) -> Result<DrainRunOutcome, DrainError> {
-        let result = execute_resume(RunBackendOverrideArgs::default(), false).await;
+        let result = execute_resume_with_br_path(
+            RunBackendOverrideArgs::default(),
+            false,
+            Some(self.br_path.clone()),
+        )
+        .await;
         match result {
             Ok(()) => {
                 let snapshot = self.active_run_snapshot()?;
@@ -856,6 +873,29 @@ fn _duration_defaults() -> (Duration, Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    use crate::cli::{Cli, Commands};
+
+    #[test]
+    fn drain_br_path_parses() {
+        let cli = Cli::parse_from([
+            "ralph-burning",
+            "drain",
+            "--br-path",
+            "/opt/beads/bin/br",
+            "--max-cycles",
+            "1",
+        ]);
+        let Commands::Drain(command) = cli.command else {
+            panic!("expected drain command");
+        };
+        assert_eq!(
+            command.br_path.as_deref(),
+            Some(std::path::Path::new("/opt/beads/bin/br"))
+        );
+        assert_eq!(command.max_cycles, Some(1));
+    }
 
     #[test]
     fn parses_pr_number_from_github_url() {
@@ -1037,6 +1077,7 @@ mod tests {
 
         let ports = ProcessDrainPorts {
             base_dir: temp_dir.path().to_path_buf(),
+            br_path: PathBuf::from("br"),
             active_project: Some(project_id),
             interrupted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };

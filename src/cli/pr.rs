@@ -1,7 +1,8 @@
 use clap::{Args, Subcommand};
+use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::adapters::br_process::{BrAdapter, OsProcessRunner};
+use crate::adapters::br_process::BrAdapter;
 use crate::adapters::fs::{FsJournalStore, FsProjectStore, FsRunSnapshotStore};
 use crate::contexts::bead_workflow::pr_open::{
     open_pr_for_completed_run, PrOpenError, PrOpenRequest, PrOpenStores, ProcessPrToolPort,
@@ -15,6 +16,8 @@ use crate::shared::error::{AppError, AppResult};
 #[derive(Debug, Args)]
 #[command(about = "Pull request automation for completed runs.")]
 pub struct PrCommand {
+    #[arg(long = "br-path", value_name = "PATH", global = true)]
+    pub br_path: Option<PathBuf>,
     #[command(subcommand)]
     pub command: PrSubcommand,
 }
@@ -50,17 +53,20 @@ pub struct PrWatchArgs {
 
 pub async fn handle(command: PrCommand) -> AppResult<()> {
     match command.command {
-        PrSubcommand::Open(args) => handle_open(args).await,
+        PrSubcommand::Open(args) => {
+            let br_path = crate::cli::resolve_br_path_for_command(command.br_path.as_deref())?;
+            handle_open(args, br_path).await
+        }
         PrSubcommand::Watch(args) => handle_watch(args).await,
     }
 }
 
-async fn handle_open(args: PrOpenArgs) -> AppResult<()> {
+async fn handle_open(args: PrOpenArgs, br_path: PathBuf) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
-    let br = BrAdapter::with_runner(OsProcessRunner::new()).with_working_dir(current_dir.clone());
+    let br = BrAdapter::with_binary_path(br_path).with_working_dir(current_dir.clone());
     let output = open_pr_for_completed_run(
         PrOpenRequest {
             base_dir: &current_dir,
@@ -157,6 +163,7 @@ mod tests {
     use clap::Parser;
 
     use crate::cli::{Cli, Commands};
+    use crate::shared::error::AppError;
 
     use super::*;
 
@@ -176,8 +183,29 @@ mod tests {
         let PrSubcommand::Open(args) = command.command else {
             panic!("expected open command");
         };
+        assert!(command.br_path.is_none());
         assert_eq!(args.bead_id.as_deref(), Some("2qlo"));
         assert!(args.skip_gates);
+    }
+
+    #[test]
+    fn pr_global_br_path_parses_for_open() {
+        let cli = Cli::parse_from([
+            "ralph-burning",
+            "pr",
+            "--br-path",
+            "/opt/beads/bin/br",
+            "open",
+            "--bead-id",
+            "2qlo",
+        ]);
+        let Commands::Pr(command) = cli.command else {
+            panic!("expected pr command");
+        };
+        assert_eq!(
+            command.br_path.as_deref(),
+            Some(std::path::Path::new("/opt/beads/bin/br"))
+        );
     }
 
     #[test]
@@ -227,5 +255,24 @@ mod tests {
             Cli::try_parse_from(["ralph-burning", "pr", "watch", "42", "--poll-interval", "0"]);
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn pr_watch_does_not_preflight_br_path() {
+        let missing_br = std::env::temp_dir().join("ralph-burning-missing-br-for-pr-watch");
+        let result = handle(PrCommand {
+            br_path: Some(missing_br),
+            command: PrSubcommand::Watch(PrWatchArgs {
+                pr_number: 42,
+                max_wait: Duration::from_secs(0),
+                poll_interval: 1,
+            }),
+        })
+        .await;
+
+        assert!(
+            !matches!(result, Err(AppError::BrUnavailable { .. })),
+            "pr watch must not preflight br because it does not invoke br: {result:?}"
+        );
     }
 }
