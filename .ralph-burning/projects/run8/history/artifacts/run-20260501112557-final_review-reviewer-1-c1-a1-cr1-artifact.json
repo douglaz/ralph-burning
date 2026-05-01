@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501112557-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501112557-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T11:45:53.065369350Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo correctness, safety, or robustness issues found in the reviewed branch state. Reviewed the changed pr-open implementation end-to-end and ignored live .ralph-burning runtime state per scope. Verification: nix build passed; a direct cargo test pr_open --locked attempt could not run because rustup has no default cargo toolchain configured.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

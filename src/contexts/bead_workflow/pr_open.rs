@@ -189,7 +189,7 @@ pub enum PrOpenError {
     #[error("refusing to squash with pre-existing staged real-code changes present: {paths}")]
     StagedRealCodeWorktree { paths: String },
 
-    #[error("no staged real-code changes remain after reset; nothing to commit")]
+    #[error("no review-scope real-code changes found; nothing to commit")]
     NoRealCodeChanges,
 
     #[error("project '{project_id}' has no bead binding; pass `--bead-id <id>`")]
@@ -761,6 +761,22 @@ where
     }
 
     reject_pre_existing_real_code_changes(request.base_dir, tools).await?;
+
+    // Peek at the committed review-scope diff before rewriting HEAD. If the
+    // branch only contains metadata/orchestration changes, fail as a no-op
+    // while the user's checkpoint commits are still intact.
+    let committed_diff_stats = review_scope_diff_stats(
+        tools
+            .diff_stats_since_base(request.base_dir, &base_branch)
+            .await
+            .map_err(|source| PrOpenError::Tool {
+                action: "read committed real-code diff stats",
+                source,
+            })?,
+    );
+    if committed_diff_stats.is_empty() {
+        return Err(PrOpenError::NoRealCodeChanges);
+    }
 
     tools
         .soft_reset_base(request.base_dir, &base_branch)
@@ -1795,6 +1811,7 @@ mod tests {
                 "messages",
                 "unstaged",
                 "staged",
+                "committed_diff",
                 "reset",
                 "diff",
                 "commit_paths",
@@ -2565,11 +2582,13 @@ mod tests {
         let project_id = ProjectId::new("project-2qlo").unwrap();
         let stores = stores(project_id.clone(), RunStatus::Completed);
         let mut tools = MockTools::happy(&project_id);
-        tools.diff_stats = vec![DiffStat {
+        let metadata_stats = vec![DiffStat {
             path: ".beads/issues.jsonl".to_owned(),
             additions: Some(1),
             deletions: Some(1),
         }];
+        tools.committed_diff_stats = metadata_stats.clone();
+        tools.diff_stats = metadata_stats;
 
         let error = open_pr_for_completed_run(
             request(&project_id, None, true),
@@ -2583,6 +2602,7 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, PrOpenError::NoRealCodeChanges));
+        assert!(!tools.calls.lock().unwrap().contains(&"reset".to_owned()));
         assert!(!tools.calls.lock().unwrap().contains(&"commit".to_owned()));
     }
 
