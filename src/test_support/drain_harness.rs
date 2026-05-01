@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -13,7 +14,7 @@ use chrono::{TimeZone, Utc};
 use serde_json::Value;
 
 use crate::adapters::br_models::{
-    BeadDetail, BeadPriority, BeadStatus, BeadType, DepTreeNode, ReadyBead,
+    BeadDetail, BeadStatus, BeadType, DepTreeNode, DependencyKind, ReadyBead,
 };
 use crate::adapters::fs::{
     FsJournalStore, FsProjectStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
@@ -101,7 +102,6 @@ pub enum DrainHarnessEvent {
 #[derive(Debug)]
 pub struct ScratchDrainHarness {
     workspace: TempWorkspace,
-    bead_order: Vec<String>,
     scenarios: HashMap<String, DrainHarnessScenario>,
     statuses: HashMap<String, BeadStatus>,
     active_project: Option<crate::shared::domain::ProjectId>,
@@ -188,7 +188,6 @@ struct MockDrainPrWatchClock {
 impl ScratchDrainHarness {
     pub fn new(beads: impl IntoIterator<Item = (impl Into<String>, DrainHarnessScenario)>) -> Self {
         let mut builder = BeadGraphFixtureBuilder::new();
-        let mut bead_order = Vec::new();
         let mut scenarios = HashMap::new();
         let mut statuses = HashMap::new();
 
@@ -200,7 +199,6 @@ impl ScratchDrainHarness {
             );
             statuses.insert(id.clone(), BeadStatus::Open);
             scenarios.insert(id.clone(), scenario);
-            bead_order.push(id);
         }
 
         let workspace = TempWorkspaceBuilder::new()
@@ -210,7 +208,6 @@ impl ScratchDrainHarness {
 
         Self {
             workspace,
-            bead_order,
             scenarios,
             statuses,
             active_project: None,
@@ -270,6 +267,48 @@ impl ScratchDrainHarness {
             .lines()
             .map(|line| serde_json::from_str(line).expect("parse harness issue"))
             .collect()
+    }
+
+    fn try_issue_values(&self) -> Result<Vec<Value>, DrainError> {
+        fs::read_to_string(self.issues_path())
+            .map_err(|error| DrainError::operation("read harness issues", error.to_string()))?
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                serde_json::from_str(line).map_err(|error| {
+                    DrainError::operation(
+                        "parse harness issue",
+                        format!("line {}: {error}", index + 1),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn ready_beads_from_disk(&self) -> Result<Vec<ReadyBead>, DrainError> {
+        let issues = self.try_issue_values()?;
+        let statuses = issues
+            .iter()
+            .map(|issue| {
+                let id = issue_string(issue, "id")?;
+                let status = BeadStatus::from_str(&issue_string(issue, "status")?)
+                    .map_err(|error| DrainError::operation("parse harness issue status", error))?;
+                Ok((id, status))
+            })
+            .collect::<Result<HashMap<_, _>, DrainError>>()?;
+
+        let mut ready_beads = issues
+            .iter()
+            .filter_map(|issue| match ready_bead_from_issue(issue, &statuses) {
+                Ok(Some(bead)) => Some(Ok(bead)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            })
+            .collect::<Result<Vec<_>, DrainError>>()?;
+        // `br ready` presents higher-priority candidates first. Keep equal-priority
+        // beads in persisted graph order so fixture ordering remains deterministic.
+        ready_beads.sort_by_key(|bead| bead.priority.value());
+        Ok(ready_beads)
     }
 
     fn write_issue_values(&self, issues: &[Value]) -> Result<(), DrainError> {
@@ -738,6 +777,99 @@ fn parse_pr_number(pr_url: &str) -> Option<u64> {
         .and_then(|value| value.parse::<u64>().ok())
 }
 
+fn ready_bead_from_issue(
+    issue: &Value,
+    statuses: &HashMap<String, BeadStatus>,
+) -> Result<Option<ReadyBead>, DrainError> {
+    if BeadStatus::from_str(&issue_string(issue, "status")?)
+        .map_err(|error| DrainError::operation("parse harness issue status", error))?
+        != BeadStatus::Open
+    {
+        return Ok(None);
+    }
+
+    let bead_type: BeadType =
+        serde_json::from_value(issue.get("issue_type").cloned().ok_or_else(|| {
+            DrainError::operation("parse harness issue", "missing field `issue_type`")
+        })?)
+        .map_err(|error| DrainError::operation("parse harness issue type", error.to_string()))?;
+    if bead_type == BeadType::Epic {
+        return Ok(None);
+    }
+
+    if !blocking_dependencies_are_closed(issue, statuses)? {
+        return Ok(None);
+    }
+
+    let labels = issue
+        .get("labels")
+        .and_then(Value::as_array)
+        .map(|labels| {
+            labels
+                .iter()
+                .filter_map(|label| label.as_str().map(ToOwned::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Ok(Some(ReadyBead {
+        id: issue_string(issue, "id")?,
+        title: issue_string(issue, "title")?,
+        priority: serde_json::from_value(issue.get("priority").cloned().ok_or_else(|| {
+            DrainError::operation("parse harness issue", "missing field `priority`")
+        })?)
+        .map_err(|error| {
+            DrainError::operation("parse harness issue priority", error.to_string())
+        })?,
+        bead_type,
+        labels,
+    }))
+}
+
+fn blocking_dependencies_are_closed(
+    issue: &Value,
+    statuses: &HashMap<String, BeadStatus>,
+) -> Result<bool, DrainError> {
+    let Some(dependencies) = issue.get("dependencies") else {
+        return Ok(true);
+    };
+    let dependencies = dependencies.as_array().ok_or_else(|| {
+        DrainError::operation("parse harness issue", "`dependencies` must be an array")
+    })?;
+
+    for dependency in dependencies {
+        let kind: DependencyKind =
+            serde_json::from_value(dependency.get("type").cloned().ok_or_else(|| {
+                DrainError::operation("parse harness dependency", "missing field `type`")
+            })?)
+            .map_err(|error| {
+                DrainError::operation("parse harness dependency type", error.to_string())
+            })?;
+        if kind != DependencyKind::Blocks {
+            continue;
+        }
+        let depends_on_id = issue_string(dependency, "depends_on_id")?;
+        if statuses.get(&depends_on_id) != Some(&BeadStatus::Closed) {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn issue_string(issue: &Value, field: &str) -> Result<String, DrainError> {
+    issue
+        .get(field)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            DrainError::operation(
+                "parse harness issue",
+                format!("missing string field `{field}`"),
+            )
+        })
+}
+
 impl DrainPort for ScratchDrainHarness {
     async fn sync_master_and_sanity_check(&mut self) -> Result<(), DrainError> {
         self.git.syncs += 1;
@@ -759,18 +891,7 @@ impl DrainPort for ScratchDrainHarness {
     }
 
     async fn ready_beads(&mut self) -> Result<Vec<ReadyBead>, DrainError> {
-        Ok(self
-            .bead_order
-            .iter()
-            .filter(|id| self.statuses.get(*id) == Some(&BeadStatus::Open))
-            .map(|id| ReadyBead {
-                id: id.clone(),
-                title: format!("Drain harness {id}"),
-                priority: BeadPriority::new(2),
-                bead_type: BeadType::Task,
-                labels: vec!["drain-harness".to_owned()],
-            })
-            .collect())
+        self.ready_beads_from_disk()
     }
 
     async fn bead_status(&mut self, bead_id: &str) -> Result<BeadStatus, DrainError> {

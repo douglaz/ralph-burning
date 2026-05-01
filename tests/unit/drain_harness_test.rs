@@ -136,17 +136,33 @@ async fn drain_harness_backend_exhausted_files_follow_up_skips_and_continues() {
         .await
         .expect("drain succeeds after skip");
 
-    assert_eq!(report.outcome, DrainOutcome::Drained { cycles: 2 });
+    assert_eq!(report.outcome, DrainOutcome::Drained { cycles: 3 });
     assert_eq!(report.skipped, vec!["drain-backend-exhausted"]);
-    assert_eq!(report.landed, vec!["drain-after-skip"]);
+    assert_eq!(
+        report.landed,
+        vec!["drain-backend-exhausted.follow-up", "drain-after-skip"]
+    );
     assert_eq!(harness.follow_up_count_on_disk(), 1);
     assert_eq!(
         harness.closed_bead_ids_on_disk(),
-        vec!["drain-backend-exhausted", "drain-after-skip"]
+        vec![
+            "drain-backend-exhausted",
+            "drain-after-skip",
+            "drain-backend-exhausted.follow-up"
+        ]
     );
-    assert_pr_open_invoked(&harness, 1);
-    assert_pr_watch_invoked(&harness, &[1]);
-    assert_pr_merge_invoked(&harness, &[1]);
+    assert_eq!(
+        harness
+            .pr_tool
+            .opened
+            .iter()
+            .map(|(bead_id, _)| bead_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["drain-backend-exhausted.follow-up", "drain-after-skip"]
+    );
+    assert_pr_open_invoked(&harness, 2);
+    assert_pr_watch_invoked(&harness, &[1, 2]);
+    assert_pr_merge_invoked(&harness, &[1, 2]);
 }
 
 #[tokio::test]
