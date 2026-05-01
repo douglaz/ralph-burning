@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Mutex;
 
 use thiserror::Error;
 
@@ -107,6 +108,26 @@ pub struct PrOpenOutput {
     pub rendered: RenderedPrOpenText,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseBranchRef {
+    pub remote_ref: String,
+    pub branch_name: String,
+}
+
+impl BaseBranchRef {
+    fn from_origin_ref(remote_ref: &str) -> Option<Self> {
+        let remote_ref = remote_ref.trim();
+        let branch_name = remote_ref.strip_prefix("origin/")?;
+        if branch_name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            remote_ref: remote_ref.to_owned(),
+            branch_name: branch_name.to_owned(),
+        })
+    }
+}
+
 pub struct PrOpenRequest<'a> {
     pub base_dir: &'a Path,
     pub project_id: &'a ProjectId,
@@ -156,8 +177,8 @@ pub enum PrOpenError {
     #[error("current branch '{branch_name}' is not a feature branch; create or switch to a feat/<bead-id>-... branch before opening a PR")]
     NotFeatureBranch { branch_name: String },
 
-    #[error("origin/master is not an ancestor of HEAD; rebase or merge origin/master before running `ralph-burning pr open`")]
-    OriginMasterNotAncestor,
+    #[error("{base_ref} is not an ancestor of HEAD; rebase or merge {base_ref} before running `ralph-burning pr open`")]
+    BaseNotAncestor { base_ref: String },
 
     #[error("refusing to squash non-checkpoint commits: {subjects}")]
     NonCheckpointCommits { subjects: String },
@@ -194,22 +215,34 @@ pub enum PrOpenError {
 pub trait PrToolPort {
     async fn run_gate(&self, repo_root: &Path, gate: Gate) -> Result<(), PrToolError>;
     async fn current_branch(&self, repo_root: &Path) -> Result<String, PrToolError>;
-    async fn fetch_origin_master(&self, repo_root: &Path) -> Result<(), PrToolError>;
-    async fn origin_master_is_ancestor_of_head(
+    async fn base_branch_ref(&self, repo_root: &Path) -> Result<BaseBranchRef, PrToolError>;
+    async fn fetch_base_branch(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
+    ) -> Result<(), PrToolError>;
+    async fn base_is_ancestor_of_head(
+        &self,
+        repo_root: &Path,
+        base_branch: &BaseBranchRef,
     ) -> Result<bool, PrToolError>;
-    async fn commit_messages_since_origin_master(
+    async fn commit_messages_since_base(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
     ) -> Result<Vec<String>, PrToolError>;
-    async fn diff_stats_since_origin_master(
+    async fn diff_stats_since_base(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
     ) -> Result<Vec<DiffStat>, PrToolError>;
     async fn unstaged_real_code_paths(&self, repo_root: &Path) -> Result<Vec<String>, PrToolError>;
     async fn staged_real_code_paths(&self, repo_root: &Path) -> Result<Vec<String>, PrToolError>;
-    async fn soft_reset_origin_master(&self, repo_root: &Path) -> Result<(), PrToolError>;
+    async fn soft_reset_base(
+        &self,
+        repo_root: &Path,
+        base_branch: &BaseBranchRef,
+    ) -> Result<(), PrToolError>;
     async fn staged_real_code_diff_stats(
         &self,
         repo_root: &Path,
@@ -225,15 +258,23 @@ pub trait PrToolPort {
     async fn create_pr(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
         branch_name: &str,
         title: &str,
         body: &str,
     ) -> Result<String, PrToolError>;
 }
 
-pub struct ProcessPrToolPort;
+#[derive(Default)]
+pub struct ProcessPrToolPort {
+    base_branch_cache: Mutex<Option<BaseBranchRef>>,
+}
 
 impl ProcessPrToolPort {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub(super) fn run_command(
         repo_root: &Path,
         program: &str,
@@ -263,6 +304,46 @@ impl ProcessPrToolPort {
     fn git(repo_root: &Path, args: &[&str]) -> Result<CommandOutput, PrToolError> {
         Self::run_command(repo_root, "git", args)
     }
+
+    fn git_ref_exists(repo_root: &Path, candidate: &str) -> Result<bool, PrToolError> {
+        match Self::git(repo_root, &["rev-parse", "--verify", candidate]) {
+            Ok(_) => Ok(true),
+            Err(PrToolError::CommandFailed { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn resolve_base_branch_ref(repo_root: &Path) -> Result<BaseBranchRef, PrToolError> {
+        match Self::git(
+            repo_root,
+            &[
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
+        ) {
+            Ok(output) => {
+                if let Some(base_branch) = BaseBranchRef::from_origin_ref(&output.stdout) {
+                    return Ok(base_branch);
+                }
+            }
+            Err(PrToolError::CommandFailed { .. }) => {}
+            Err(error) => return Err(error),
+        }
+
+        for candidate in ["origin/main", "origin/master"] {
+            if Self::git_ref_exists(repo_root, candidate)? {
+                return BaseBranchRef::from_origin_ref(candidate).ok_or_else(|| {
+                    PrToolError::Io(format!("resolved invalid origin base ref '{candidate}'"))
+                });
+            }
+        }
+
+        Err(PrToolError::Io(
+            "could not resolve origin base branch; expected refs/remotes/origin/HEAD, origin/main, or origin/master".to_owned(),
+        ))
+    }
 }
 
 impl PrToolPort for ProcessPrToolPort {
@@ -280,17 +361,46 @@ impl PrToolPort for ProcessPrToolPort {
         )
     }
 
-    async fn fetch_origin_master(&self, repo_root: &Path) -> Result<(), PrToolError> {
-        Self::git(repo_root, &["fetch", "origin", "master"]).map(|_| ())
+    async fn base_branch_ref(&self, repo_root: &Path) -> Result<BaseBranchRef, PrToolError> {
+        if let Some(cached) = self
+            .base_branch_cache
+            .lock()
+            .map_err(|error| PrToolError::Io(format!("base branch cache poisoned: {error}")))?
+            .clone()
+        {
+            return Ok(cached);
+        }
+
+        let resolved = Self::resolve_base_branch_ref(repo_root)?;
+        *self
+            .base_branch_cache
+            .lock()
+            .map_err(|error| PrToolError::Io(format!("base branch cache poisoned: {error}")))? =
+            Some(resolved.clone());
+        Ok(resolved)
     }
 
-    async fn origin_master_is_ancestor_of_head(
+    async fn fetch_base_branch(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
+    ) -> Result<(), PrToolError> {
+        Self::git(repo_root, &["fetch", "origin", &base_branch.branch_name]).map(|_| ())
+    }
+
+    async fn base_is_ancestor_of_head(
+        &self,
+        repo_root: &Path,
+        base_branch: &BaseBranchRef,
     ) -> Result<bool, PrToolError> {
         match Self::git(
             repo_root,
-            &["merge-base", "--is-ancestor", "origin/master", "HEAD"],
+            &[
+                "merge-base",
+                "--is-ancestor",
+                &base_branch.remote_ref,
+                "HEAD",
+            ],
         ) {
             Ok(_) => Ok(true),
             Err(PrToolError::CommandFailed { exit_code: 1, .. }) => Ok(false),
@@ -298,14 +408,13 @@ impl PrToolPort for ProcessPrToolPort {
         }
     }
 
-    async fn commit_messages_since_origin_master(
+    async fn commit_messages_since_base(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
     ) -> Result<Vec<String>, PrToolError> {
-        let output = Self::git(
-            repo_root,
-            &["log", "--format=%x1e%B", "origin/master..HEAD"],
-        )?;
+        let range = format!("{}..HEAD", base_branch.remote_ref);
+        let output = Self::git(repo_root, &["log", "--format=%x1e%B", &range])?;
         Ok(output
             .stdout
             .split('\x1e')
@@ -315,16 +424,18 @@ impl PrToolPort for ProcessPrToolPort {
             .collect())
     }
 
-    async fn diff_stats_since_origin_master(
+    async fn diff_stats_since_base(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
     ) -> Result<Vec<DiffStat>, PrToolError> {
+        let range = format!("{}..HEAD", base_branch.remote_ref);
         let output = Self::git(
             repo_root,
             &[
                 "diff",
                 "--numstat",
-                "origin/master..HEAD",
+                &range,
                 "--",
                 ".",
                 ":(exclude).ralph-burning/**",
@@ -375,8 +486,12 @@ impl PrToolPort for ProcessPrToolPort {
         Ok(review_scope_paths(parse_path_lines(&staged.stdout)))
     }
 
-    async fn soft_reset_origin_master(&self, repo_root: &Path) -> Result<(), PrToolError> {
-        Self::git(repo_root, &["reset", "--soft", "origin/master"]).map(|_| ())
+    async fn soft_reset_base(
+        &self,
+        repo_root: &Path,
+        base_branch: &BaseBranchRef,
+    ) -> Result<(), PrToolError> {
+        Self::git(repo_root, &["reset", "--soft", &base_branch.remote_ref]).map(|_| ())
     }
 
     async fn staged_real_code_diff_stats(
@@ -455,6 +570,7 @@ impl PrToolPort for ProcessPrToolPort {
     async fn create_pr(
         &self,
         repo_root: &Path,
+        base_branch: &BaseBranchRef,
         branch_name: &str,
         title: &str,
         body: &str,
@@ -466,7 +582,7 @@ impl PrToolPort for ProcessPrToolPort {
                 "pr",
                 "create",
                 "--base",
-                "master",
+                &base_branch.branch_name,
                 "--head",
                 branch_name,
                 "--title",
@@ -550,35 +666,45 @@ where
         }
     }
 
-    tools
-        .fetch_origin_master(request.base_dir)
+    let base_branch = tools
+        .base_branch_ref(request.base_dir)
         .await
         .map_err(|source| PrOpenError::Tool {
-            action: "fetch origin/master",
+            action: "resolve base branch",
+            source,
+        })?;
+    tools
+        .fetch_base_branch(request.base_dir, &base_branch)
+        .await
+        .map_err(|source| PrOpenError::Tool {
+            action: "fetch base branch",
             source,
         })?;
     if !tools
-        .origin_master_is_ancestor_of_head(request.base_dir)
+        .base_is_ancestor_of_head(request.base_dir, &base_branch)
         .await
         .map_err(|source| PrOpenError::Tool {
-            action: "verify origin/master ancestry",
+            action: "verify base ancestry",
             source,
         })?
     {
-        return Err(PrOpenError::OriginMasterNotAncestor);
+        return Err(PrOpenError::BaseNotAncestor {
+            base_ref: base_branch.remote_ref,
+        });
     }
 
     let messages = tools
-        .commit_messages_since_origin_master(request.base_dir)
+        .commit_messages_since_base(request.base_dir, &base_branch)
         .await
         .map_err(|source| PrOpenError::Tool {
-            action: "inspect commits since origin/master",
+            action: "inspect commits since base",
             source,
         })?;
 
     if let Some(rendered) = existing_squash_commit_rendering(
         request.base_dir,
         tools,
+        &base_branch,
         &messages,
         &bead,
         &convergence_pattern,
@@ -596,6 +722,7 @@ where
         let pr_url = tools
             .create_pr(
                 request.base_dir,
+                &base_branch,
                 &branch_name,
                 &rendered.title,
                 &rendered.body,
@@ -631,10 +758,10 @@ where
     reject_pre_existing_real_code_changes(request.base_dir, tools).await?;
 
     tools
-        .soft_reset_origin_master(request.base_dir)
+        .soft_reset_base(request.base_dir, &base_branch)
         .await
         .map_err(|source| PrOpenError::Tool {
-            action: "soft reset to origin/master",
+            action: "soft reset to base",
             source,
         })?;
     let diff_stats = review_scope_diff_stats(
@@ -686,6 +813,7 @@ where
     let pr_url = tools
         .create_pr(
             request.base_dir,
+            &base_branch,
             &branch_name,
             &rendered.title,
             &rendered.body,
@@ -707,6 +835,7 @@ where
 async fn existing_squash_commit_rendering<T>(
     repo_root: &Path,
     tools: &T,
+    base_branch: &BaseBranchRef,
     messages: &[String],
     bead: &BeadDetail,
     convergence_pattern: &str,
@@ -723,7 +852,7 @@ where
 
     let diff_stats = review_scope_diff_stats(
         tools
-            .diff_stats_since_origin_master(repo_root)
+            .diff_stats_since_base(repo_root, base_branch)
             .await
             .map_err(|source| PrOpenError::Tool {
                 action: "read committed real-code diff stats",
@@ -1234,6 +1363,7 @@ mod tests {
         diff_stats: Vec<DiffStat>,
         committed_diff_stats: Vec<DiffStat>,
         commit_paths: Vec<String>,
+        base_branch: Option<BaseBranchRef>,
         origin_master_ancestor: bool,
         unstaged_paths: Vec<String>,
         staged_paths: Vec<String>,
@@ -1244,6 +1374,9 @@ mod tests {
         committed_message: Arc<Mutex<Option<String>>>,
         committed_paths: Arc<Mutex<Vec<String>>>,
         pr_body: Arc<Mutex<Option<String>>>,
+        fetched_base_branch: Arc<Mutex<Option<String>>>,
+        reset_base_ref: Arc<Mutex<Option<String>>>,
+        pr_base_branch: Arc<Mutex<Option<String>>>,
     }
 
     impl MockTools {
@@ -1284,6 +1417,10 @@ mod tests {
                     "tests/unit/pr_open_test.rs".to_owned(),
                 ],
                 origin_master_ancestor: true,
+                base_branch: Some(BaseBranchRef {
+                    remote_ref: "origin/master".to_owned(),
+                    branch_name: "master".to_owned(),
+                }),
                 ..Self::default()
             }
         }
@@ -1312,30 +1449,46 @@ mod tests {
             Ok(self.branch.clone())
         }
 
-        async fn fetch_origin_master(&self, _repo_root: &Path) -> Result<(), PrToolError> {
+        async fn base_branch_ref(&self, _repo_root: &Path) -> Result<BaseBranchRef, PrToolError> {
+            self.record("base_ref");
+            Ok(self.base_branch.clone().unwrap_or_else(|| BaseBranchRef {
+                remote_ref: "origin/master".to_owned(),
+                branch_name: "master".to_owned(),
+            }))
+        }
+
+        async fn fetch_base_branch(
+            &self,
+            _repo_root: &Path,
+            base_branch: &BaseBranchRef,
+        ) -> Result<(), PrToolError> {
             self.record("fetch");
+            *self.fetched_base_branch.lock().unwrap() = Some(base_branch.branch_name.clone());
             Ok(())
         }
 
-        async fn origin_master_is_ancestor_of_head(
+        async fn base_is_ancestor_of_head(
             &self,
             _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
         ) -> Result<bool, PrToolError> {
             self.record("ancestry");
             Ok(self.origin_master_ancestor)
         }
 
-        async fn commit_messages_since_origin_master(
+        async fn commit_messages_since_base(
             &self,
             _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
         ) -> Result<Vec<String>, PrToolError> {
             self.record("messages");
             Ok(self.messages.clone())
         }
 
-        async fn diff_stats_since_origin_master(
+        async fn diff_stats_since_base(
             &self,
             _repo_root: &Path,
+            _base_branch: &BaseBranchRef,
         ) -> Result<Vec<DiffStat>, PrToolError> {
             self.record("committed_diff");
             Ok(self.committed_diff_stats.clone())
@@ -1357,8 +1510,13 @@ mod tests {
             Ok(self.staged_paths.clone())
         }
 
-        async fn soft_reset_origin_master(&self, _repo_root: &Path) -> Result<(), PrToolError> {
+        async fn soft_reset_base(
+            &self,
+            _repo_root: &Path,
+            base_branch: &BaseBranchRef,
+        ) -> Result<(), PrToolError> {
             self.record("reset");
+            *self.reset_base_ref.lock().unwrap() = Some(base_branch.remote_ref.clone());
             Ok(())
         }
 
@@ -1407,11 +1565,13 @@ mod tests {
         async fn create_pr(
             &self,
             _repo_root: &Path,
+            base_branch: &BaseBranchRef,
             _branch_name: &str,
             _title: &str,
             body: &str,
         ) -> Result<String, PrToolError> {
             self.record("pr");
+            *self.pr_base_branch.lock().unwrap() = Some(base_branch.branch_name.clone());
             *self.pr_body.lock().unwrap() = Some(body.to_owned());
             if let Some(error) = &self.pr_error {
                 return Err(PrToolError::CommandFailed {
@@ -1446,6 +1606,85 @@ mod tests {
             run_store: &stores.1,
             journal_store: &stores.2,
         }
+    }
+
+    fn run_test_git(repo_root: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo_root)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {} failed\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn process_port_resolves_origin_head_and_caches_base_branch() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        run_test_git(temp_dir.path(), &["init"]);
+        run_test_git(
+            temp_dir.path(),
+            &[
+                "-c",
+                "user.name=Test User",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ],
+        );
+        run_test_git(
+            temp_dir.path(),
+            &["update-ref", "refs/remotes/origin/trunk", "HEAD"],
+        );
+        run_test_git(
+            temp_dir.path(),
+            &["update-ref", "refs/remotes/origin/main", "HEAD"],
+        );
+        run_test_git(
+            temp_dir.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/trunk",
+            ],
+        );
+
+        let tools = ProcessPrToolPort::new();
+        let first = tools
+            .base_branch_ref(temp_dir.path())
+            .await
+            .expect("resolve base branch");
+        assert_eq!(first.remote_ref, "origin/trunk");
+        assert_eq!(first.branch_name, "trunk");
+
+        run_test_git(
+            temp_dir.path(),
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        let cached = tools
+            .base_branch_ref(temp_dir.path())
+            .await
+            .expect("read cached base branch");
+        assert_eq!(cached.remote_ref, "origin/trunk");
+
+        let fresh = ProcessPrToolPort::new()
+            .base_branch_ref(temp_dir.path())
+            .await
+            .expect("fresh port resolves updated base branch");
+        assert_eq!(fresh.remote_ref, "origin/main");
+        assert_eq!(fresh.branch_name, "main");
     }
 
     #[tokio::test]
@@ -1491,6 +1730,7 @@ mod tests {
                 "cargo clippy --locked -- -D warnings",
                 "cargo test",
                 "nix build",
+                "base_ref",
                 "fetch",
                 "ancestry",
                 "messages",
@@ -1503,6 +1743,41 @@ mod tests {
                 "push",
                 "pr"
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn threads_resolved_base_branch_through_pr_open_flow() {
+        let project_id = ProjectId::new("project-2qlo").unwrap();
+        let stores = stores(project_id.clone(), RunStatus::Completed);
+        let mut tools = MockTools::happy(&project_id);
+        tools.base_branch = Some(BaseBranchRef {
+            remote_ref: "origin/main".to_owned(),
+            branch_name: "main".to_owned(),
+        });
+
+        open_pr_for_completed_run(
+            request(&project_id, None, true),
+            store_refs(&stores),
+            &MockBr {
+                bead: bead_detail(),
+            },
+            &tools,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            tools.fetched_base_branch.lock().unwrap().as_deref(),
+            Some("main")
+        );
+        assert_eq!(
+            tools.reset_base_ref.lock().unwrap().as_deref(),
+            Some("origin/main")
+        );
+        assert_eq!(
+            tools.pr_base_branch.lock().unwrap().as_deref(),
+            Some("main")
         );
     }
 
@@ -1899,7 +2174,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(error, PrOpenError::OriginMasterNotAncestor));
+        assert!(matches!(error, PrOpenError::BaseNotAncestor { .. }));
         assert!(!tools.calls.lock().unwrap().contains(&"reset".to_owned()));
     }
 
@@ -2082,6 +2357,7 @@ mod tests {
             calls,
             [
                 "current_branch",
+                "base_ref",
                 "fetch",
                 "ancestry",
                 "messages",

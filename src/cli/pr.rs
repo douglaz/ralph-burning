@@ -67,6 +67,7 @@ async fn handle_open(args: PrOpenArgs, br_path: PathBuf) -> AppResult<()> {
     workspace_governance::ensure_supported_workspace_version(&config)?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
     let br = BrAdapter::with_binary_path(br_path).with_working_dir(current_dir.clone());
+    let tools = ProcessPrToolPort::new();
     let output = open_pr_for_completed_run(
         PrOpenRequest {
             base_dir: &current_dir,
@@ -80,7 +81,7 @@ async fn handle_open(args: PrOpenArgs, br_path: PathBuf) -> AppResult<()> {
             journal_store: &FsJournalStore,
         },
         &br,
-        &ProcessPrToolPort,
+        &tools,
     )
     .await
     .map_err(map_pr_open_error)?;
@@ -94,6 +95,7 @@ async fn handle_open(args: PrOpenArgs, br_path: PathBuf) -> AppResult<()> {
 
 async fn handle_watch(args: PrWatchArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
+    let tools = ProcessPrToolPort::new();
     let output = watch_pr(
         PrWatchRequest {
             base_dir: &current_dir,
@@ -101,7 +103,7 @@ async fn handle_watch(args: PrWatchArgs) -> AppResult<()> {
             max_wait: args.max_wait,
             poll_interval: Duration::from_secs(args.poll_interval),
         },
-        &ProcessPrToolPort,
+        &tools,
         &SystemPrWatchClock::started_now(),
     )
     .await
