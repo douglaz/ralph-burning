@@ -1,0 +1,7 @@
+id = "qc7z"
+name = "ralph-burning-qc7z: drain harness: mock at the right level to catch missing pr_open/pr_watch invocations (xrwl follow-up)"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "ad4a4d416be63663aa7921806923f6097f97458a20307f82aa79f0219fb673f2"
+created_at = "2026-05-01T12:10:00.745846059Z"
+status_summary = "created"

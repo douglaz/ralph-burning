@@ -55,6 +55,9 @@ async fn drain_harness_happy_path_drains_all_scratch_beads() {
     }
     assert_eq!(harness.pr_tool.opened.len(), 3);
     assert_eq!(harness.pr_watch.watched.len(), 3);
+    assert_pr_open_invoked(&harness, 3);
+    assert_pr_watch_invoked(&harness, &[1, 2, 3]);
+    assert_pr_merge_invoked(&harness, &[1, 2, 3]);
     assert_eq!(
         harness.closed_bead_ids_on_disk(),
         vec!["drain-happy-a", "drain-happy-b", "drain-happy-c"]
@@ -82,6 +85,10 @@ async fn drain_harness_known_flake_reruns_once_before_merge() {
         harness.pr_watch.known_flake_reruns,
         vec![("drain-known-flake".to_owned(), 1)]
     );
+    assert_pr_open_invoked(&harness, 1);
+    assert_pr_watch_invoked(&harness, &[1]);
+    assert_pr_watch_call(&harness, "rerun_failed_runs:1");
+    assert_pr_merge_invoked(&harness, &[1]);
     assert_eq!(harness.run_attempts("drain-known-flake"), 1);
     assert_eq!(harness.closed_bead_ids_on_disk(), vec!["drain-known-flake"]);
 }
@@ -107,6 +114,9 @@ async fn drain_harness_permanent_failure_stops_and_files_follow_up() {
     assert_eq!(report.failed, vec!["drain-permanent-failure"]);
     assert_eq!(harness.follow_up_count_on_disk(), 1);
     assert!(harness.closed_bead_ids_on_disk().is_empty());
+    assert_pr_open_invoked(&harness, 1);
+    assert_pr_watch_invoked(&harness, &[1]);
+    assert_pr_watch_call(&harness, "failed_run_logs");
     assert!(harness.events.contains(&DrainHarnessEvent::FollowUpFiled {
         bead_id: "drain-permanent-failure".to_owned()
     }));
@@ -134,6 +144,9 @@ async fn drain_harness_backend_exhausted_files_follow_up_skips_and_continues() {
         harness.closed_bead_ids_on_disk(),
         vec!["drain-backend-exhausted", "drain-after-skip"]
     );
+    assert_pr_open_invoked(&harness, 1);
+    assert_pr_watch_invoked(&harness, &[1]);
+    assert_pr_merge_invoked(&harness, &[1]);
 }
 
 #[tokio::test]
@@ -155,6 +168,9 @@ async fn drain_harness_interrupted_run_stops_then_resumes_next_cycle() {
         harness.git.preserving_resume_syncs,
         vec!["drain-interrupted"]
     );
+    assert_pr_open_invoked(&harness, 1);
+    assert_pr_watch_invoked(&harness, &[1]);
+    assert_pr_merge_invoked(&harness, &[1]);
     assert_eq!(report.cycles[0].outcome, "resume queued");
     assert_eq!(report.cycles[1].outcome, "landed after resume");
 }
@@ -178,6 +194,8 @@ async fn drain_harness_bot_rejection_aborts_without_follow_up() {
     assert_eq!(report.failed, vec!["drain-bot-rejected"]);
     assert_eq!(harness.follow_up_count_on_disk(), 0);
     assert!(harness.closed_bead_ids_on_disk().is_empty());
+    assert_pr_open_invoked(&harness, 0);
+    assert_pr_watch_invoked(&harness, &[]);
 }
 
 #[tokio::test]
@@ -196,6 +214,9 @@ async fn drain_harness_force_complete_continues_to_pr_and_merge() {
         harness.closed_bead_ids_on_disk(),
         vec!["drain-force-complete"]
     );
+    assert_pr_open_invoked(&harness, 1);
+    assert_pr_watch_invoked(&harness, &[1]);
+    assert_pr_merge_invoked(&harness, &[1]);
 }
 
 #[test]
@@ -226,6 +247,61 @@ fn drain_harness_recovery_action_scenarios_cover_every_variant() {
 
 fn harness_action_variant(scenario: DrainHarnessScenario) -> &'static str {
     action_variant(classify_drain_failure(&scenario_observation(scenario)))
+}
+
+fn assert_pr_open_invoked(harness: &ScratchDrainHarness, expected_create_prs: usize) {
+    let calls = harness.pr_tool.calls.lock().expect("PR tool calls").clone();
+    let actual_create_prs = calls
+        .iter()
+        .filter(|call| call.as_str() == "create_pr")
+        .count();
+    assert_eq!(
+        actual_create_prs, expected_create_prs,
+        "expected {expected_create_prs} create_pr calls through pr_open; calls were {calls:?}"
+    );
+}
+
+fn assert_pr_watch_invoked(harness: &ScratchDrainHarness, expected_prs: &[u64]) {
+    let calls = harness
+        .pr_watch
+        .calls
+        .lock()
+        .expect("PR watch calls")
+        .clone();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.as_str() == "repo_slug")
+            .count(),
+        expected_prs.len(),
+        "expected one repo_slug call per pr_watch invocation; calls were {calls:?}"
+    );
+    for pr_number in expected_prs {
+        let expected_call = format!("pr_status:{pr_number}");
+        assert!(
+            calls.iter().any(|call| call == &expected_call),
+            "expected PR-watch mock call {expected_call:?}; calls were {calls:?}"
+        );
+    }
+}
+
+fn assert_pr_merge_invoked(harness: &ScratchDrainHarness, expected_prs: &[u64]) {
+    for pr_number in expected_prs {
+        assert_pr_watch_call(harness, &format!("merge_pr:{pr_number}"));
+    }
+}
+
+fn assert_pr_watch_call(harness: &ScratchDrainHarness, expected_call: &str) {
+    let calls = harness
+        .pr_watch
+        .calls
+        .lock()
+        .expect("PR watch calls")
+        .clone();
+    assert!(
+        calls.iter().any(|call| call == expected_call),
+        "expected PR-watch mock call {expected_call:?}; calls were {calls:?}"
+    );
 }
 
 fn scenario_observation(scenario: DrainHarnessScenario) -> FailureObservation {

@@ -151,6 +151,7 @@ impl Default for MockDrainPrToolPort {
 pub struct MockDrainPrWatchPort {
     pub watched: Vec<(String, u64)>,
     pub known_flake_reruns: Vec<(String, u64)>,
+    pub calls: Mutex<Vec<String>>,
     scenarios: Mutex<HashMap<u64, (String, DrainHarnessScenario)>>,
     poll_counts: Mutex<HashMap<u64, u32>>,
     reruns: Mutex<Vec<(String, u64)>>,
@@ -161,6 +162,7 @@ impl Default for MockDrainPrWatchPort {
         Self {
             watched: Vec::new(),
             known_flake_reruns: Vec::new(),
+            calls: Mutex::new(Vec::new()),
             scenarios: Mutex::new(HashMap::new()),
             poll_counts: Mutex::new(HashMap::new()),
             reruns: Mutex::new(Vec::new()),
@@ -495,6 +497,13 @@ impl PrToolPort for MockDrainPrToolPort {
 }
 
 impl MockDrainPrWatchPort {
+    fn record(&self, call: impl Into<String>) {
+        self.calls
+            .lock()
+            .expect("watch calls mutex")
+            .push(call.into());
+    }
+
     fn configure_pr(&self, pr_number: u64, bead_id: &str, scenario: DrainHarnessScenario) {
         self.scenarios
             .lock()
@@ -518,6 +527,7 @@ impl MockDrainPrWatchPort {
 
 impl PrWatchToolPort for MockDrainPrWatchPort {
     async fn repo_slug(&self, _repo_root: &Path) -> Result<String, PrToolError> {
+        self.record("repo_slug");
         Ok("example/ralph-burning".to_owned())
     }
 
@@ -527,6 +537,7 @@ impl PrWatchToolPort for MockDrainPrWatchPort {
         _repo_slug: &str,
         pr_number: u64,
     ) -> Result<PrStatusSnapshot, PrToolError> {
+        self.record(format!("pr_status:{pr_number}"));
         let (_, scenario) = self.scenario_for_pr(pr_number);
         let poll_count = {
             let mut poll_counts = self.poll_counts.lock().expect("poll mutex");
@@ -565,6 +576,7 @@ impl PrWatchToolPort for MockDrainPrWatchPort {
         head_sha: Option<&str>,
         _head_review_watermark_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<BotBodyReview, PrToolError> {
+        self.record("codex_bot_reaction");
         Ok(BotBodyReview {
             reaction: BotBodyReaction::Approved,
             created_at: None,
@@ -580,6 +592,7 @@ impl PrWatchToolPort for MockDrainPrWatchPort {
         _head_sha: Option<&str>,
         _latest_push_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<Vec<BotLineComment>, PrToolError> {
+        self.record("codex_bot_line_comments_since_latest_push");
         Ok(Vec::new())
     }
 
@@ -588,6 +601,7 @@ impl PrWatchToolPort for MockDrainPrWatchPort {
         _repo_root: &Path,
         _run_ids: &[u64],
     ) -> Result<Vec<String>, PrToolError> {
+        self.record("failed_run_logs");
         Ok(Vec::new())
     }
 
@@ -597,6 +611,7 @@ impl PrWatchToolPort for MockDrainPrWatchPort {
         pr_number: u64,
         _run_ids: &[u64],
     ) -> Result<(), PrToolError> {
+        self.record(format!("rerun_failed_runs:{pr_number}"));
         let (bead_id, _) = self.scenario_for_pr(pr_number);
         self.reruns
             .lock()
@@ -611,6 +626,7 @@ impl PrWatchToolPort for MockDrainPrWatchPort {
         pr_number: u64,
         head_sha: &str,
     ) -> Result<PrMergeOutput, PrToolError> {
+        self.record(format!("merge_pr:{pr_number}"));
         Ok(PrMergeOutput {
             sha: head_sha.to_owned(),
             pr_url: format!("https://example.test/drain-harness/pull/{pr_number}"),
