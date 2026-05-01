@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501112557-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501112557-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-05-01T11:36:48.657931978Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Updated the PR-open squash flow so it reads and filters the committed diff from the resolved origin base to HEAD before running the destructive soft reset. Metadata-only or orchestration-only branches now return NoRealCodeChanges while checkpoint commits remain intact; the flow is documented with an inline comment and covered by the metadata-only regression test asserting reset is not called.\",\"steps\":[{\"order\":0,\"status\":\"completed\",\"description\":\"Inspected the current PR-open implementation and confirmed the risky path around soft_reset_base and NoRealCodeChanges handling.\"},{\"order\":1,\"status\":\"completed\",\"description\":\"Added the pre-reset committed-diff check using diff_stats_since_base filtered through review_scope_diff_stats, returning NoRealCodeChanges before reset when no review-scope real-code diff exists.\"},{\"order\":2,\"status\":\"completed\",\"description\":\"Updated MockTools and PR-open tests so the happy path records the committed-diff read before reset and th\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}
