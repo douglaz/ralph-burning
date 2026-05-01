@@ -2336,7 +2336,7 @@ mod tests {
         };
 
         let error = adapter
-            .check_available_with_timeout(Duration::from_millis(50))
+            .check_available_with_timeout(Duration::from_millis(500))
             .expect_err("hung --version probe must time out");
         assert!(matches!(error, BrError::BrTimeout { .. }));
         Ok(())
