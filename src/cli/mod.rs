@@ -14,7 +14,10 @@ pub mod run;
 pub mod task;
 
 use clap::{Parser, Subcommand};
+use std::path::{Path, PathBuf};
 
+use crate::adapters::br_process::{preflight_br_binary, BrError};
+use crate::shared::error::AppError;
 use crate::shared::error::AppResult;
 
 #[derive(Debug, Parser)]
@@ -62,5 +65,15 @@ pub async fn run(cli: Cli) -> AppResult<()> {
         Commands::Conformance(command) => conformance::handle(command).await,
         Commands::Task(command) => task::handle(command).await,
         Commands::Bead(command) => bead::handle(command).await,
+    }
+}
+
+pub(crate) fn resolve_br_path_for_command(explicit_br_path: Option<&Path>) -> AppResult<PathBuf> {
+    preflight_br_binary(explicit_br_path).map_err(map_br_preflight_error)
+}
+
+fn map_br_preflight_error(error: BrError) -> AppError {
+    AppError::BrUnavailable {
+        details: error.to_string(),
     }
 }

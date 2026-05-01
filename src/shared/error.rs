@@ -95,6 +95,8 @@ pub enum AppError {
     PrWatchFailed { reason: String },
     #[error("cannot drain bead queue: {reason}")]
     DrainFailed { reason: String },
+    #[error("br is unavailable: {details}")]
+    BrUnavailable { details: String },
     #[error("{reason}")]
     BeadProjectCreationFailed { reason: String },
     #[error("cannot resume run: {reason}")]

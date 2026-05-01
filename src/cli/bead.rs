@@ -1,5 +1,6 @@
 use chrono::Utc;
 use clap::{Args, Subcommand};
+use std::path::PathBuf;
 
 use crate::adapters::fs::{FsJournalStore, FsProjectStore};
 use crate::contexts::bead_workflow::create_project::{
@@ -16,6 +17,8 @@ use crate::shared::error::{AppError, AppResult};
     long_about = "Manage bead-backed project creation for drain-loop workflows."
 )]
 pub struct BeadCommand {
+    #[arg(long = "br-path", value_name = "PATH", global = true)]
+    pub br_path: Option<PathBuf>,
     #[command(subcommand)]
     pub command: BeadSubcommand,
 }
@@ -45,12 +48,13 @@ pub struct BeadCreateProjectArgs {
 }
 
 pub async fn handle(command: BeadCommand) -> AppResult<()> {
+    let br_path = crate::cli::resolve_br_path_for_command(command.br_path.as_deref())?;
     match command.command {
-        BeadSubcommand::CreateProject(args) => handle_create_project(args).await,
+        BeadSubcommand::CreateProject(args) => handle_create_project(args, br_path).await,
     }
 }
 
-async fn handle_create_project(args: BeadCreateProjectArgs) -> AppResult<()> {
+async fn handle_create_project(args: BeadCreateProjectArgs, br_path: PathBuf) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
@@ -64,7 +68,7 @@ async fn handle_create_project(args: BeadCreateProjectArgs) -> AppResult<()> {
 
     let store = FsProjectStore;
     let journal_store = FsJournalStore;
-    let br = ProcessBeadProjectBrPort::new(current_dir.clone());
+    let br = ProcessBeadProjectBrPort::with_br_binary(current_dir.clone(), br_path);
     let branch_port = GitFeatureBranchPort;
     let output = create_project_from_bead(
         &store,
@@ -122,9 +126,29 @@ mod tests {
             panic!("expected bead command");
         };
         let BeadSubcommand::CreateProject(args) = command.command;
+        assert!(command.br_path.is_none());
         assert_eq!(args.bead_id, "d31l");
         assert_eq!(args.branch.as_deref(), Some("feat/custom"));
         assert_eq!(args.flow.as_deref(), Some("standard"));
+    }
+
+    #[test]
+    fn bead_global_br_path_parses_before_subcommand() {
+        let cli = Cli::parse_from([
+            "ralph-burning",
+            "bead",
+            "--br-path",
+            "/opt/beads/bin/br",
+            "create-project",
+            "d31l",
+        ]);
+        let Commands::Bead(command) = cli.command else {
+            panic!("expected bead command");
+        };
+        assert_eq!(
+            command.br_path.as_deref(),
+            Some(std::path::Path::new("/opt/beads/bin/br"))
+        );
     }
 
     #[test]

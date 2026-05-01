@@ -122,6 +122,45 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
     temp_dir
 }
 
+#[test]
+fn pr_watch_does_not_require_br_on_path() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let fake_bin = temp_dir.path().join("bin");
+    fs::create_dir_all(&fake_bin).expect("create fake bin dir");
+    let fake_gh = fake_bin.join("gh");
+    fs::write(
+        &fake_gh,
+        r#"#!/bin/sh
+if [ "$1" = "repo" ] && [ "$2" = "view" ]; then
+  printf '{"nameWithOwner":"owner/repo"}\n'
+  exit 0
+fi
+printf 'unexpected gh args: %s\n' "$*" >&2
+exit 2
+"#,
+    )
+    .expect("write fake gh");
+    fs::set_permissions(&fake_gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
+
+    let output = Command::new(binary())
+        .args(["pr", "watch", "42", "--max-wait", "0s"])
+        .current_dir(temp_dir.path())
+        .env("PATH", &fake_bin)
+        .output()
+        .expect("run pr watch");
+
+    assert!(
+        output.status.success(),
+        "pr watch should not fail br preflight when PATH has gh but no br; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(r#""outcome": "timeout""#),
+        "expected timeout output, got: {stdout}"
+    );
+}
+
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     fs::create_dir_all(&project_root).expect("create project directory");

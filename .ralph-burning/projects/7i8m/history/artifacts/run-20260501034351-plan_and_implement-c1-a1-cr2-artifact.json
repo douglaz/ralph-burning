@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501034351-plan_and_implement-c1-a1-cr2-artifact",
+  "payload_id": "run-20260501034351-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-05-01T05:15:13.293742833Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Scoped the `pr` command br preflight to the `open` subcommand only. `pr watch` now ignores `--br-path` for dispatch and no longer fails with `BrUnavailable` when `br` is absent, matching its GitHub-only implementation path. Added a direct async regression for `pr watch` with a missing explicit br path and a CLI regression that runs `pr watch` with a PATH containing fake `gh` but no `br`. Also hardened the br availability timeout test to use a shell-builtin infinite loop instead of `sleep`, and to choose only executable bash candidates, so the required nix sandbox gate is deterministic.\",\"outstanding_risks\":[],\"steps\":[{\"description\":\"Reviewed the pending amendment and existing `src/cli/pr.rs` dispatch to confirm the over-broad br preflight belonged only in the `PrSubcommand::Open` arm.\",\"order\":0,\"status\":\"completed\"},{\"description\":\"Moved `resolve_br_path_for_command` into the `Open` branch and simplified `handle_watch` so it does not receive or preflight a br path.\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 2
+}

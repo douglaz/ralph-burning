@@ -1,0 +1,7 @@
+id = "7i8m"
+name = "ralph-burning-7i8m: Add --br-path flag with preflight check; abort with informative error if br is missing"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "c38140eb6b2cffa00e02c17681b3bc718c7c3d6659a4f82594779b29d098b81b"
+created_at = "2026-05-01T03:43:44.093953057Z"
+status_summary = "created"

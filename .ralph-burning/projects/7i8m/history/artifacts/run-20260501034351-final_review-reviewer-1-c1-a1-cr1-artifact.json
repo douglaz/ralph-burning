@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501034351-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501034351-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T04:44:37.187036620Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nReviewed the branch diff against the fork point and ignored generated `.ralph-burning/` runtime state. Found one correctness issue in the PR CLI preflight placement. Selected `nix develop -c cargo` checks for the new preflight/parser tests and `cargo check` passed; full `nix build` was not run.\n\n## Amendments\n\n1. `src/cli/pr.rs:54-59` resolves and preflights `br` before dispatching every `pr` subcommand, but `src/cli/pr.rs:93-104` shows `pr watch` ignores the resolved path and only calls the GitHub-backed watcher. This makes `ralph-burning pr watch <n>` abort with `BrUnavailable` when `br` is absent even though that path does not invoke `br`, contrary to the scoped requirement to preflight only subcommands that need it. Move the preflight into the `Open` arm, or otherwise gate it to br-using PR subcommands, and add a regression for `pr watch` with `br` absent from PATH.\n   Classification: fix_current_bead\n   Rationale: This is a user-visible regression for a command that can otherwise run with only `gh` available.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

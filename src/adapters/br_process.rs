@@ -6,6 +6,7 @@
 //! and configurable timeouts. Uses direct process execution — never
 //! shells out through sh/bash.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,6 +54,8 @@ const PENDING_MUTATIONS_DIR: &str = ".beads/.br-unsynced-mutations.d";
 /// Repo-wide lock file used to serialize mutation/flush/import decisions across
 /// adapters and processes that share a working tree.
 const REPO_OPERATION_LOCK: &str = ".beads/.br-sync.lock";
+
+const BEADS_RUST_INSTALL_URL: &str = "https://github.com/Dicklesworthstone/beads_rust";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
 
@@ -499,6 +502,114 @@ pub struct OsProcessRunner {
     br_binary: Option<PathBuf>,
 }
 
+/// Resolve the `br` binary once at command start so all subsequent adapter
+/// calls use the same executable.
+pub fn preflight_br_binary(explicit_br_path: Option<&Path>) -> Result<PathBuf, BrError> {
+    preflight_br_binary_with_path(explicit_br_path, std::env::var_os("PATH").as_deref())
+}
+
+fn preflight_br_binary_with_path(
+    explicit_br_path: Option<&Path>,
+    path_env: Option<&OsStr>,
+) -> Result<PathBuf, BrError> {
+    if let Some(path) = explicit_br_path {
+        if binary_is_launchable(path) {
+            return Ok(path.to_path_buf());
+        }
+
+        return Err(BrError::BrNotFound {
+            details: br_unavailable_details(
+                Some(path),
+                path_env,
+                format!(
+                    "explicit --br-path '{}' does not point to an executable file",
+                    path.display()
+                ),
+            ),
+        });
+    }
+
+    let path_candidates = br_path_candidates(path_env);
+    if let Some(found) = path_candidates
+        .iter()
+        .find(|candidate| binary_is_launchable(candidate))
+    {
+        return Ok(found.clone());
+    }
+
+    Err(BrError::BrNotFound {
+        details: br_unavailable_details(
+            None,
+            path_env,
+            "could not find executable 'br' on PATH".to_owned(),
+        ),
+    })
+}
+
+fn br_path_candidates(path_env: Option<&OsStr>) -> Vec<PathBuf> {
+    path_env
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .map(|dir| dir.join("br"))
+        .collect()
+}
+
+fn binary_is_launchable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        metadata.permissions().mode() & 0o111 != 0
+    }
+
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+fn br_unavailable_details(
+    explicit_br_path: Option<&Path>,
+    path_env: Option<&OsStr>,
+    reason: String,
+) -> String {
+    let explicit = explicit_br_path
+        .map(|path| format!("explicit --br-path: {}", path.display()))
+        .unwrap_or_else(|| "explicit --br-path: <not provided>".to_owned());
+    let path_summary = summarize_path(path_env);
+    format!(
+        "{reason}. Tried {explicit}; {path_summary}. For development workflows, run `nix develop` before invoking bead-aware commands. Alternatively pass `--br-path <PATH>` with the known location of the br binary. Install beads_rust from {BEADS_RUST_INSTALL_URL}."
+    )
+}
+
+fn summarize_path(path_env: Option<&OsStr>) -> String {
+    let Some(path_env) = path_env else {
+        return "$PATH: <unset>".to_owned();
+    };
+    let entries = std::env::split_paths(path_env).collect::<Vec<_>>();
+    if entries.is_empty() {
+        return "$PATH: <empty>".to_owned();
+    }
+    let shown = entries
+        .iter()
+        .take(8)
+        .map(|entry| entry.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if entries.len() > 8 {
+        format!("$PATH entries ({} total): {shown}, ...", entries.len())
+    } else {
+        format!("$PATH entries ({} total): {shown}", entries.len())
+    }
+}
+
 impl OsProcessRunner {
     pub fn new() -> Self {
         Self { br_binary: None }
@@ -510,11 +621,8 @@ impl OsProcessRunner {
         }
     }
 
-    fn br_path(&self) -> &str {
-        self.br_binary
-            .as_deref()
-            .and_then(|p| p.to_str())
-            .unwrap_or("br")
+    fn br_path(&self) -> &Path {
+        self.br_binary.as_deref().unwrap_or_else(|| Path::new("br"))
     }
 }
 
@@ -549,14 +657,14 @@ impl ProcessRunner for OsProcessRunner {
         let child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 BrError::BrNotFound {
-                    details: format!("could not find '{br_path}' in PATH"),
+                    details: format!("could not find '{}' in PATH", br_path.display()),
                 }
             } else {
                 BrError::Io(e)
             }
         })?;
 
-        let command_display = format!("br {}", args.join(" "));
+        let command_display = format!("{} {}", br_path.display(), args.join(" "));
 
         match tokio::time::timeout(timeout, wait_for_output(child)).await {
             Ok(result) => result,
@@ -568,7 +676,8 @@ impl ProcessRunner for OsProcessRunner {
     }
 
     fn check_available(&self, timeout: Duration) -> Result<(), BrError> {
-        let mut child = std::process::Command::new(self.br_path())
+        let br_path = self.br_path();
+        let mut child = std::process::Command::new(br_path)
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -577,7 +686,7 @@ impl ProcessRunner for OsProcessRunner {
             .map_err(|error| {
                 if error.kind() == std::io::ErrorKind::NotFound {
                     BrError::BrNotFound {
-                        details: format!("could not find '{}' in PATH", self.br_path()),
+                        details: format!("could not find '{}' in PATH", br_path.display()),
                     }
                 } else {
                     BrError::Io(error)
@@ -594,7 +703,7 @@ impl ProcessRunner for OsProcessRunner {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(BrError::BrTimeout {
-                    command: format!("{} --version", self.br_path()),
+                    command: format!("{} --version", br_path.display()),
                     timeout_ms: timeout.as_millis() as u64,
                 });
             }
@@ -605,7 +714,7 @@ impl ProcessRunner for OsProcessRunner {
         let output = child.wait_with_output().map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
                 BrError::BrNotFound {
-                    details: format!("could not find '{}' in PATH", self.br_path()),
+                    details: format!("could not find '{}' in PATH", br_path.display()),
                 }
             } else {
                 BrError::Io(error)
@@ -620,7 +729,7 @@ impl ProcessRunner for OsProcessRunner {
             exit_code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            command: format!("{} --version", self.br_path()),
+            command: format!("{} --version", br_path.display()),
         })
     }
 }
@@ -651,6 +760,15 @@ impl BrAdapter<OsProcessRunner> {
     pub fn new() -> Self {
         Self {
             runner: OsProcessRunner::new(),
+            read_timeout: DEFAULT_READ_TIMEOUT,
+            mutation_timeout: DEFAULT_MUTATION_TIMEOUT,
+            working_dir: None,
+        }
+    }
+
+    pub fn with_binary_path(binary: PathBuf) -> Self {
+        Self {
+            runner: OsProcessRunner::with_binary(binary),
             read_timeout: DEFAULT_READ_TIMEOUT,
             mutation_timeout: DEFAULT_MUTATION_TIMEOUT,
             working_dir: None,
@@ -1920,6 +2038,73 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn br_preflight_uses_explicit_valid_path() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let fake_br = tmp.path().join("custom-br");
+        write_executable_script(&fake_br, "exit 0")?;
+
+        let resolved =
+            preflight_br_binary_with_path(Some(&fake_br), Some(std::ffi::OsStr::new("")))?;
+        let adapter = BrAdapter::with_binary_path(resolved.clone());
+
+        assert_eq!(resolved, fake_br);
+        assert_eq!(adapter.runner.br_path(), fake_br.as_path());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn br_preflight_rejects_missing_explicit_path() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let missing = tmp.path().join("missing-br");
+
+        let error = preflight_br_binary_with_path(Some(&missing), Some(tmp.path().as_os_str()))
+            .expect_err("missing explicit br path must fail");
+        let message = error.to_string();
+
+        assert!(message.contains("explicit --br-path"));
+        assert!(message.contains(&missing.display().to_string()));
+        assert!(message.contains("nix develop"));
+        assert!(message.contains("--br-path <PATH>"));
+        assert!(message.contains("github.com/Dicklesworthstone/beads_rust"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn br_preflight_finds_br_on_path() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let fake_br = tmp.path().join("br");
+        write_executable_script(&fake_br, "exit 0")?;
+
+        let resolved = preflight_br_binary_with_path(None, Some(tmp.path().as_os_str()))?;
+        let adapter = BrAdapter::with_binary_path(resolved.clone());
+
+        assert_eq!(resolved, fake_br);
+        assert_eq!(adapter.runner.br_path(), fake_br.as_path());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn br_preflight_reports_informative_error_when_path_has_no_br(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+
+        let error = preflight_br_binary_with_path(None, Some(tmp.path().as_os_str()))
+            .expect_err("missing PATH br must fail");
+        let message = error.to_string();
+
+        assert!(message.contains("could not find executable 'br' on PATH"));
+        assert!(message.contains(&tmp.path().display().to_string()));
+        assert!(message.contains("nix develop"));
+        assert!(message.contains("--br-path <PATH>"));
+        assert!(message.contains("github.com/Dicklesworthstone/beads_rust"));
+        Ok(())
+    }
+
     // ── Mock runner tests ──────────────────────────────────────────────
 
     /// A mock process runner for unit testing without real br binary.
@@ -2066,14 +2251,14 @@ mod tests {
     #[test]
     fn os_process_runner_default_path() -> Result<(), Box<dyn std::error::Error>> {
         let runner = OsProcessRunner::new();
-        assert_eq!(runner.br_path(), "br");
+        assert_eq!(runner.br_path(), Path::new("br"));
         Ok(())
     }
 
     #[test]
     fn os_process_runner_custom_path() -> Result<(), Box<dyn std::error::Error>> {
         let runner = OsProcessRunner::with_binary(PathBuf::from("/usr/local/bin/br"));
-        assert_eq!(runner.br_path(), "/usr/local/bin/br");
+        assert_eq!(runner.br_path(), Path::new("/usr/local/bin/br"));
         Ok(())
     }
 
@@ -2131,18 +2316,12 @@ mod tests {
     {
         let tmp = tempfile::tempdir()?;
         let fake_br = tmp.path().join("fake-br");
-        let version_probe_blocker = tmp.path().join("version-probe-blocker");
-        nix::unistd::mkfifo(
-            &version_probe_blocker,
-            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
-        )?;
         let shell_path = test_shell()?;
         std::fs::write(
             &fake_br,
             format!(
-                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  read _ < '{}'\nfi\nexit 0\n",
-                shell_path.display(),
-                version_probe_blocker.display()
+                "#!{}\nif [ \"$1\" = \"--version\" ]; then\n  while :; do :; done\nfi\nexit 0\n",
+                shell_path.display()
             ),
         )?;
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
@@ -2237,22 +2416,36 @@ mod tests {
     }
 
     #[cfg(unix)]
-    fn test_shell() -> Result<PathBuf, Box<dyn std::error::Error>> {
-        if let Some(path) = std::env::var_os("PATH").and_then(|paths| {
-            std::env::split_paths(&paths).find_map(|dir| {
-                let path = dir.join("bash");
-                path.exists().then_some(path)
-            })
-        }) {
-            return Ok(path);
-        }
+    fn write_executable_script(
+        path: &std::path::Path,
+        body: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::write(path, format!("#!{}\n{body}\n", test_shell()?.display()))?;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)?;
+        Ok(())
+    }
 
+    #[cfg(unix)]
+    fn test_shell() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let from_env = ["BASH", "SHELL"]
             .into_iter()
             .filter_map(std::env::var_os)
             .map(PathBuf::from)
-            .find(|path| path.exists() && path.file_name().is_some_and(|name| name == "bash"));
+            .find(|path| {
+                binary_is_launchable(path) && path.file_name().is_some_and(|name| name == "bash")
+            });
         if let Some(path) = from_env {
+            return Ok(path);
+        }
+
+        if let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths).find_map(|dir| {
+                let path = dir.join("bash");
+                binary_is_launchable(&path).then_some(path)
+            })
+        }) {
             return Ok(path);
         }
 
