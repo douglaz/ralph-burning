@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501121001-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501121001-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-05-01T12:22:36.857999710Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\n{\"change_summary\":\"Tightened the drain harness at the PR port boundary by adding call recording to the mock pr_watch port and extending drain_harness unit scenarios to assert expected pr_open create_pr calls, pr_watch status/repo calls, reruns, failed log collection, and merge calls. Scenarios that abort before PR handling now assert zero PR invocations.\",\"steps\":[{\"order\":0,\"status\":\"completed\",\"description\":\"Reviewed existing drain harness, drain orchestration, and unit scenario coverage to identify where pr_open/pr_watch calls should be observed.\"},{\"order\":1,\"status\":\"completed\",\"description\":\"Added pr_watch mock call recording for repo_slug, pr_status, bot review checks, failed_run_logs, rerun_failed_runs, and merge_pr.\"},{\"order\":2,\"status\":\"completed\",\"description\":\"Added unit-test helpers and expectations that require PR open/watch machinery to be invoked for successful and PR-level failure paths, while confirming run-level abort paths do not invoke PR machinery.\"},{\"order\":3,\"\n\n## Steps\n\n1. [Completed] codex implementation turn\n\n## Validation Evidence\n\nNone provided.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-high",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-high"
+  },
+  "completion_round": 1
+}
