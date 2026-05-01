@@ -1,0 +1,7 @@
+id = "sr2x"
+name = "ralph-burning-sr2x: ralph pr open: resolve base branch instead of hardcoding master"
+flow = "minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "0469aa835baca85cfbee5d76481c39447e882b857130148e2977eaddf518a565"
+created_at = "2026-05-01T07:12:46.422347071Z"
+status_summary = "created"

@@ -341,6 +341,7 @@ impl DrainPort for ProcessDrainPorts {
 
     async fn open_pr(&mut self, bead_id: &str) -> Result<DrainPrOpenOutcome, DrainError> {
         let project_id = self.project_id()?.clone();
+        let tools = ProcessPrToolPort::new();
         let output = match open_pr_for_completed_run(
             PrOpenRequest {
                 base_dir: &self.base_dir,
@@ -354,7 +355,7 @@ impl DrainPort for ProcessDrainPorts {
                 journal_store: &FsJournalStore,
             },
             &self.br_read(),
-            &ProcessPrToolPort,
+            &tools,
         )
         .await
         {
@@ -392,6 +393,7 @@ impl DrainPort for ProcessDrainPorts {
         _bead_id: &str,
         pr_number: u64,
     ) -> Result<WatchOutcome, DrainError> {
+        let tools = ProcessPrToolPort::new();
         watch_pr(
             PrWatchRequest {
                 base_dir: &self.base_dir,
@@ -399,7 +401,7 @@ impl DrainPort for ProcessDrainPorts {
                 max_wait: DEFAULT_MAX_WAIT,
                 poll_interval: DEFAULT_POLL_INTERVAL,
             },
-            &ProcessPrToolPort,
+            &tools,
             &InterruptiblePrWatchClock::started_now(
                 Arc::clone(&self.interrupted),
                 DEFAULT_MAX_WAIT,

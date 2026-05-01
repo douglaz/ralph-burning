@@ -1,0 +1,16 @@
+{
+  "artifact_id": "run-20260501071246-final_review-reviewer-1-c1-a1-cr1-artifact",
+  "payload_id": "run-20260501071246-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-05-01T07:42:10.601321139Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.5-xhigh\n\n## Summary\n\nNo correctness issues found in the reviewed branch state. Reviewed the product-code changes in src/cli/pr.rs, src/cli/drain.rs, src/contexts/bead_workflow/pr_open.rs, and src/test_support/drain_harness.rs against dce1e633cce9f559a357e55782d2ace7f94ff298, ignoring .ralph-burning runtime state. nix build passed; direct cargo test attempts were blocked by the local rustup configuration lacking a default toolchain.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "requested_backend_family": "codex",
+    "requested_model_id": "gpt-5.5-xhigh",
+    "actual_backend_family": "codex",
+    "actual_model_id": "gpt-5.5-xhigh"
+  },
+  "completion_round": 1
+}

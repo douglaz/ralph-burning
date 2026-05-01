@@ -29,7 +29,8 @@ use crate::contexts::bead_workflow::drain_failure::{
     FailureObservation, FailureObservationKind, RecoveryAction,
 };
 use crate::contexts::bead_workflow::pr_open::{
-    open_pr_for_completed_run, DiffStat, Gate, PrOpenRequest, PrOpenStores, PrToolError, PrToolPort,
+    open_pr_for_completed_run, BaseBranchRef, DiffStat, Gate, PrOpenRequest, PrOpenStores,
+    PrToolError, PrToolPort,
 };
 use crate::contexts::bead_workflow::pr_watch::{
     watch_pr, BotBodyReaction, BotBodyReview, BotLineComment, CiState, MergeableState,
@@ -381,30 +382,45 @@ impl PrToolPort for MockDrainPrToolPort {
         Ok(self.branch.lock().expect("branch mutex").clone())
     }
 
-    async fn fetch_origin_master(&self, _repo_root: &Path) -> Result<(), PrToolError> {
+    async fn base_branch_ref(&self, _repo_root: &Path) -> Result<BaseBranchRef, PrToolError> {
+        self.record("base_branch_ref");
+        Ok(BaseBranchRef {
+            remote_ref: "origin/master".to_owned(),
+            branch_name: "master".to_owned(),
+        })
+    }
+
+    async fn fetch_base_branch(
+        &self,
+        _repo_root: &Path,
+        _base_branch: &BaseBranchRef,
+    ) -> Result<(), PrToolError> {
         self.record("fetch_origin_master");
         Ok(())
     }
 
-    async fn origin_master_is_ancestor_of_head(
+    async fn base_is_ancestor_of_head(
         &self,
         _repo_root: &Path,
+        _base_branch: &BaseBranchRef,
     ) -> Result<bool, PrToolError> {
         self.record("origin_master_is_ancestor_of_head");
         Ok(true)
     }
 
-    async fn commit_messages_since_origin_master(
+    async fn commit_messages_since_base(
         &self,
         _repo_root: &Path,
+        _base_branch: &BaseBranchRef,
     ) -> Result<Vec<String>, PrToolError> {
         self.record("commit_messages_since_origin_master");
         Ok(Vec::new())
     }
 
-    async fn diff_stats_since_origin_master(
+    async fn diff_stats_since_base(
         &self,
         _repo_root: &Path,
+        _base_branch: &BaseBranchRef,
     ) -> Result<Vec<DiffStat>, PrToolError> {
         self.record("diff_stats_since_origin_master");
         Ok(vec![harness_diff_stat()])
@@ -423,7 +439,11 @@ impl PrToolPort for MockDrainPrToolPort {
         Ok(Vec::new())
     }
 
-    async fn soft_reset_origin_master(&self, _repo_root: &Path) -> Result<(), PrToolError> {
+    async fn soft_reset_base(
+        &self,
+        _repo_root: &Path,
+        _base_branch: &BaseBranchRef,
+    ) -> Result<(), PrToolError> {
         self.record("soft_reset_origin_master");
         Ok(())
     }
@@ -459,6 +479,7 @@ impl PrToolPort for MockDrainPrToolPort {
     async fn create_pr(
         &self,
         _repo_root: &Path,
+        _base_branch: &BaseBranchRef,
         _branch_name: &str,
         _title: &str,
         _body: &str,
