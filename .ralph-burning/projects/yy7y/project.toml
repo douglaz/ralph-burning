@@ -1,0 +1,7 @@
+id = "yy7y"
+name = "ralph-burning-yy7y: ralph pr open: fetch remote refs before resolving base branch"
+flow = "iterative_minimal"
+prompt_reference = "prompt.md"
+prompt_hash = "e302c59c3289813cc8dbde810ee593abd09810799fef8b892074db792af82bab"
+created_at = "2026-05-01T10:41:13.301113879Z"
+status_summary = "created"
