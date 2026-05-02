@@ -92,66 +92,82 @@ impl StructuredLogCapture {
     /// pair. Returns the matching event, or panics with the captured-event
     /// list for quick diagnosis.
     ///
-    /// **Bounded retry semantics.** The implementation polls the snapshot
-    /// up to [`ASSERT_EVENT_MAX_WAIT`] in [`ASSERT_EVENT_POLL_INTERVAL`]
-    /// increments before declaring the event missing. The happy path —
-    /// the event is already in the sink when the caller asserts — pays
-    /// at most one snapshot clone and zero waits. The retry exists to
-    /// absorb a class of CI-only flakes (bead `ii1n`) where on heavily
-    /// contended runners the trace event lands a few milliseconds after
-    /// the awaited future resolves, despite both `set_default` and
-    /// `with_subscriber` being installed via `in_scope_async`.
-    ///
-    /// 6v3w's dispatcher belt-and-braces fix in PR #220 reduced but did
-    /// not eliminate this race. We don't have a reliable local repro
-    /// (30 isolated + 5 full-suite runs all pass), so a structural fix
-    /// (e.g. tracing the actual spawn that escapes both subscribers)
-    /// is blocked on better evidence. Until then this bounded poll is
-    /// the conservative mitigation — fast on the happy path, tolerant
-    /// on the flaky path, and clearly named so the next reader knows
-    /// what it's compensating for.
+    /// Synchronous — does not yield to any runtime. Use this from sync
+    /// tests, or from async tests where you know the trace is emitted
+    /// synchronously inside the awaited future and is in the sink by the
+    /// time you call this. For tests that may have post-await background
+    /// work emitting the event (and need to give the runtime a chance to
+    /// poll those tasks), use [`Self::assert_event_has_fields_within`].
     pub fn assert_event_has_fields(&self, expected: &[(&str, &str)]) -> CapturedLogEvent {
+        let snapshot = self.snapshot();
+        find_matching_event(&snapshot, expected)
+            .unwrap_or_else(|| panic_missing_event(expected, &snapshot, None))
+    }
+
+    /// Async-friendly variant of [`Self::assert_event_has_fields`] that
+    /// polls the snapshot up to `timeout`, yielding to the runtime via
+    /// `tokio::time::sleep` between attempts. Use this when the event
+    /// is plausibly emitted by a tokio task that hasn't been polled yet
+    /// at the moment the test asserts — a `std::thread::sleep` would
+    /// block the runtime and starve the very task that needs to fire.
+    ///
+    /// Reserved for the `ii1n` flake class: `service_emits_invocation_completed_trace_with_token_fields`
+    /// occasionally fails on contended CI runners because the trace
+    /// event arrives a few milliseconds after `service.invoke().await`
+    /// resolves. Polling with `tokio::time::sleep` lets the runtime
+    /// progress those late tasks during the wait window.
+    pub async fn assert_event_has_fields_within(
+        &self,
+        expected: &[(&str, &str)],
+        timeout: std::time::Duration,
+    ) -> CapturedLogEvent {
         let started = std::time::Instant::now();
+        let poll_interval = std::time::Duration::from_millis(5);
         loop {
             let snapshot = self.snapshot();
-            let event = snapshot
-                .iter()
-                .find(|event| {
-                    expected
-                        .iter()
-                        .all(|(key, value)| event.field(key) == Some(*value))
-                })
-                .cloned();
-
-            if let Some(event) = event {
+            if let Some(event) = find_matching_event(&snapshot, expected) {
                 return event;
             }
-            if started.elapsed() >= ASSERT_EVENT_MAX_WAIT {
-                panic!(
-                    "missing structured log event with fields [{}] after waiting {}ms\nCaptured events:\n{}",
-                    expected
-                        .iter()
-                        .map(|(key, value)| format!("{key}={value}"))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    ASSERT_EVENT_MAX_WAIT.as_millis(),
-                    render_events(&snapshot),
-                );
+            if started.elapsed() >= timeout {
+                panic_missing_event(expected, &snapshot, Some(timeout));
             }
-            std::thread::sleep(ASSERT_EVENT_POLL_INTERVAL);
+            tokio::time::sleep(poll_interval).await;
         }
     }
 }
 
-/// Total wall time `assert_event_has_fields` will spend polling for a
-/// matching event before declaring it missing. 100ms is plenty of slack
-/// for any plausible "trace lands shortly after the awaited future
-/// resolves" race while staying well under typical test runtimes.
-const ASSERT_EVENT_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
-/// Per-poll snapshot interval inside `assert_event_has_fields`. 5ms gives
-/// ~20 attempts within the 100ms window — fine-grained enough to catch
-/// late events almost the moment they land, without spinning the CPU.
-const ASSERT_EVENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+fn find_matching_event(
+    snapshot: &[CapturedLogEvent],
+    expected: &[(&str, &str)],
+) -> Option<CapturedLogEvent> {
+    snapshot
+        .iter()
+        .find(|event| {
+            expected
+                .iter()
+                .all(|(key, value)| event.field(key) == Some(*value))
+        })
+        .cloned()
+}
+
+fn panic_missing_event(
+    expected: &[(&str, &str)],
+    snapshot: &[CapturedLogEvent],
+    waited: Option<std::time::Duration>,
+) -> ! {
+    let waited_msg = waited
+        .map(|t| format!(" after waiting {}ms", t.as_millis()))
+        .unwrap_or_default();
+    panic!(
+        "missing structured log event with fields [{}]{waited_msg}\nCaptured events:\n{}",
+        expected
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        render_events(snapshot),
+    );
+}
 
 #[derive(Default)]
 struct CaptureVisitor {
