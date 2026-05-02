@@ -88,34 +88,70 @@ impl StructuredLogCapture {
         self.0.lock().expect("log capture lock poisoned").clone()
     }
 
-    /// Assert that some captured event contains every expected field/value pair.
+    /// Assert that some captured event contains every expected field/value
+    /// pair. Returns the matching event, or panics with the captured-event
+    /// list for quick diagnosis.
     ///
-    /// Failure output includes the full captured event list for quick diagnosis.
+    /// **Bounded retry semantics.** The implementation polls the snapshot
+    /// up to [`ASSERT_EVENT_MAX_WAIT`] in [`ASSERT_EVENT_POLL_INTERVAL`]
+    /// increments before declaring the event missing. The happy path —
+    /// the event is already in the sink when the caller asserts — pays
+    /// at most one snapshot clone and zero waits. The retry exists to
+    /// absorb a class of CI-only flakes (bead `ii1n`) where on heavily
+    /// contended runners the trace event lands a few milliseconds after
+    /// the awaited future resolves, despite both `set_default` and
+    /// `with_subscriber` being installed via `in_scope_async`.
+    ///
+    /// 6v3w's dispatcher belt-and-braces fix in PR #220 reduced but did
+    /// not eliminate this race. We don't have a reliable local repro
+    /// (30 isolated + 5 full-suite runs all pass), so a structural fix
+    /// (e.g. tracing the actual spawn that escapes both subscribers)
+    /// is blocked on better evidence. Until then this bounded poll is
+    /// the conservative mitigation — fast on the happy path, tolerant
+    /// on the flaky path, and clearly named so the next reader knows
+    /// what it's compensating for.
     pub fn assert_event_has_fields(&self, expected: &[(&str, &str)]) -> CapturedLogEvent {
-        let snapshot = self.snapshot();
-        let event = snapshot
-            .iter()
-            .find(|event| {
-                expected
-                    .iter()
-                    .all(|(key, value)| event.field(key) == Some(*value))
-            })
-            .cloned();
+        let started = std::time::Instant::now();
+        loop {
+            let snapshot = self.snapshot();
+            let event = snapshot
+                .iter()
+                .find(|event| {
+                    expected
+                        .iter()
+                        .all(|(key, value)| event.field(key) == Some(*value))
+                })
+                .cloned();
 
-        match event {
-            Some(event) => event,
-            None => panic!(
-                "missing structured log event with fields [{}]\nCaptured events:\n{}",
-                expected
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                render_events(&snapshot),
-            ),
+            if let Some(event) = event {
+                return event;
+            }
+            if started.elapsed() >= ASSERT_EVENT_MAX_WAIT {
+                panic!(
+                    "missing structured log event with fields [{}] after waiting {}ms\nCaptured events:\n{}",
+                    expected
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    ASSERT_EVENT_MAX_WAIT.as_millis(),
+                    render_events(&snapshot),
+                );
+            }
+            std::thread::sleep(ASSERT_EVENT_POLL_INTERVAL);
         }
     }
 }
+
+/// Total wall time `assert_event_has_fields` will spend polling for a
+/// matching event before declaring it missing. 100ms is plenty of slack
+/// for any plausible "trace lands shortly after the awaited future
+/// resolves" race while staying well under typical test runtimes.
+const ASSERT_EVENT_MAX_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+/// Per-poll snapshot interval inside `assert_event_has_fields`. 5ms gives
+/// ~20 attempts within the 100ms window — fine-grained enough to catch
+/// late events almost the moment they land, without spinning the CPU.
+const ASSERT_EVENT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
 
 #[derive(Default)]
 struct CaptureVisitor {
