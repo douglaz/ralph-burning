@@ -9,13 +9,13 @@ use clap::Args;
 
 use crate::adapters::br_models::{BeadStatus, ReadyBead};
 use crate::adapters::br_process::{BrAdapter, BrCommand, BrMutationAdapter, OsProcessRunner};
-use crate::adapters::fs::{FsJournalStore, FsProjectStore, FsRunSnapshotStore};
+use crate::adapters::fs::{FileSystem, FsJournalStore, FsProjectStore, FsRunSnapshotStore};
 use crate::cli::run::{
     execute_resume_with_br_path, execute_start_with_br_path, execute_stop, RunBackendOverrideArgs,
 };
 use crate::contexts::bead_workflow::create_project::{
-    create_project_from_bead, CreateProjectFromBeadInput, GitFeatureBranchPort,
-    ProcessBeadProjectBrPort,
+    create_project_from_bead, derive_project_id_from_bead_id, CreateProjectFromBeadInput,
+    GitFeatureBranchPort, ProcessBeadProjectBrPort,
 };
 use crate::contexts::bead_workflow::drain::{
     drain_bead_queue, DrainCreatedProject, DrainError, DrainOptions, DrainPort, DrainPrOpenOutcome,
@@ -91,6 +91,11 @@ struct ProcessDrainPorts {
     base_dir: PathBuf,
     br_path: PathBuf,
     active_project: Option<crate::shared::domain::ProjectId>,
+    /// Most recently created feature branch name. Captured by
+    /// `create_project_from_bead*` so the retry teardown can delete it
+    /// before the next attempt — otherwise the deterministic
+    /// `feat/<bead-id>-...` name collides on `git switch -c`.
+    active_branch: Option<String>,
     interrupted: Arc<AtomicBool>,
 }
 
@@ -102,6 +107,7 @@ impl ProcessDrainPorts {
             base_dir,
             br_path,
             active_project: None,
+            active_branch: None,
             interrupted,
         }
     }
@@ -130,6 +136,40 @@ impl ProcessDrainPorts {
     fn project_id(&self) -> Result<&crate::shared::domain::ProjectId, DrainError> {
         self.active_project.as_ref().ok_or_else(|| {
             DrainError::operation("resolve active drain project", "no project created")
+        })
+    }
+
+    async fn create_project_from_bead_inner(
+        &mut self,
+        bead_id: &str,
+        prior_failure_context: Option<String>,
+    ) -> Result<DrainCreatedProject, DrainError> {
+        let effective_config = EffectiveConfig::load(&self.base_dir)
+            .map_err(|error| DrainError::operation("load config", error.to_string()))?;
+        let output = create_project_from_bead(
+            &FsProjectStore,
+            &FsJournalStore,
+            &ProcessBeadProjectBrPort::with_br_binary(self.base_dir.clone(), self.br_path.clone()),
+            &GitFeatureBranchPort,
+            &self.base_dir,
+            CreateProjectFromBeadInput {
+                bead_id: bead_id.to_owned(),
+                flow: effective_config.default_flow(),
+                // Drain-created work must be on a feature branch so the PR
+                // opener can squash and publish the completed run.
+                branch: Some(String::new()),
+                created_at: Utc::now(),
+                prior_failure_context,
+            },
+        )
+        .await
+        .map_err(|error| DrainError::operation("create project from bead", error.to_string()))?;
+        workspace_governance::set_active_project(&self.base_dir, &output.project.id)
+            .map_err(|error| DrainError::operation("select created project", error.to_string()))?;
+        self.active_project = Some(output.project.id);
+        self.active_branch = output.branch_name.clone();
+        Ok(DrainCreatedProject {
+            branch_name: output.branch_name,
         })
     }
 
@@ -326,31 +366,77 @@ impl DrainPort for ProcessDrainPorts {
         &mut self,
         bead_id: &str,
     ) -> Result<DrainCreatedProject, DrainError> {
-        let effective_config = EffectiveConfig::load(&self.base_dir)
-            .map_err(|error| DrainError::operation("load config", error.to_string()))?;
-        let output = create_project_from_bead(
-            &FsProjectStore,
-            &FsJournalStore,
-            &ProcessBeadProjectBrPort::with_br_binary(self.base_dir.clone(), self.br_path.clone()),
-            &GitFeatureBranchPort,
+        self.create_project_from_bead_inner(bead_id, None).await
+    }
+
+    async fn create_project_from_bead_with_failure_context(
+        &mut self,
+        bead_id: &str,
+        prior_failure_log: &str,
+    ) -> Result<DrainCreatedProject, DrainError> {
+        self.create_project_from_bead_inner(bead_id, Some(prior_failure_log.to_owned()))
+            .await
+    }
+
+    async fn tear_down_failed_project(&mut self, bead_id: &str) -> Result<(), DrainError> {
+        self.stop_run(bead_id).await?;
+        // Reset the working tree to master so the next attempt starts from
+        // a clean base. Mirrors the sync-master logic but skips the heavy
+        // `nix build` since we already verified master independently before
+        // entering this drain run.
+        run_process(&self.base_dir, "git", &["fetch", "origin", "master"])?;
+        run_process(
             &self.base_dir,
-            CreateProjectFromBeadInput {
-                bead_id: bead_id.to_owned(),
-                flow: effective_config.default_flow(),
-                // Drain-created work must be on a feature branch so the PR
-                // opener can squash and publish the completed run.
-                branch: Some(String::new()),
-                created_at: Utc::now(),
-            },
-        )
-        .await
-        .map_err(|error| DrainError::operation("create project from bead", error.to_string()))?;
-        workspace_governance::set_active_project(&self.base_dir, &output.project.id)
-            .map_err(|error| DrainError::operation("select created project", error.to_string()))?;
-        self.active_project = Some(output.project.id);
-        Ok(DrainCreatedProject {
-            branch_name: output.branch_name,
-        })
+            "git",
+            &["checkout", "-B", "master", "origin/master"],
+        )?;
+        run_process(&self.base_dir, "git", &["reset", "--hard", "origin/master"])?;
+
+        // Delete the previous attempt's local feature branch. Without this,
+        // the retry's `create_project_from_bead` calls `git switch -c
+        // feat/<bead-id>-...` on a branch that already exists, which fails
+        // and aborts the drain — defeating the whole point of the retry.
+        // `git branch -D` is the right tool here: the branch holds work we
+        // explicitly want to discard, and we're already on master after the
+        // checkout above so the branch is safe to remove.
+        if let Some(branch) = self.active_branch.take() {
+            // Best-effort: if the branch is somehow already gone we don't
+            // want the teardown to fail. `git branch -D` exits non-zero in
+            // that case, so check existence first.
+            let exists = std::process::Command::new("git")
+                .current_dir(&self.base_dir)
+                .args(["rev-parse", "--verify", "--quiet", &branch])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if exists {
+                run_process(&self.base_dir, "git", &["branch", "-D", &branch])?;
+            }
+        }
+
+        // Discard the live + audit project state so the fresh create
+        // doesn't trip the `ProjectExists` duplicate check. We use the
+        // bead-id → project-id derivation rather than `self.active_project`
+        // because the harness invariant for retried beads matches.
+        let project_id = derive_project_id_from_bead_id(bead_id)
+            .map_err(|error| DrainError::operation("derive project id", error.to_string()))?;
+        for root in [
+            FileSystem::live_project_root(&self.base_dir, &project_id),
+            FileSystem::audit_project_root(&self.base_dir, &project_id),
+        ] {
+            if root.exists() {
+                std::fs::remove_dir_all(&root).map_err(|error| {
+                    DrainError::operation(
+                        "discard failed project directory",
+                        format!("{}: {error}", root.display()),
+                    )
+                })?;
+            }
+        }
+        // Clear the active-project pointer so the next iteration's
+        // create_project_from_bead can take the duplicate-check fast path.
+        self.active_project = None;
+        Ok(())
     }
 
     async fn restore_resume_context(
@@ -1271,6 +1357,7 @@ mod tests {
             base_dir: temp_dir.path().to_path_buf(),
             br_path: PathBuf::from("br"),
             active_project: Some(project_id),
+            active_branch: None,
             interrupted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let error = AppError::ResumeFailed {

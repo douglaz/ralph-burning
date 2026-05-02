@@ -29,6 +29,12 @@ pub struct CreateProjectFromBeadInput {
     pub flow: FlowPreset,
     pub branch: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Optional verbatim log from a prior failed attempt at this bead.
+    /// When set, a "Previous attempt failure" section is appended to the
+    /// rendered prompt so the implementer can see the exact failures
+    /// it needs to avoid this round. Used by drain's `RetryBeadFresh`
+    /// recovery path for cleanable verification failures.
+    pub prior_failure_context: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -193,8 +199,17 @@ pub async fn create_project_from_bead(
         });
     }
 
-    let prompt =
-        render_project_prompt_from_bead(&input.bead_id, br, base_dir.to_path_buf()).await?;
+    let prompt = {
+        let base_prompt =
+            render_project_prompt_from_bead(&input.bead_id, br, base_dir.to_path_buf()).await?;
+        match &input.prior_failure_context {
+            Some(failure) if !failure.trim().is_empty() => format!(
+                "{base_prompt}\n\n## Previous attempt failure (auto-injected by drain)\n\nThe previous attempt at this bead produced these verification failures.\nTreat them as explicit signals to fix in this round — they are the\nreason the prior implementation was discarded.\n\n```\n{}\n```\n",
+                failure.trim()
+            ),
+            _ => base_prompt,
+        }
+    };
 
     let branch_name = input
         .branch

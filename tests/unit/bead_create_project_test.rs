@@ -452,6 +452,7 @@ fn input(bead_id: &str) -> CreateProjectFromBeadInput {
         flow: FlowPreset::Minimal,
         branch: None,
         created_at: Utc::now(),
+        prior_failure_context: None,
     }
 }
 

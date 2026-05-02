@@ -81,6 +81,7 @@ async fn handle_create_project(args: BeadCreateProjectArgs, br_path: PathBuf) ->
             flow,
             branch: args.branch,
             created_at: Utc::now(),
+            prior_failure_context: None,
         },
     )
     .await
