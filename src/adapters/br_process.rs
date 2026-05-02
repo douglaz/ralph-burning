@@ -2427,6 +2427,50 @@ mod tests {
         Ok(())
     }
 
+    /// Spawn `<path> --version` once with retries, swallowing transient
+    /// errors (ETXTBSY, NotFound under fs lag, scheduling-induced timeouts)
+    /// before any test-time `check_available` probe. Required for tests
+    /// like `sync_if_dirty_when_beads_healthy_uses_configured_br_binary_for_health_check`
+    /// (bead `ni3c`) that write a fresh shell script and immediately
+    /// assert that `BrAdapter::check_available` reports the binary as
+    /// healthy. On contended CI runners the kernel sometimes serves
+    /// ETXTBSY for a freshly-written executable; pre-warming the binary
+    /// gives those races a chance to clear before the adapter's probe
+    /// fires.
+    ///
+    /// Caller-visible behavior is "the binary is spawnable" by the time
+    /// this returns. On persistent failure (~5 attempts × 50ms backoff)
+    /// the function panics with the underlying error so the test fails
+    /// loudly rather than masking a real binary issue.
+    fn prewarm_binary_for_test(path: &std::path::Path) {
+        const MAX_ATTEMPTS: u32 = 5;
+        const BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+        let mut last_error: Option<std::io::Error> = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match std::process::Command::new(path)
+                .arg("--version")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+            {
+                Ok(_) => return,
+                Err(error) => {
+                    last_error = Some(error);
+                    if attempt < MAX_ATTEMPTS {
+                        std::thread::sleep(BACKOFF);
+                    }
+                }
+            }
+        }
+        panic!(
+            "prewarm_binary_for_test({}): {} attempts all failed; last error: {:?}",
+            path.display(),
+            MAX_ATTEMPTS,
+            last_error
+        );
+    }
+
     #[cfg(unix)]
     fn test_shell() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let from_env = ["BASH", "SHELL"]
@@ -3104,6 +3148,9 @@ mod tests {
         let mut permissions = std::fs::metadata(&fake_br)?.permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&fake_br, permissions)?;
+        // Pre-warm to absorb the ETXTBSY / fresh-executable spawn race that
+        // occasionally caused this test to flake on CI (bead ni3c).
+        prewarm_binary_for_test(&fake_br);
 
         let adapter_id = "configured-binary-owner";
         write_pending_mutation_record(
