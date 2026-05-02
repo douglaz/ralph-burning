@@ -575,19 +575,10 @@ async fn service_emits_invocation_completed_trace_with_token_fields() {
         })
         .await;
 
-    let event = capture
-        .assert_event_has_fields_within(
-            &[
-                ("invocation_id", "trace-invoke-1"),
-                ("message", "invocation completed"),
-            ],
-            // CI flake (bead ii1n): the trace can land a few ms after the
-            // awaited future resolves on contended runners. The async
-            // variant uses tokio::time::sleep so any pending task that
-            // emits the trace can be polled during the wait window.
-            std::time::Duration::from_millis(100),
-        )
-        .await;
+    let event = capture.assert_event_has_fields(&[
+        ("invocation_id", "trace-invoke-1"),
+        ("message", "invocation completed"),
+    ]);
 
     for field in [
         "invocation_id=",

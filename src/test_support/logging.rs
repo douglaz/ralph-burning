@@ -80,6 +80,19 @@ impl StructuredLogCapture {
         self.clear();
         let dispatch = self.dispatch();
         let _guard = tracing::dispatcher::set_default(&dispatch);
+        // Force callsites to re-query subscriber interest. tracing caches
+        // each callsite's `Interest` (Always/Sometimes/Never) on first
+        // emission, queried against the GLOBAL default. If that first
+        // emission happened with no global subscriber installed, the
+        // callsite is cached as "Never" and subsequent emissions skip
+        // the dispatch entirely — even when a thread-local subscriber
+        // is in scope. This is the canonical workaround: re-register
+        // every callsite so the interest gets recomputed against the
+        // currently-active dispatch chain. Without this, the
+        // `service_emits_invocation_completed_trace_with_token_fields`
+        // test (bead `ii1n`) flakes when other tests run before it
+        // and warm the callsite cache as "Never".
+        tracing::callsite::rebuild_interest_cache();
         future.with_subscriber(dispatch).await
     }
 
@@ -88,85 +101,33 @@ impl StructuredLogCapture {
         self.0.lock().expect("log capture lock poisoned").clone()
     }
 
-    /// Assert that some captured event contains every expected field/value
-    /// pair. Returns the matching event, or panics with the captured-event
-    /// list for quick diagnosis.
+    /// Assert that some captured event contains every expected field/value pair.
     ///
-    /// Synchronous — does not yield to any runtime. Use this from sync
-    /// tests, or from async tests where you know the trace is emitted
-    /// synchronously inside the awaited future and is in the sink by the
-    /// time you call this. For tests that may have post-await background
-    /// work emitting the event (and need to give the runtime a chance to
-    /// poll those tasks), use [`Self::assert_event_has_fields_within`].
+    /// Failure output includes the full captured event list for quick diagnosis.
     pub fn assert_event_has_fields(&self, expected: &[(&str, &str)]) -> CapturedLogEvent {
         let snapshot = self.snapshot();
-        find_matching_event(&snapshot, expected)
-            .unwrap_or_else(|| panic_missing_event(expected, &snapshot, None))
-    }
+        let event = snapshot
+            .iter()
+            .find(|event| {
+                expected
+                    .iter()
+                    .all(|(key, value)| event.field(key) == Some(*value))
+            })
+            .cloned();
 
-    /// Async-friendly variant of [`Self::assert_event_has_fields`] that
-    /// polls the snapshot up to `timeout`, yielding to the runtime via
-    /// `tokio::time::sleep` between attempts. Use this when the event
-    /// is plausibly emitted by a tokio task that hasn't been polled yet
-    /// at the moment the test asserts — a `std::thread::sleep` would
-    /// block the runtime and starve the very task that needs to fire.
-    ///
-    /// Reserved for the `ii1n` flake class: `service_emits_invocation_completed_trace_with_token_fields`
-    /// occasionally fails on contended CI runners because the trace
-    /// event arrives a few milliseconds after `service.invoke().await`
-    /// resolves. Polling with `tokio::time::sleep` lets the runtime
-    /// progress those late tasks during the wait window.
-    pub async fn assert_event_has_fields_within(
-        &self,
-        expected: &[(&str, &str)],
-        timeout: std::time::Duration,
-    ) -> CapturedLogEvent {
-        let started = std::time::Instant::now();
-        let poll_interval = std::time::Duration::from_millis(5);
-        loop {
-            let snapshot = self.snapshot();
-            if let Some(event) = find_matching_event(&snapshot, expected) {
-                return event;
-            }
-            if started.elapsed() >= timeout {
-                panic_missing_event(expected, &snapshot, Some(timeout));
-            }
-            tokio::time::sleep(poll_interval).await;
+        match event {
+            Some(event) => event,
+            None => panic!(
+                "missing structured log event with fields [{}]\nCaptured events:\n{}",
+                expected
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                render_events(&snapshot),
+            ),
         }
     }
-}
-
-fn find_matching_event(
-    snapshot: &[CapturedLogEvent],
-    expected: &[(&str, &str)],
-) -> Option<CapturedLogEvent> {
-    snapshot
-        .iter()
-        .find(|event| {
-            expected
-                .iter()
-                .all(|(key, value)| event.field(key) == Some(*value))
-        })
-        .cloned()
-}
-
-fn panic_missing_event(
-    expected: &[(&str, &str)],
-    snapshot: &[CapturedLogEvent],
-    waited: Option<std::time::Duration>,
-) -> ! {
-    let waited_msg = waited
-        .map(|t| format!(" after waiting {}ms", t.as_millis()))
-        .unwrap_or_default();
-    panic!(
-        "missing structured log event with fields [{}]{waited_msg}\nCaptured events:\n{}",
-        expected
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join(", "),
-        render_events(snapshot),
-    );
 }
 
 #[derive(Default)]
