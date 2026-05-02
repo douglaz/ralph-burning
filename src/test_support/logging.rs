@@ -80,6 +80,19 @@ impl StructuredLogCapture {
         self.clear();
         let dispatch = self.dispatch();
         let _guard = tracing::dispatcher::set_default(&dispatch);
+        // Force callsites to re-query subscriber interest. tracing caches
+        // each callsite's `Interest` (Always/Sometimes/Never) on first
+        // emission, queried against the GLOBAL default. If that first
+        // emission happened with no global subscriber installed, the
+        // callsite is cached as "Never" and subsequent emissions skip
+        // the dispatch entirely — even when a thread-local subscriber
+        // is in scope. This is the canonical workaround: re-register
+        // every callsite so the interest gets recomputed against the
+        // currently-active dispatch chain. Without this, the
+        // `service_emits_invocation_completed_trace_with_token_fields`
+        // test (bead `ii1n`) flakes when other tests run before it
+        // and warm the callsite cache as "Never".
+        tracing::callsite::rebuild_interest_cache();
         future.with_subscriber(dispatch).await
     }
 
