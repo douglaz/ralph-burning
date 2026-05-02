@@ -2,6 +2,7 @@
 
 //! Sequential top-level drain orchestration for bead-backed Ralph work.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -170,6 +171,25 @@ pub trait DrainPort {
         &mut self,
         bead_id: &str,
     ) -> Result<DrainCreatedProject, DrainError>;
+    /// Re-create a project for a bead after its prior attempt was discarded
+    /// via `tear_down_failed_project`, injecting the prior failure log into
+    /// the new project's prompt as additional context. Default impl ignores
+    /// the failure log and falls back to the regular create path — adapters
+    /// that support context injection should override.
+    async fn create_project_from_bead_with_failure_context(
+        &mut self,
+        bead_id: &str,
+        _prior_failure_log: &str,
+    ) -> Result<DrainCreatedProject, DrainError> {
+        self.create_project_from_bead(bead_id).await
+    }
+    /// Discard the live project state for a bead whose run produced a
+    /// cleanable verification failure, so the next iteration can start
+    /// fresh. Implementations should reset the working tree to master,
+    /// remove the live project directory, and stop any associated run.
+    async fn tear_down_failed_project(&mut self, _bead_id: &str) -> Result<(), DrainError> {
+        Ok(())
+    }
     async fn restore_resume_context(
         &mut self,
         _bead_id: &str,
@@ -220,6 +240,13 @@ pub async fn drain_bead_queue<P: DrainPort>(
     let mut consecutive_failures = 0;
     let mut last_bead = None;
     let mut pending_resume: Option<PendingResume> = None;
+    let mut pending_retry: Option<PendingRetry> = None;
+    // Per-bead remaining RetryBeadFresh budget for the lifetime of this drain.
+    // Each bead gets `RETRY_BEAD_FRESH_BUDGET` chances to clear a cleanable
+    // verification failure via a fresh implementation round before falling
+    // through to FileBead{AbortDrain}. The budget is local to one drain run —
+    // a future drain that re-picks the same bead starts with a full budget.
+    let mut retry_budget: HashMap<String, u32> = HashMap::new();
 
     loop {
         if check_interrupt(ports, &mut report, started, cycles, last_bead.clone()) {
@@ -250,7 +277,25 @@ pub async fn drain_bead_queue<P: DrainPort>(
 
         let ready_beads = ports.ready_beads().await?;
         let landed_in_session = report.landed.clone();
-        let selected = if let Some(pending) = pending_resume.take() {
+        let selected = if let Some(pending) = pending_retry.take() {
+            // A prior cycle hit a cleanable verification failure on this
+            // bead. Skip the ready-bead pick and re-enter project_create on
+            // the same bead with the prior failure log injected as context.
+            // The teardown was already performed in handle_recovery_action.
+            if check_interrupt(
+                ports,
+                &mut report,
+                started,
+                cycles,
+                Some(pending.bead_id.clone()),
+            ) {
+                return Ok(report);
+            }
+            SelectedDrainWork::Retry {
+                bead_id: pending.bead_id,
+                prior_failure_log: pending.prior_failure_log,
+            }
+        } else if let Some(pending) = pending_resume.take() {
             if options.stop_on_p0 {
                 if let Some(bead) =
                     next_open_ready_bead_from(ports, ready_beads, &landed_in_session).await?
@@ -316,6 +361,20 @@ pub async fn drain_bead_queue<P: DrainPort>(
                 }
                 Some((ports.resume_run(&bead_id).await?, Some(created_project)))
             }
+            SelectedDrainWork::Retry {
+                prior_failure_log, ..
+            } => {
+                let created_project = ports
+                    .create_project_from_bead_with_failure_context(&bead_id, &prior_failure_log)
+                    .await?;
+                if check_interrupt(ports, &mut report, started, cycles, last_bead.clone()) {
+                    return Ok(report);
+                }
+                Some((
+                    drive_run_to_completion(ports, &bead_id).await?,
+                    Some(created_project),
+                ))
+            }
         };
         while let Some((run_outcome, created_project)) = next_run_outcome.take() {
             match run_outcome {
@@ -358,8 +417,15 @@ pub async fn drain_bead_queue<P: DrainPort>(
                     }
                     consecutive_failures += 1;
                     let action = classify_drain_failure(&observation);
-                    match handle_recovery_action(ports, &bead_id, action, &observation, &mut report)
-                        .await?
+                    match handle_recovery_action(
+                        ports,
+                        &bead_id,
+                        action,
+                        &observation,
+                        &mut report,
+                        &mut retry_budget,
+                    )
+                    .await?
                     {
                         RecoveryDisposition::Continue { skipped } => {
                             if skipped {
@@ -464,6 +530,29 @@ pub async fn drain_bead_queue<P: DrainPort>(
                                 break;
                             }
                         }
+                        RecoveryDisposition::RetryBeadFresh { failure_log } => {
+                            ports.tear_down_failed_project(&bead_id).await?;
+                            if consecutive_failures >= options.max_consecutive_failures {
+                                report.outcome = DrainOutcome::TooManyFailures {
+                                    count: consecutive_failures,
+                                };
+                                report.wall_time = started.elapsed();
+                                return Ok(report);
+                            }
+                            pending_retry = Some(PendingRetry {
+                                bead_id: bead_id.clone(),
+                                prior_failure_log: failure_log,
+                            });
+                            report.cycles.push(CycleSummary {
+                                cycle: cycles,
+                                bead_id: bead_id.clone(),
+                                convergence_pattern: "failed".to_owned(),
+                                pr_number: None,
+                                outcome: "retry queued (cleanable)".to_owned(),
+                                duration: cycle_started.elapsed(),
+                            });
+                            break;
+                        }
                     }
                 }
             }
@@ -483,6 +572,10 @@ enum SelectedDrainWork {
         bead_id: String,
         created_project: DrainCreatedProject,
     },
+    Retry {
+        bead_id: String,
+        prior_failure_log: String,
+    },
 }
 
 struct PendingResume {
@@ -490,10 +583,23 @@ struct PendingResume {
     created_project: DrainCreatedProject,
 }
 
+struct PendingRetry {
+    bead_id: String,
+    prior_failure_log: String,
+}
+
+/// Default per-bead RetryBeadFresh budget for a single drain run. One retry
+/// is enough to recover from a typical lint-only verification failure; a
+/// pattern of repeated failures is a stronger signal that a follow-up bead
+/// (and human attention) is the right path.
+const RETRY_BEAD_FRESH_BUDGET: u32 = 1;
+
 impl SelectedDrainWork {
     fn bead_id(&self) -> &str {
         match self {
-            Self::Start { bead_id } | Self::Resume { bead_id, .. } => bead_id,
+            Self::Start { bead_id }
+            | Self::Resume { bead_id, .. }
+            | Self::Retry { bead_id, .. } => bead_id,
         }
     }
 }
@@ -672,6 +778,7 @@ enum RecoveryDisposition {
     ResumeNextCycle { stop_first: bool },
     Abort(String),
     ForceComplete,
+    RetryBeadFresh { failure_log: String },
 }
 
 async fn handle_recovery_action<P: DrainPort>(
@@ -680,11 +787,29 @@ async fn handle_recovery_action<P: DrainPort>(
     action: RecoveryAction,
     observation: &FailureObservation,
     report: &mut DrainReport,
+    retry_budget: &mut HashMap<String, u32>,
 ) -> Result<RecoveryDisposition, DrainError> {
     match action {
         RecoveryAction::Rerun { .. } => Ok(RecoveryDisposition::Continue { skipped: false }),
         RecoveryAction::ResumeRun { stop_first } => {
             Ok(RecoveryDisposition::ResumeNextCycle { stop_first })
+        }
+        RecoveryAction::RetryBeadFresh => {
+            // Check the per-bead retry budget. If this bead has a remaining
+            // retry, consume one and route to the fresh-retry path. If the
+            // budget is exhausted, fall through to the same FileBead{AbortDrain}
+            // flow we'd have taken without the cleanable-failure heuristic —
+            // the failure looks cleanable but a previous fresh attempt already
+            // failed, so a follow-up bead is the right escalation.
+            let remaining = retry_budget
+                .entry(bead_id.to_owned())
+                .or_insert(RETRY_BEAD_FRESH_BUDGET);
+            if *remaining == 0 {
+                return file_follow_up_and_abort(ports, bead_id, observation, report).await;
+            }
+            *remaining -= 1;
+            let failure_log = render_failure_log(observation);
+            Ok(RecoveryDisposition::RetryBeadFresh { failure_log })
         }
         RecoveryAction::FileBead { after_filing } => {
             ports.prepare_bead_mutation_base().await?;
@@ -715,6 +840,50 @@ async fn handle_recovery_action<P: DrainPort>(
             "failure policy aborted drain".to_owned(),
         )),
         RecoveryAction::ForceCompleteRun => Ok(RecoveryDisposition::ForceComplete),
+    }
+}
+
+async fn file_follow_up_and_abort<P: DrainPort>(
+    ports: &mut P,
+    bead_id: &str,
+    observation: &FailureObservation,
+    _report: &mut DrainReport,
+) -> Result<RecoveryDisposition, DrainError> {
+    ports.prepare_bead_mutation_base().await?;
+    ports
+        .file_follow_up_bead(
+            bead_id,
+            &RecoveryAction::FileBead {
+                after_filing: PostBeadAction::AbortDrain,
+            },
+            observation,
+        )
+        .await?;
+    ports.persist_bead_mutations().await?;
+    Ok(RecoveryDisposition::Abort(
+        "retry budget exhausted; filed follow-up bead and aborted drain".to_owned(),
+    ))
+}
+
+fn render_failure_log(observation: &FailureObservation) -> String {
+    match &observation.kind {
+        FailureObservationKind::VerificationFailure {
+            failing, source, ..
+        } => {
+            let header = match source {
+                VerificationFailureSource::Ci => "CI verification",
+                VerificationFailureSource::Gate(gate) => match gate {
+                    super::pr_open::Gate::CargoTest => "gate: cargo test",
+                    super::pr_open::Gate::CargoClippy => "gate: cargo clippy",
+                    super::pr_open::Gate::CargoFmt => "gate: cargo fmt",
+                    super::pr_open::Gate::NixBuild => "gate: nix build",
+                },
+            };
+            format!("{header}\n\n{}", failing.join("\n\n"))
+        }
+        // Other observation kinds reach this path only via the retry-budget
+        // exhausted fall-through; the FileBead path renders its own context.
+        _ => format!("{observation:#?}"),
     }
 }
 

@@ -17,17 +17,18 @@ use crate::adapters::br_models::{
     BeadDetail, BeadStatus, BeadType, DepTreeNode, DependencyKind, ReadyBead,
 };
 use crate::adapters::fs::{
-    FsJournalStore, FsProjectStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
+    FileSystem, FsJournalStore, FsProjectStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
 };
 use crate::contexts::bead_workflow::create_project::{
-    create_project_from_bead, BeadProjectBrPort, CreateProjectFromBeadInput, FeatureBranchPort,
+    create_project_from_bead, derive_project_id_from_bead_id, BeadProjectBrPort,
+    CreateProjectFromBeadInput, FeatureBranchPort,
 };
 use crate::contexts::bead_workflow::drain::{
     DrainCreatedProject, DrainError, DrainPort, DrainPrOpenOutcome, DrainPrOpenOutput,
     DrainRunCompletion, DrainRunOutcome,
 };
 use crate::contexts::bead_workflow::drain_failure::{
-    FailureObservation, FailureObservationKind, RecoveryAction,
+    FailureObservation, FailureObservationKind, RecoveryAction, VerificationFailureSource,
 };
 use crate::contexts::bead_workflow::pr_open::{
     open_pr_for_completed_run, BaseBranchRef, DiffStat, Gate, PrOpenRequest, PrOpenStores,
@@ -55,6 +56,11 @@ pub enum DrainHarnessScenario {
     InterruptedThenResume,
     BotRejected,
     ForceComplete,
+    /// First attempt fails with a cleanable verification failure (lint
+    /// warnings); second attempt — driven by the drain loop's
+    /// RetryBeadFresh path — completes cleanly and lands the bead. Used
+    /// to verify the end-to-end retry recovery flow.
+    CleanableLintRetryThenMerge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +74,12 @@ pub enum DrainHarnessEvent {
     ProjectCreated {
         bead_id: String,
         branch_name: String,
+        /// Prior failure log injected into the prompt for this attempt, if
+        /// any. `None` for fresh creates; `Some` for RetryBeadFresh retries.
+        prior_failure_log: Option<String>,
+    },
+    ProjectTornDown {
+        bead_id: String,
     },
     RunStarted {
         bead_id: String,
@@ -106,6 +118,10 @@ pub struct ScratchDrainHarness {
     statuses: HashMap<String, BeadStatus>,
     active_project: Option<crate::shared::domain::ProjectId>,
     pr_numbers: HashMap<String, u64>,
+    /// Per-bead `start_run` attempt counter. Used by retry-style scenarios
+    /// (e.g. `CleanableLintRetryThenMerge`) to behave differently on the
+    /// first vs subsequent attempts within a single drain.
+    bead_attempts: HashMap<String, u32>,
     pub git: MockDrainGitPort,
     pub runs: MockDrainRunPort,
     pub pr_tool: MockDrainPrToolPort,
@@ -212,6 +228,7 @@ impl ScratchDrainHarness {
             statuses,
             active_project: None,
             pr_numbers: HashMap::new(),
+            bead_attempts: HashMap::new(),
             git: MockDrainGitPort::default(),
             runs: MockDrainRunPort::default(),
             pr_tool: MockDrainPrToolPort::default(),
@@ -334,6 +351,47 @@ impl ScratchDrainHarness {
         MockDrainBrPort {
             issues_path: self.issues_path(),
         }
+    }
+
+    async fn create_project_from_bead_inner(
+        &mut self,
+        bead_id: &str,
+        prior_failure_context: Option<String>,
+    ) -> Result<DrainCreatedProject, DrainError> {
+        let branch_port = MockDrainFeatureBranchPort::default();
+        let prior_failure_log_event = prior_failure_context.clone();
+        let output = create_project_from_bead(
+            &FsProjectStore,
+            &FsJournalStore,
+            &self.br_port(),
+            &branch_port,
+            self.workspace.path(),
+            CreateProjectFromBeadInput {
+                bead_id: bead_id.to_owned(),
+                flow: FlowPreset::IterativeMinimal,
+                branch: Some(String::new()),
+                created_at: Utc
+                    .with_ymd_and_hms(2026, 4, 30, 12, 0, 0)
+                    .single()
+                    .expect("valid harness timestamp"),
+                prior_failure_context,
+            },
+        )
+        .await
+        .map_err(|error| DrainError::operation("create project from bead", error.to_string()))?;
+        self.active_project = Some(output.project.id);
+        self.statuses
+            .insert(bead_id.to_owned(), BeadStatus::InProgress);
+        if let Some(branch_name) = &output.branch_name {
+            self.pr_tool.set_branch(branch_name);
+        }
+        let branch_name = output.branch_name.clone();
+        self.events.push(DrainHarnessEvent::ProjectCreated {
+            bead_id: bead_id.to_owned(),
+            branch_name: branch_name.clone().unwrap_or_default(),
+            prior_failure_log: prior_failure_log_event,
+        });
+        Ok(DrainCreatedProject { branch_name })
     }
 
     fn record_completed_run(&self) -> Result<DrainRunCompletion, DrainError> {
@@ -906,37 +964,43 @@ impl DrainPort for ScratchDrainHarness {
         &mut self,
         bead_id: &str,
     ) -> Result<DrainCreatedProject, DrainError> {
-        let branch_port = MockDrainFeatureBranchPort::default();
-        let output = create_project_from_bead(
-            &FsProjectStore,
-            &FsJournalStore,
-            &self.br_port(),
-            &branch_port,
-            self.workspace.path(),
-            CreateProjectFromBeadInput {
-                bead_id: bead_id.to_owned(),
-                flow: FlowPreset::IterativeMinimal,
-                branch: Some(String::new()),
-                created_at: Utc
-                    .with_ymd_and_hms(2026, 4, 30, 12, 0, 0)
-                    .single()
-                    .expect("valid harness timestamp"),
-            },
-        )
-        .await
-        .map_err(|error| DrainError::operation("create project from bead", error.to_string()))?;
-        self.active_project = Some(output.project.id);
-        self.statuses
-            .insert(bead_id.to_owned(), BeadStatus::InProgress);
-        if let Some(branch_name) = &output.branch_name {
-            self.pr_tool.set_branch(branch_name);
+        self.create_project_from_bead_inner(bead_id, None).await
+    }
+
+    async fn create_project_from_bead_with_failure_context(
+        &mut self,
+        bead_id: &str,
+        prior_failure_log: &str,
+    ) -> Result<DrainCreatedProject, DrainError> {
+        self.create_project_from_bead_inner(bead_id, Some(prior_failure_log.to_owned()))
+            .await
+    }
+
+    async fn tear_down_failed_project(&mut self, bead_id: &str) -> Result<(), DrainError> {
+        // Discard the live + audit project state so the next create_project
+        // call doesn't trip the duplicate-check guard. Mirrors what the
+        // production drain port does, scaled down to the harness's scratch
+        // workspace.
+        let project_id = derive_project_id_from_bead_id(bead_id)
+            .map_err(|error| DrainError::operation("derive project id", error.to_string()))?;
+        for root in [
+            FileSystem::live_project_root(self.workspace.path(), &project_id),
+            FileSystem::audit_project_root(self.workspace.path(), &project_id),
+        ] {
+            if root.exists() {
+                std::fs::remove_dir_all(&root).map_err(|error| {
+                    DrainError::operation(
+                        "discard failed project directory",
+                        format!("{}: {error}", root.display()),
+                    )
+                })?;
+            }
         }
-        let branch_name = output.branch_name.clone();
-        self.events.push(DrainHarnessEvent::ProjectCreated {
+        self.active_project = None;
+        self.events.push(DrainHarnessEvent::ProjectTornDown {
             bead_id: bead_id.to_owned(),
-            branch_name: branch_name.clone().unwrap_or_default(),
         });
-        Ok(DrainCreatedProject { branch_name })
+        Ok(())
     }
 
     async fn restore_resume_context(
@@ -952,6 +1016,11 @@ impl DrainPort for ScratchDrainHarness {
         self.events.push(DrainHarnessEvent::RunStarted {
             bead_id: bead_id.to_owned(),
         });
+        let attempt = {
+            let entry = self.bead_attempts.entry(bead_id.to_owned()).or_insert(0);
+            *entry += 1;
+            *entry
+        };
         Ok(match self.scenario(bead_id) {
             DrainHarnessScenario::InterruptedThenResume => DrainRunOutcome::Failed(
                 FailureObservation::new(FailureObservationKind::RunInterrupted {
@@ -974,6 +1043,28 @@ impl DrainPort for ScratchDrainHarness {
                     max_completion_rounds: 3,
                 })
             }),
+            DrainHarnessScenario::CleanableLintRetryThenMerge if attempt == 1 => {
+                // First attempt: emit a cleanable verification failure that
+                // gj74's classifier will route to RetryBeadFresh.
+                DrainRunOutcome::Failed(FailureObservation::new(
+                    FailureObservationKind::VerificationFailure {
+                        source: VerificationFailureSource::Gate(
+                            crate::contexts::bead_workflow::pr_open::Gate::CargoTest,
+                        ),
+                        failing: vec![
+                            "warning: unused import: `std::time::Duration`\n  --> src/cli/run.rs:5031:9\n   |\n5031 |     use std::time::Duration;\n     |         ^^^^^^^^^^^^^^^^^^^"
+                                .to_owned(),
+                        ],
+                        reruns_attempted_for_pr: 0,
+                    },
+                ))
+            }
+            DrainHarnessScenario::CleanableLintRetryThenMerge => {
+                // Second attempt (post-tear-down + recreate with failure
+                // context): the implementer cleared the warnings, run
+                // converges and the bead lands.
+                DrainRunOutcome::Completed(self.record_completed_run()?)
+            }
             DrainHarnessScenario::Happy
             | DrainHarnessScenario::KnownFlakeThenMerge
             | DrainHarnessScenario::PermanentCiFailure => {
