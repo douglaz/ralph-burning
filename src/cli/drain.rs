@@ -91,6 +91,11 @@ struct ProcessDrainPorts {
     base_dir: PathBuf,
     br_path: PathBuf,
     active_project: Option<crate::shared::domain::ProjectId>,
+    /// Most recently created feature branch name. Captured by
+    /// `create_project_from_bead*` so the retry teardown can delete it
+    /// before the next attempt — otherwise the deterministic
+    /// `feat/<bead-id>-...` name collides on `git switch -c`.
+    active_branch: Option<String>,
     interrupted: Arc<AtomicBool>,
 }
 
@@ -102,6 +107,7 @@ impl ProcessDrainPorts {
             base_dir,
             br_path,
             active_project: None,
+            active_branch: None,
             interrupted,
         }
     }
@@ -161,6 +167,7 @@ impl ProcessDrainPorts {
         workspace_governance::set_active_project(&self.base_dir, &output.project.id)
             .map_err(|error| DrainError::operation("select created project", error.to_string()))?;
         self.active_project = Some(output.project.id);
+        self.active_branch = output.branch_name.clone();
         Ok(DrainCreatedProject {
             branch_name: output.branch_name,
         })
@@ -384,6 +391,28 @@ impl DrainPort for ProcessDrainPorts {
             &["checkout", "-B", "master", "origin/master"],
         )?;
         run_process(&self.base_dir, "git", &["reset", "--hard", "origin/master"])?;
+
+        // Delete the previous attempt's local feature branch. Without this,
+        // the retry's `create_project_from_bead` calls `git switch -c
+        // feat/<bead-id>-...` on a branch that already exists, which fails
+        // and aborts the drain — defeating the whole point of the retry.
+        // `git branch -D` is the right tool here: the branch holds work we
+        // explicitly want to discard, and we're already on master after the
+        // checkout above so the branch is safe to remove.
+        if let Some(branch) = self.active_branch.take() {
+            // Best-effort: if the branch is somehow already gone we don't
+            // want the teardown to fail. `git branch -D` exits non-zero in
+            // that case, so check existence first.
+            let exists = std::process::Command::new("git")
+                .current_dir(&self.base_dir)
+                .args(["rev-parse", "--verify", "--quiet", &branch])
+                .status()
+                .map(|status| status.success())
+                .unwrap_or(false);
+            if exists {
+                run_process(&self.base_dir, "git", &["branch", "-D", &branch])?;
+            }
+        }
 
         // Discard the live + audit project state so the fresh create
         // doesn't trip the `ProjectExists` duplicate check. We use the
@@ -1328,6 +1357,7 @@ mod tests {
             base_dir: temp_dir.path().to_path_buf(),
             br_path: PathBuf::from("br"),
             active_project: Some(project_id),
+            active_branch: None,
             interrupted: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let error = AppError::ResumeFailed {

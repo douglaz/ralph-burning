@@ -122,6 +122,15 @@ pub struct ScratchDrainHarness {
     /// (e.g. `CleanableLintRetryThenMerge`) to behave differently on the
     /// first vs subsequent attempts within a single drain.
     bead_attempts: HashMap<String, u32>,
+    /// Persistent feature-branch mock shared across all create_project
+    /// calls so duplicate-create attempts fail the way `git switch -c`
+    /// would. Lives on the harness so the retry teardown can drop a
+    /// branch from the tracking set, mirroring production `git branch -D`.
+    branch_port: MockDrainFeatureBranchPort,
+    /// Most recent feature branch name created for a bead. Populated by
+    /// `create_project_from_bead_inner` and consumed by
+    /// `tear_down_failed_project` so retries can re-create the same name.
+    active_branch: Option<String>,
     pub git: MockDrainGitPort,
     pub runs: MockDrainRunPort,
     pub pr_tool: MockDrainPrToolPort,
@@ -229,6 +238,8 @@ impl ScratchDrainHarness {
             active_project: None,
             pr_numbers: HashMap::new(),
             bead_attempts: HashMap::new(),
+            branch_port: MockDrainFeatureBranchPort::default(),
+            active_branch: None,
             git: MockDrainGitPort::default(),
             runs: MockDrainRunPort::default(),
             pr_tool: MockDrainPrToolPort::default(),
@@ -358,13 +369,12 @@ impl ScratchDrainHarness {
         bead_id: &str,
         prior_failure_context: Option<String>,
     ) -> Result<DrainCreatedProject, DrainError> {
-        let branch_port = MockDrainFeatureBranchPort::default();
         let prior_failure_log_event = prior_failure_context.clone();
         let output = create_project_from_bead(
             &FsProjectStore,
             &FsJournalStore,
             &self.br_port(),
-            &branch_port,
+            &self.branch_port,
             self.workspace.path(),
             CreateProjectFromBeadInput {
                 bead_id: bead_id.to_owned(),
@@ -386,6 +396,7 @@ impl ScratchDrainHarness {
             self.pr_tool.set_branch(branch_name);
         }
         let branch_name = output.branch_name.clone();
+        self.active_branch = branch_name.clone();
         self.events.push(DrainHarnessEvent::ProjectCreated {
             bead_id: bead_id.to_owned(),
             branch_name: branch_name.clone().unwrap_or_default(),
@@ -800,11 +811,30 @@ impl MockDrainBrPort {
 
 impl FeatureBranchPort for MockDrainFeatureBranchPort {
     fn create_branch(&self, _base_dir: &Path, branch_name: &str) -> Result<(), String> {
+        let mut created = self.created.lock().expect("branch create mutex");
+        // Mirror `git switch -c <name>`: fail if the branch already exists.
+        // Without this, harness-level retry tests pass even when production
+        // tear-down forgets to delete the prior feature branch — the very
+        // bug Codex caught on PR #222 (P1, b609446).
+        if created.iter().any(|existing| existing == branch_name) {
+            return Err(format!(
+                "branch '{branch_name}' already exists (mock: prior teardown did not delete it)"
+            ));
+        }
+        created.push(branch_name.to_owned());
+        Ok(())
+    }
+}
+
+impl MockDrainFeatureBranchPort {
+    /// Drop a previously-created branch from the mock's tracking set, so a
+    /// later `create_branch` call with the same name succeeds. Mirrors what
+    /// the production `tear_down_failed_project` does with `git branch -D`.
+    fn forget_branch(&self, branch_name: &str) {
         self.created
             .lock()
             .expect("branch create mutex")
-            .push(branch_name.to_owned());
-        Ok(())
+            .retain(|name| name != branch_name);
     }
 }
 
@@ -995,6 +1025,12 @@ impl DrainPort for ScratchDrainHarness {
                     )
                 })?;
             }
+        }
+        // Mirror production `git branch -D <feat/...>`: drop the branch
+        // from the mock's tracking so the retry's create_branch can
+        // reuse the deterministic name without colliding.
+        if let Some(branch) = self.active_branch.take() {
+            self.branch_port.forget_branch(&branch);
         }
         self.active_project = None;
         self.events.push(DrainHarnessEvent::ProjectTornDown {
