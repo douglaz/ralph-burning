@@ -48,3 +48,12 @@ result
 
 # bv (beads viewer) local config and caches
 .bv/
+
+# Operator scratchpad for `ralph-burning project create --prompt ...`
+# inputs. Once 9ni.4.1 closes the loop and ralph-burning consumes bead
+# bodies directly via the br adapter, this directory will be deleted
+# entirely. Until then it's a local working area — README inside
+# explains the migration path.
+.beads/prompts/*
+# Track the README so operators understand the directory's purpose.
+!.beads/prompts/README.md
