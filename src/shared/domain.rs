@@ -267,6 +267,15 @@ impl BackendRole {
         matches!(self, Self::Implementer | Self::Reviewer | Self::QaValidator)
     }
 
+    /// Map a [`StageId`] to the [`BackendRole`] that drives its agent
+    /// invocation. Stages that run locally (no agent) — currently only
+    /// `CiValidation`, see [`StageId::is_local_validation`] — return
+    /// [`Self::QaValidator`] as a defensive default. The engine's local-
+    /// validation dispatch (`engine.rs`) routes those stages to
+    /// `validation::run_local_validation` BEFORE consulting this role
+    /// mapping, so the returned role is unused in practice. Callers that
+    /// need to skip backend resolution for local stages MUST first check
+    /// `stage_id.is_local_validation()`.
     pub fn for_stage(stage_id: StageId) -> Self {
         match stage_id {
             StageId::PromptReview | StageId::Planning | StageId::CiPlan => Self::Planner,
