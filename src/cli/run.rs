@@ -5027,7 +5027,7 @@ mod tests {
     use std::collections::BTreeMap;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::Mutex;
+    #[cfg(feature = "test-stub")]
     use std::time::Duration;
 
     use crate::adapters::bv_process::NextBeadResponse;
@@ -5070,23 +5070,29 @@ mod tests {
         CommittedStageEntry, FullModeStage, RequirementsRun, RequirementsStatus,
     };
     use crate::contexts::requirements_drafting::service::RequirementsStorePort;
+    #[cfg(feature = "test-stub")]
     use crate::contexts::workflow_composition::retry_policy::{
         apply_test_retry_policy_overrides, RetryPolicy,
     };
-    use crate::shared::domain::{FailureClass, FlowPreset, ProjectId, StageCursor, StageId};
+    #[cfg(feature = "test-stub")]
+    use crate::shared::domain::FailureClass;
+    use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
     use crate::shared::error::AppError;
     use crate::test_support::br::{MockBrAdapter, MockBrResponse};
     use crate::test_support::bv::{MockBvAdapter, MockBvResponse};
     use crate::test_support::env::{lock_path_mutex, PathGuard};
     use tokio::sync::oneshot;
 
-    static RETRY_POLICY_ENV_MUTEX: Mutex<()> = Mutex::new(());
+    #[cfg(feature = "test-stub")]
+    static RETRY_POLICY_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    #[cfg(feature = "test-stub")]
     struct EnvVarGuard {
         key: &'static str,
         original: Option<std::ffi::OsString>,
     }
 
+    #[cfg(feature = "test-stub")]
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let original = std::env::var_os(key);
@@ -5101,6 +5107,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "test-stub")]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             match &self.original {

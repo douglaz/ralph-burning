@@ -2969,13 +2969,16 @@ mod tests {
     use super::*;
     use crate::contexts::workflow_composition::panel_contracts::FinalReviewProposal;
 
+    #[cfg(feature = "test-stub")]
     static RETRY_POLICY_ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    #[cfg(feature = "test-stub")]
     struct EnvVarGuard {
         key: &'static str,
         original: Option<std::ffi::OsString>,
     }
 
+    #[cfg(feature = "test-stub")]
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let original = std::env::var_os(key);
@@ -2990,6 +2993,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "test-stub")]
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             match self.original.take() {
