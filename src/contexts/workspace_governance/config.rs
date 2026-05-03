@@ -20,8 +20,18 @@ use super::{load_workspace_config, workspace_config_path};
 
 /// Default: enabled.
 pub const DEFAULT_PROMPT_REVIEW_ENABLED: bool = true;
-/// Default: minimal.
-pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::Minimal;
+/// Default: iterative_minimal.
+///
+/// Iterative minimal is preferred over plain `Minimal` because it keeps
+/// the plan_and_implement → final_review loop honest about convergence
+/// (`stable_rounds_required`, lowered to 1 by bead 2z8p) instead of
+/// single-shotting through. In the common 0-amendment case it costs the
+/// same as `Minimal` (one round, then immediate completion); when the
+/// reviewers find amendments it loops to convergence rather than
+/// shipping the first attempt — which matches how the drain harness
+/// has been configured all along (`FlowPreset::IterativeMinimal` in
+/// `test_support/drain_harness.rs`).
+pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::IterativeMinimal;
 pub const DEFAULT_MAX_QA_ITERATIONS: u32 = 3;
 pub const DEFAULT_MAX_REVIEW_ITERATIONS: u32 = 3;
 pub const DEFAULT_PROMPT_REVIEW_MIN_REVIEWERS: usize = 2;

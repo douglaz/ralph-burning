@@ -3424,7 +3424,7 @@ fn config_show_prints_effective_values_and_sources() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[settings]"));
     assert!(stdout.contains("prompt_review.enabled = true # source: default"));
-    assert!(stdout.contains("default_flow = \"minimal\" # source: default"));
+    assert!(stdout.contains("default_flow = \"iterative_minimal\" # source: default"));
     assert!(stdout.contains("default_backend = \"claude\" # source: default"));
 }
 
@@ -4034,7 +4034,10 @@ fn config_get_prints_known_values_and_rejects_unknown_keys() {
         .output()
         .expect("run config get");
     assert!(known.status.success());
-    assert_eq!("minimal\n", String::from_utf8_lossy(&known.stdout));
+    assert_eq!(
+        "iterative_minimal\n",
+        String::from_utf8_lossy(&known.stdout)
+    );
 
     let unknown = Command::new(binary())
         .args(["config", "get", "unknown.key"])
@@ -4339,7 +4342,7 @@ fn project_create_succeeds_and_writes_all_canonical_files() {
 }
 
 #[test]
-fn project_create_defaults_to_minimal_flow_without_flag() {
+fn project_create_defaults_to_iterative_minimal_flow_without_flag() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());
 
@@ -4348,9 +4351,9 @@ fn project_create_defaults_to_minimal_flow_without_flag() {
             "project",
             "create",
             "--id",
-            "minimal-default",
+            "iterative-minimal-default",
             "--name",
-            "Minimal Default",
+            "Iterative Minimal Default",
             "--prompt",
             prompt.to_str().unwrap(),
         ])
@@ -4365,13 +4368,14 @@ fn project_create_defaults_to_minimal_flow_without_flag() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Created project 'minimal-default'"));
-    assert!(stdout.contains("minimal"));
+    assert!(stdout.contains("Created project 'iterative-minimal-default'"));
+    assert!(stdout.contains("iterative_minimal"));
 
-    let project_toml =
-        fs::read_to_string(project_root(temp_dir.path(), "minimal-default").join("project.toml"))
-            .expect("read project.toml");
-    assert!(project_toml.contains("flow = \"minimal\""));
+    let project_toml = fs::read_to_string(
+        project_root(temp_dir.path(), "iterative-minimal-default").join("project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"iterative_minimal\""));
 }
 
 #[test]
