@@ -532,6 +532,7 @@ impl DrainPort for ProcessDrainPorts {
             Err(PrOpenError::GateFailed {
                 gate,
                 stderr_excerpt,
+                failing_tests,
             }) => {
                 let Some(gate) = gate_from_name(&gate) else {
                     return Err(DrainError::operation(
@@ -542,7 +543,7 @@ impl DrainPort for ProcessDrainPorts {
                 return Ok(DrainPrOpenOutcome::Failed(FailureObservation::new(
                     FailureObservationKind::VerificationFailure {
                         source: VerificationFailureSource::Gate(gate),
-                        failing: gate_failure_details(gate, &stderr_excerpt),
+                        failing: gate_failure_details(gate, &stderr_excerpt, &failing_tests),
                         reruns_attempted_for_pr: 0,
                     },
                 )));
@@ -817,13 +818,25 @@ fn gate_from_name(name: &str) -> Option<Gate> {
     Gate::all().into_iter().find(|gate| gate.name() == name)
 }
 
-fn gate_failure_details(gate: Gate, stderr_excerpt: &str) -> Vec<String> {
+fn gate_failure_details(gate: Gate, stderr_excerpt: &str, failing_tests: &[String]) -> Vec<String> {
+    let mut details = Vec::with_capacity(failing_tests.len() + 1);
+    // Put failing test names FIRST so each appears as its own entry in
+    // `FailureObservation::failing`. This matters because:
+    //   1. The classifier's `is_known_flake_failure` iterates entries
+    //      and matches against KNOWN_CI_FLAKES — needs each test name
+    //      as a distinct entry rather than buried in a 600-char excerpt.
+    //   2. The follow-up bead's "failing" list reads more like a normal
+    //      test-failure summary instead of a wall of cargo output.
+    for name in failing_tests {
+        details.push(name.clone());
+    }
     let excerpt = stderr_excerpt.trim();
     if excerpt.is_empty() {
-        vec![format!("{} failed", gate.name())]
+        details.push(format!("{} failed", gate.name()));
     } else {
-        vec![format!("{} failed: {excerpt}", gate.name())]
+        details.push(format!("{} failed: {excerpt}", gate.name()));
     }
+    details
 }
 
 fn follow_up_description(

@@ -62,10 +62,50 @@ impl Gate {
         match self {
             Self::CargoFmt => ("cargo", &["fmt", "--check"]),
             Self::CargoClippy => ("cargo", &["clippy", "--locked", "--", "-D", "warnings"]),
-            Self::CargoTest => ("cargo", &["test"]),
+            // `--no-fail-fast` so all failing tests are reported in one
+            // gate run rather than stopping at the first failure. The
+            // drain follow-up bead's `failing` field then carries every
+            // failing test name (parsed by `parse_cargo_failing_tests`),
+            // not just whichever happened to surface first — which makes
+            // it possible to match against KNOWN_CI_FLAKES and tell
+            // transient-flake failures from real ones.
+            Self::CargoTest => ("cargo", &["test", "--no-fail-fast"]),
             Self::NixBuild => ("nix", &["build"]),
         }
     }
+}
+
+/// Parse cargo test stdout/stderr for `test <name> ... FAILED` lines and
+/// return the test names. Used by `map_gate_error` to enrich the
+/// verification-gate failure observation with the actual failing test
+/// names (otherwise truncated by the 600-char `stderr_excerpt` cap).
+///
+/// The shape we look for is libtest's standard runner output:
+///   `test contexts::foo::bar::tests::some_assert ... FAILED`
+///
+/// We deliberately ignore lines that just say `error: test failed,
+/// to rerun pass `--test cli`` (the cargo wrapper banner) — those don't
+/// name a specific test.
+pub fn parse_cargo_failing_tests(output: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in output.lines() {
+        // libtest format: "test <name> ... FAILED" possibly indented.
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("test ") else {
+            continue;
+        };
+        let Some(name_end) = rest.find(" ... FAILED") else {
+            continue;
+        };
+        let name = rest[..name_end].trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !names.iter().any(|existing: &String| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,6 +212,11 @@ pub enum PrOpenError {
     GateFailed {
         gate: String,
         stderr_excerpt: String,
+        /// Specific failing test names extracted from cargo's output (only
+        /// populated for `Gate::CargoTest`). Empty for non-test gates and
+        /// for cargo failures whose output didn't contain libtest-format
+        /// `... FAILED` lines (e.g. compile errors).
+        failing_tests: Vec<String>,
     },
 
     #[error("current branch '{branch_name}' is not a feature branch; create or switch to a feat/<bead-id>-... branch before opening a PR")]
@@ -1225,20 +1270,35 @@ fn latest_run_id(events: &[JournalEvent]) -> Option<&str> {
 }
 
 fn map_gate_error(gate: Gate, source: PrToolError) -> PrOpenError {
-    let stderr_excerpt = match &source {
+    let (stderr_excerpt, failing_tests) = match &source {
         PrToolError::CommandFailed { stderr, stdout, .. } => {
+            // Cargo prints `test <name> ... FAILED` lines on stdout, but
+            // the wrapper "error: test failed, ..." banner goes to stderr.
+            // Scan both before truncating so the failing test names survive.
+            let extracted = if matches!(gate, Gate::CargoTest) {
+                let mut names = parse_cargo_failing_tests(stdout);
+                for name in parse_cargo_failing_tests(stderr) {
+                    if !names.iter().any(|existing| existing == &name) {
+                        names.push(name);
+                    }
+                }
+                names
+            } else {
+                Vec::new()
+            };
             let raw = if stderr.trim().is_empty() {
                 stdout.as_str()
             } else {
                 stderr.as_str()
             };
-            stderr_excerpt(raw)
+            (stderr_excerpt(raw), extracted)
         }
-        PrToolError::Io(details) => details.clone(),
+        PrToolError::Io(details) => (details.clone(), Vec::new()),
     };
     PrOpenError::GateFailed {
         gate: gate.name().to_owned(),
         stderr_excerpt,
+        failing_tests,
     }
 }
 
@@ -1272,6 +1332,83 @@ mod tests {
     use crate::shared::error::AppResult;
 
     use super::*;
+
+    #[test]
+    fn parse_cargo_failing_tests_zero_failures_returns_empty() {
+        let output = "running 12 tests\n\
+            test foo::passes ... ok\n\
+            test foo::also_passes ... ok\n\
+            \n\
+            test result: ok. 12 passed; 0 failed; 0 ignored\n";
+        assert!(parse_cargo_failing_tests(output).is_empty());
+    }
+
+    #[test]
+    fn parse_cargo_failing_tests_extracts_single_failure() {
+        let output = "running 3 tests\n\
+            test foo::a ... ok\n\
+            test foo::b ... FAILED\n\
+            test foo::c ... ok\n\
+            \n\
+            failures:\n\
+                foo::b\n\
+            test result: FAILED. 2 passed; 1 failed; 0 ignored\n";
+        assert_eq!(parse_cargo_failing_tests(output), vec!["foo::b"]);
+    }
+
+    #[test]
+    fn parse_cargo_failing_tests_extracts_multiple_failures() {
+        let output = "test contexts::foo::a ... FAILED\n\
+            test bar::b ... ok\n\
+            test contexts::foo::c ... FAILED\n\
+            test result: FAILED. 1 passed; 2 failed; 0 ignored\n";
+        assert_eq!(
+            parse_cargo_failing_tests(output),
+            vec!["contexts::foo::a", "contexts::foo::c"]
+        );
+    }
+
+    #[test]
+    fn parse_cargo_failing_tests_ignores_cargo_wrapper_banner() {
+        // Cargo's "error: test failed" banner doesn't follow the
+        // libtest format and must NOT be returned as a test name.
+        let output = "    Running tests/cli.rs (target/debug/deps/cli-abc)\n\
+            error: test failed, to rerun pass `--test cli`\n";
+        assert!(parse_cargo_failing_tests(output).is_empty());
+    }
+
+    #[test]
+    fn parse_cargo_failing_tests_dedups_repeated_names() {
+        // Test names appear in the per-test status line AND the
+        // failure summary. We want one entry per test, not duplicates.
+        let output = "test foo::bar ... FAILED\n\
+            \n\
+            failures:\n\
+            \n\
+            ---- foo::bar stdout ----\n\
+            (some panic output)\n\
+            \n\
+            failures:\n\
+                foo::bar\n";
+        assert_eq!(parse_cargo_failing_tests(output), vec!["foo::bar"]);
+    }
+
+    #[test]
+    fn parse_cargo_failing_tests_preserves_first_seen_order() {
+        let output = "test b ... FAILED\n\
+            test a ... FAILED\n\
+            test c ... FAILED\n";
+        assert_eq!(parse_cargo_failing_tests(output), vec!["b", "a", "c"]);
+    }
+
+    #[test]
+    fn parse_cargo_failing_tests_handles_indented_libtest_lines() {
+        // Cargo sometimes emits with leading whitespace when running
+        // multiple test binaries; strip_prefix needs trim_start to match.
+        let output = "     Running tests/foo.rs\n\
+                test indented::case ... FAILED\n";
+        assert_eq!(parse_cargo_failing_tests(output), vec!["indented::case"]);
+    }
 
     #[derive(Clone)]
     struct MockProjectStore {
@@ -2128,6 +2265,7 @@ mod tests {
                 PrOpenError::GateFailed {
                     gate: failed_gate,
                     stderr_excerpt,
+                    failing_tests: _,
                 } => {
                     assert_eq!(failed_gate, gate.name());
                     assert!(stderr_excerpt.contains("failed loudly"));
