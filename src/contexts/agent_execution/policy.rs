@@ -410,15 +410,12 @@ impl<'a> BackendPolicyService<'a> {
 /// Map a stage ID to its corresponding backend policy role (free function).
 pub fn stage_to_policy_role(stage_id: StageId) -> BackendPolicyRole {
     match stage_id {
-        StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
-            BackendPolicyRole::Planning
-        }
+        StageId::PromptReview | StageId::Planning | StageId::CiPlan => BackendPolicyRole::Planning,
         StageId::Implementation
         | StageId::PlanAndImplement
         | StageId::ApplyFixes
-        | StageId::DocsUpdate
         | StageId::CiUpdate => BackendPolicyRole::Implementer,
-        StageId::Qa | StageId::DocsValidation | StageId::CiValidation => BackendPolicyRole::Qa,
+        StageId::Qa | StageId::CiValidation => BackendPolicyRole::Qa,
         StageId::AcceptanceQa => BackendPolicyRole::AcceptanceQa,
         StageId::Review => BackendPolicyRole::Reviewer,
         StageId::CompletionPanel => BackendPolicyRole::Completer,

@@ -64,18 +64,14 @@ pub struct ValidatedBundle {
 /// to exactly one contract.
 pub fn contract_for_stage(stage_id: StageId) -> StageContract {
     let family = match stage_id {
-        StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
-            ContractFamily::Planning
-        }
+        StageId::PromptReview | StageId::Planning | StageId::CiPlan => ContractFamily::Planning,
 
         StageId::Implementation
         | StageId::PlanAndImplement
         | StageId::ApplyFixes
-        | StageId::DocsUpdate
         | StageId::CiUpdate => ContractFamily::Execution,
 
         StageId::Qa
-        | StageId::DocsValidation
         | StageId::CiValidation
         | StageId::AcceptanceQa
         | StageId::Review

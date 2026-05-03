@@ -4172,7 +4172,7 @@ where
 
         // ── Local validation dispatch for docs/CI stages ────────────────────
 
-        if stage_id == StageId::DocsValidation || stage_id == StageId::CiValidation {
+        if stage_id == StageId::CiValidation {
             // Emit stage_entered event for local validation.
             *seq += 1;
             let stage_entered = journal::stage_entered_event(
@@ -4226,9 +4226,6 @@ where
             );
 
             let commands = match stage_id {
-                StageId::DocsValidation => {
-                    effective_config.validation_policy().docs_commands.clone()
-                }
                 StageId::CiValidation => effective_config.validation_policy().ci_commands.clone(),
                 _ => vec![],
             };
@@ -8843,15 +8840,6 @@ fn stage_objective(stage_id: StageId) -> &'static str {
         }
         StageId::ApplyFixes => {
             "apply the requested fixes, summarize the edits, and record the validation performed"
-        }
-        StageId::DocsPlan => {
-            "plan the documentation updates required to support the requested change"
-        }
-        StageId::DocsUpdate => {
-            "update the documentation accurately and summarize what changed"
-        }
-        StageId::DocsValidation => {
-            "validate documentation accuracy, clarity, and completeness"
         }
         StageId::CiPlan => {
             "plan the CI workflow updates needed for the requested change"

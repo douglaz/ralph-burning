@@ -269,18 +269,12 @@ impl BackendRole {
 
     pub fn for_stage(stage_id: StageId) -> Self {
         match stage_id {
-            StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
-                Self::Planner
-            }
+            StageId::PromptReview | StageId::Planning | StageId::CiPlan => Self::Planner,
             StageId::Implementation
             | StageId::PlanAndImplement
             | StageId::ApplyFixes
-            | StageId::DocsUpdate
             | StageId::CiUpdate => Self::Implementer,
-            StageId::Qa
-            | StageId::DocsValidation
-            | StageId::CiValidation
-            | StageId::AcceptanceQa => Self::QaValidator,
+            StageId::Qa | StageId::CiValidation | StageId::AcceptanceQa => Self::QaValidator,
             StageId::CompletionPanel | StageId::FinalReview => Self::CompletionJudge,
             StageId::Review => Self::Reviewer,
         }
@@ -706,16 +700,13 @@ pub enum StageId {
     FinalReview,
     PlanAndImplement,
     ApplyFixes,
-    DocsPlan,
-    DocsUpdate,
-    DocsValidation,
     CiPlan,
     CiUpdate,
     CiValidation,
 }
 
 impl StageId {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 13] = [
         Self::PromptReview,
         Self::Planning,
         Self::Implementation,
@@ -726,9 +717,6 @@ impl StageId {
         Self::FinalReview,
         Self::PlanAndImplement,
         Self::ApplyFixes,
-        Self::DocsPlan,
-        Self::DocsUpdate,
-        Self::DocsValidation,
         Self::CiPlan,
         Self::CiUpdate,
         Self::CiValidation,
@@ -746,9 +734,6 @@ impl StageId {
             Self::FinalReview => "Final Review",
             Self::PlanAndImplement => "Plan and Implement",
             Self::ApplyFixes => "Apply Fixes",
-            Self::DocsPlan => "Docs Plan",
-            Self::DocsUpdate => "Docs Update",
-            Self::DocsValidation => "Docs Validation",
             Self::CiPlan => "CI Plan",
             Self::CiUpdate => "CI Update",
             Self::CiValidation => "CI Validation",
@@ -767,9 +752,6 @@ impl StageId {
             Self::FinalReview => "final_review",
             Self::PlanAndImplement => "plan_and_implement",
             Self::ApplyFixes => "apply_fixes",
-            Self::DocsPlan => "docs_plan",
-            Self::DocsUpdate => "docs_update",
-            Self::DocsValidation => "docs_validation",
             Self::CiPlan => "ci_plan",
             Self::CiUpdate => "ci_update",
             Self::CiValidation => "ci_validation",
@@ -777,9 +759,9 @@ impl StageId {
     }
 
     /// Returns `true` for stages that run local validation commands and do not
-    /// require a backend agent (docs_validation, ci_validation).
+    /// require a backend agent (currently only `ci_validation`).
     pub fn is_local_validation(self) -> bool {
-        matches!(self, Self::DocsValidation | Self::CiValidation)
+        matches!(self, Self::CiValidation)
     }
 }
 
@@ -804,9 +786,6 @@ impl FromStr for StageId {
             "final_review" => Ok(Self::FinalReview),
             "plan_and_implement" => Ok(Self::PlanAndImplement),
             "apply_fixes" => Ok(Self::ApplyFixes),
-            "docs_plan" => Ok(Self::DocsPlan),
-            "docs_update" => Ok(Self::DocsUpdate),
-            "docs_validation" => Ok(Self::DocsValidation),
             "ci_plan" => Ok(Self::CiPlan),
             "ci_update" => Ok(Self::CiUpdate),
             "ci_validation" => Ok(Self::CiValidation),

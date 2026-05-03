@@ -44,7 +44,6 @@ pub async fn run_local_validation(
     repo_root: &Path,
 ) -> (ValidationPayload, ValidationGroupResult) {
     let group_name = match stage_id {
-        StageId::DocsValidation => "docs_validation",
         StageId::CiValidation => "ci_validation",
         _ => "local_validation",
     };
