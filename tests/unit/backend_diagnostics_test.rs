@@ -1547,9 +1547,10 @@ fn check_passes_when_all_roles_overridden_and_default_backend_disabled() {
     let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
     let service = BackendDiagnosticsService::new(&config);
 
-    // docs_change flow: DocsPlan→Planner, DocsUpdate→Implementer,
-    // DocsValidation→Qa, Review→Reviewer — all have overrides, so
-    // disabled default_backend should NOT cause failure.
+    // docs_change flow is now an alias for Minimal (gp7), so it goes
+    // through PlanAndImplement→Implementer + FinalReview→CompletionJudge.
+    // All roles have overrides, so disabled default_backend should NOT
+    // cause failure.
     let result = service.check_backends(FlowPreset::DocsChange);
     assert!(
         result.passed,

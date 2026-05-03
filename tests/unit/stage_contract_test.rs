@@ -125,12 +125,7 @@ fn every_stage_in_every_built_in_flow_has_contract_coverage() {
 
 #[test]
 fn planning_stages_map_to_planning_family() {
-    for stage_id in [
-        StageId::PromptReview,
-        StageId::Planning,
-        StageId::DocsPlan,
-        StageId::CiPlan,
-    ] {
+    for stage_id in [StageId::PromptReview, StageId::Planning, StageId::CiPlan] {
         assert_eq!(
             contract_for_stage(stage_id).family,
             ContractFamily::Planning,
@@ -145,7 +140,6 @@ fn execution_stages_map_to_execution_family() {
         StageId::Implementation,
         StageId::PlanAndImplement,
         StageId::ApplyFixes,
-        StageId::DocsUpdate,
         StageId::CiUpdate,
     ] {
         assert_eq!(
@@ -160,7 +154,6 @@ fn execution_stages_map_to_execution_family() {
 fn validation_stages_map_to_validation_family() {
     for stage_id in [
         StageId::Qa,
-        StageId::DocsValidation,
         StageId::CiValidation,
         StageId::AcceptanceQa,
         StageId::Review,

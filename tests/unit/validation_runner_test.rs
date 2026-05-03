@@ -218,7 +218,7 @@ fn failing_excerpts_from_stderr() {
 #[test]
 fn render_validation_group_output() {
     let result = ValidationGroupResult {
-        group_name: "docs_validation".to_owned(),
+        group_name: "ci_validation".to_owned(),
         commands: vec![ValidationCommandResult {
             command: "echo ok".to_owned(),
             exit_code: Some(0),
@@ -231,7 +231,7 @@ fn render_validation_group_output() {
     };
     let rendered = render_validation_group(&result);
     assert!(rendered.contains("PASSED"));
-    assert!(rendered.contains("docs_validation"));
+    assert!(rendered.contains("ci_validation"));
     assert!(rendered.contains("echo ok"));
 }
 
@@ -385,7 +385,7 @@ fn failing_excerpts_handles_non_ascii_output() {
 fn local_validation_empty_commands_passes() {
     let rt = rt();
     let (payload, group) = rt.block_on(validation::run_local_validation(
-        ralph_burning::shared::domain::StageId::DocsValidation,
+        ralph_burning::shared::domain::StageId::CiValidation,
         &[],
         Path::new("/tmp"),
     ));
@@ -417,7 +417,7 @@ fn local_validation_failing_command_requests_changes() {
 fn local_validation_passing_command_approves() {
     let rt = rt();
     let (payload, group) = rt.block_on(validation::run_local_validation(
-        ralph_burning::shared::domain::StageId::DocsValidation,
+        ralph_burning::shared::domain::StageId::CiValidation,
         &["true".to_owned()],
         Path::new("/tmp"),
     ));

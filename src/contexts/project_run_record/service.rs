@@ -2824,7 +2824,9 @@ fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
     match flow {
         FlowPreset::Standard => StageId::Planning,
         FlowPreset::QuickDev => StageId::PlanAndImplement,
-        FlowPreset::DocsChange => StageId::DocsPlan,
+        // DocsChange is now an alias for Minimal (see bead gp7), so it
+        // routes to PlanAndImplement just like Minimal/IterativeMinimal.
+        FlowPreset::DocsChange => StageId::PlanAndImplement,
         FlowPreset::CiImprovement => StageId::CiPlan,
         FlowPreset::Minimal => StageId::PlanAndImplement,
         FlowPreset::IterativeMinimal => StageId::PlanAndImplement,

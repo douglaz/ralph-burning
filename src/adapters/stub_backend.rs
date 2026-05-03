@@ -481,7 +481,7 @@ fn count_tokens(contents: &str) -> u32 {
 
 fn canned_payload_for_stage(stage_id: StageId) -> serde_json::Value {
     match stage_id {
-        StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => json!({
+        StageId::PromptReview | StageId::Planning | StageId::CiPlan => json!({
             "problem_framing": format!("Stub planning output for {}", stage_id.display_name()),
             "assumptions_or_open_questions": [
                 format!("Assumption captured for {}", stage_id.as_str())
@@ -501,7 +501,6 @@ fn canned_payload_for_stage(stage_id: StageId) -> serde_json::Value {
         StageId::Implementation
         | StageId::PlanAndImplement
         | StageId::ApplyFixes
-        | StageId::DocsUpdate
         | StageId::CiUpdate => json!({
             "change_summary": format!("Stub execution output for {}", stage_id.display_name()),
             "steps": [
@@ -519,7 +518,6 @@ fn canned_payload_for_stage(stage_id: StageId) -> serde_json::Value {
         | StageId::CompletionPanel
         | StageId::AcceptanceQa
         | StageId::FinalReview
-        | StageId::DocsValidation
         | StageId::CiValidation => json!({
             "outcome": "approved",
             "evidence": [format!("Stub validation output for {}", stage_id.display_name())],
