@@ -8,6 +8,8 @@ ralph-burning is a multi-stage code-execution orchestrator. It turns a problem p
 
 Ad hoc LLM CLI sessions are easy to start and hard to operate: state is scattered, review loops are manual, and crash recovery depends on terminal history. ralph-burning adds durable project/run records, rollback points, multi-reviewer panels with arbiter behavior, and `.beads` integration as the canonical work graph. The most-used flow is `iterative_minimal`, which cycles `plan_and_implement` until the implementation is stable, then runs `final_review`.
 
+> **Considering a lighter alternative?** For single-branch, single-task work where you don't need durable cross-session state, multi-stage flows, beads integration, or rollback points, [`rb-lite`](https://github.com/douglaz/rb-lite) is a ~700-line Bash CLI that runs the same kind of implement→review loop with codex + claude as a parallel reviewer panel. It's simpler to read end-to-end, faster to converge for small tasks, and stays out of your way (no project/run database). Reach for `ralph-burning` when the work is bigger than one branch and benefits from persistent orchestration; reach for `rb-lite` when it isn't.
+
 ## Quick start
 
 Run the released CLI directly with Nix, or build the local checkout:
